@@ -67,15 +67,16 @@ Read the installed `browser-skill` instructions and run `bsk doctor --json`. It 
 
 Use the installed browser-skill instructions and `bsk` CLI for the current version. Select the verified Helio browser, retain the session ID, and always stop the session after use.
 
-The installed BrowserSkill requires a cooperation context for shared-tab actions. Some older OmOWright method wrappers do not pass it. Use the supported BrowserSkill CLI for those operations, not another input engine:
+The installed BrowserSkill requires a cooperation context for shared-tab actions. Some older OmOWright method wrappers do not pass it; use the supported BrowserSkill CLI for those operations, not another input engine.
+
+A new session starts on a blank tab, and BrowserSkill cannot read a blank tab. So the first command after starting the session is a plain navigation to the verified channel, and only then the first sync:
 
 ```bash
-bsk cooperate --session "$session_id" sync --json --max-tokens 4000
+bsk navigate --session "$session_id" "$verified_channel_url" --json
+bsk cooperate sync --session "$session_id" --json --max-tokens 4000
 ```
 
-Inspect the returned `state`, `context_id`, `observation_id`, and current page. If the human is editing or holds control, do not act. Never reuse a stale ref or replay an uncertain action.
-
-For navigation, pass both the fresh context and explicit observation from that sync:
+Inspect the returned `state`, `context_id`, `observation_id`, and current page. If the human is editing or holds control, do not act. Never reuse a stale ref or replay an uncertain action. Later navigation, once a page is loaded, passes the fresh context and observation from the latest sync:
 
 ```bash
 bsk navigate --session "$session_id" \
@@ -83,7 +84,9 @@ bsk navigate --session "$session_id" \
   "$verified_channel_url" --json
 ```
 
-The shell variables above are values from the current session/sync and the verified channel, not saved IDs from a previous run. Native CLI errors distinguish missing context/observation from a denied permission; follow the stated recovery for missing synchronization, and stop on an actual access denial or human stop.
+The shell variables above are values from the current session/sync and the verified channel, not saved IDs from a previous run.
+
+`permission_denied` with `Could not establish connection. Receiving end does not exist.` is not an access problem: the tab has no page BrowserSkill can read yet (a blank tab, or a page loaded before the extension connected). Navigate or reload that tab to the verified URL and sync again; do not ask anyone about it. Report a real access problem only when `bsk doctor --json` shows no connected browser, Discord itself refuses the page, or the human stops you.
 
 After each navigation or large page change, sync again and inspect the rendered page. A successful navigation response can precede Discord's client-side redirect. Verify the actual tab URL and channel header before any input.
 
