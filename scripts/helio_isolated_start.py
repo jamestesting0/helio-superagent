@@ -20,6 +20,9 @@ try:
         if server.poll() is not None:raise RuntimeError('private Herdr server exited')
         time.sleep(.1)
     else:raise RuntimeError('private Herdr server did not start')
+    state=Path('/home/james/.dori/elobot/deploy-state.json')
+    if mode!='shell' and state.is_file():
+        data=json.loads(state.read_text());data['full_restart_pending']=False;state.write_text(json.dumps(data,indent=2)+'\n')
     if mode!='shell':
         for tab in json.loads(run(['tab','list']))['result']['tabs']:
             if tab.get('label')=='Helio':run(['tab','close',tab['tab_id']])

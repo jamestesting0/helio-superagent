@@ -5,7 +5,7 @@ Only invoke from the root-owned helio-isolated systemd scope. Firewall rules
 are installed before any unprivileged process is started and remain restrictive
 if this supervisor is killed abruptly.
 """
-import fcntl, grp, json, os, pty, pwd, re, select, signal, socket, stat, struct, subprocess, sys, tempfile, termios, tty
+import fcntl, grp, json, os, pty, pwd, re, runpy, select, signal, socket, stat, struct, subprocess, sys, tempfile, termios, tty
 from pathlib import Path
 
 SCOPE='/system.slice/helio-isolated.scope'
@@ -23,55 +23,7 @@ if not Path(HOME).is_dir() or Path(HOME).stat().st_uid!=account.pw_uid:raise Sys
 
 def refresh_owner_policy():
     """Copy owner-controlled authorization files into root-protected mounts."""
-    sys.path.insert(0,'/opt/helio-beta-service/packages')
-    from dotenv import dotenv_values
-    owner=pwd.getpwnam('james');base=Path('/home/james/.dori/elobot')
-    source=base/'env';info=source.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid!=owner.pw_uid or info.st_mode&0o077:raise RuntimeError('Owner environment permissions are unsafe')
-    values=dotenv_values(source);token=values.get('DORI_DISCORD_TOKEN','');owner_id=values.get('DORI_DISCORD_OWNER_ID','')
-    allowed=[x.strip() for x in values.get('DORI_DISCORD_ALLOWED','').split(',') if x.strip()]
-    service_uri=dotenv_values('/etc/helio-beta-service/credential.env').get('MONGO_DB_URL')
-    for name in ('env','beta.env','beta-mongo.env'):
-        path=base/name;info=path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid!=owner.pw_uid or info.st_mode&0o077:raise RuntimeError('Owner environment file permissions are unsafe')
-        if name!='env' and (not service_uri or dotenv_values(path).get('MONGO_DB_URL')!=service_uri):raise RuntimeError('Beta credential differs from the protected service; update the service before launch')
-        target=Path(HOME)/'.dori/elobot'/name
-        fd,tmp=tempfile.mkstemp(prefix='.'+name+'-',dir=target.parent)
-        try:
-            os.fchown(fd,account.pw_uid,account.pw_gid);os.fchmod(fd,0o600)
-            with os.fdopen(fd,'wb') as stream:stream.write(path.read_bytes());stream.flush();os.fsync(stream.fileno())
-            os.replace(tmp,target)
-        finally:
-            if os.path.exists(tmp):os.unlink(tmp)
-    policy=Path('/var/lib/helio-runtime-policy');policy.mkdir(mode=0o755,exist_ok=True)
-    info=policy.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=0 or info.st_mode&0o022:raise RuntimeError('Policy directory permissions are unsafe')
-    lists={}
-    for name in ('trusted-users','release-approvers','report-channels'):
-        path=base/name;info=path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid!=owner.pw_uid or info.st_mode&0o022:raise RuntimeError('Owner authorization file permissions are unsafe')
-        content=path.read_text();items=[x.strip() for x in content.split(',') if x.strip()]
-        if any(not re.fullmatch(r'\d{5,30}',x) for x in items):raise RuntimeError('Owner authorization file contains invalid IDs')
-        lists[name]=items
-        fd,tmp=tempfile.mkstemp(prefix='.'+name+'-',dir=policy)
-        try:
-            os.fchmod(fd,0o644)
-            with os.fdopen(fd,'w') as stream:stream.write(','.join(items)+'\n');stream.flush();os.fsync(stream.fileno())
-            os.replace(tmp,policy/name)
-        finally:
-            if os.path.exists(tmp):os.unlink(tmp)
-    if not token or not re.fullmatch(r'\d{5,30}',owner_id) or any(not re.fullmatch(r'\d{5,30}',x) for x in allowed):raise RuntimeError('Owner Discord configuration is invalid')
-    directory=Path('/etc/helio-release-service');release_gid=grp.getgrnam('helio-release').gr_gid
-    fd,tmp=tempfile.mkstemp(prefix='.auth-',dir=directory)
-    try:
-        os.fchown(fd,0,release_gid);os.fchmod(fd,0o640)
-        with os.fdopen(fd,'w') as stream:
-            json.dump({'token':token,'owner':owner_id,'trusted':lists['trusted-users'],'allowed':allowed},stream)
-            stream.write('\n');stream.flush();os.fsync(stream.fileno())
-        os.replace(tmp,directory/'auth.json')
-    finally:
-        if os.path.exists(tmp):os.unlink(tmp)
-    return policy
+    return runpy.run_path(str(Path(__file__).resolve().parent/'helio_owner_policy.py'))['refresh'](HOME,account)
 
 NS_GET_USERNS=0xb701  # ioctl from linux/nsfs.h: fd of the user namespace that owns a namespace
 

@@ -23,6 +23,10 @@ systemctl() {
   printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
   [[ "${3:-}" == "$ACTIVE_SERVICE" ]]
 }
+python3() {
+  [[ "${1:-}" == "$FAKE_UPDATER" ]] || return 97
+  "$TEST_PYTHON" "$@"
+}
 exec() {
   printf '%s\0' "$@" >> "$EXEC_LOG"
   case "$1" in
@@ -59,6 +63,11 @@ if args.apply:
 else:
     print("Managed updates: preview")
 """
+
+ADMIN: Final = [
+    WSL, "-d", "Ubuntu-22.04", "-u", "root", "--", "/usr/bin/python3",
+    "/opt/helio-beta-service/scripts/helio_isolated_admin.py",
+]
 
 
 class HelioHostTests(unittest.TestCase):
@@ -225,10 +234,38 @@ class HelioHostTests(unittest.TestCase):
         self.assertEqual(self.exec_args(), [])
         self.assertFalse(self.systemctl_log.exists())
 
+    def test_deploy_updates_owner_home_then_the_isolated_runtime(self) -> None:
+        for args, admin in ((("deploy",), ["deploy"]), (("deploy", "--restart"), ["deploy", "--restart"])):
+            with self.subTest(args=args):
+                self.reset_logs()
+                result = self.run_host(*args, active="helio-isolated.scope")
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.home / "applied").read_text(), "managed update")
+                self.assertEqual(self.exec_args(), ADMIN + admin)
+
+    def test_deploy_stops_when_the_owner_update_needs_review(self) -> None:
+        (self.home / "conflict").write_text("")
+        result = self.run_host("deploy")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.exec_args(), [])
+
+    def test_restart_and_version_use_the_root_admin_tool(self) -> None:
+        for command, admin in (("restart", ["restart"]), ("version", ["status"])):
+            with self.subTest(command=command):
+                self.reset_logs()
+                result = self.run_host(command, active="helio-isolated.scope")
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.exec_args(), ADMIN + admin)
+                self.assertFalse(self.systemctl_log.exists())
+
     def test_unknown_commands_and_extra_launch_arguments_are_rejected(self) -> None:
         for args in (
             ("doctor",), ("beta",), ("browser",), ("release",), ("bogus",),
             ("start", "extra"), ("status", "extra"), ("permissions", "extra"),
+            ("deploy", "--force"), ("restart", "now"), ("version", "extra"),
         ):
             with self.subTest(args=args):
                 result = self.run_host(*args)
