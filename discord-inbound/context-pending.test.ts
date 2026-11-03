@@ -37,6 +37,7 @@ test.each([
     const output: unknown[] = stdout.split("\n").filter((line) => line.startsWith("CONTEXT ")).map((line) => JSON.parse(line.slice("CONTEXT ".length)));
     expect(output).toEqual(visible ? [values[5]] : []);
     expect(stderr.split("\n").filter((line) => line.startsWith("ACK_WARN "))).toHaveLength(visible ? 6 : 7);
+    expect(stdout).toContain(`ACK_PENDING stream=context printed=${visible ? 1 : 0} withheld=${visible ? 6 : 7}`);
     expect(queue.pending("context").map((item) => item.payload)).toEqual(values.map((value) => JSON.stringify(value)));
   } finally {
     queue.close();

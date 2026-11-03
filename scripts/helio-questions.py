@@ -255,7 +255,7 @@ def watch(db,lane):
 def main():
  parser=argparse.ArgumentParser();sub=parser.add_subparsers(dest='cmd',required=True)
  ask=sub.add_parser('ask');ask.add_argument('--lane',required=True);ask.add_argument('--audience',choices=('owner','thread'),required=True);ask.add_argument('--recipient',default='');ask.add_argument('--text',required=True)
- for name in ('retry','recover','ack','cancel','show'):
+ for name in ('retry','recover','ack','cancel','withdraw','show'):
   command=sub.add_parser(name);command.add_argument('id')
  w=sub.add_parser('watch');w.add_argument('--lane')
  sub.add_parser('list')
@@ -275,6 +275,10 @@ def main():
    if a.cmd=='ack':
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
     write(db,a.id,'done',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
+   elif a.cmd=='withdraw':
+    # A sent question that no longer matters (policy changed, answered elsewhere) would otherwise stay pending forever.
+    if row['status']!='awaiting_answer':raise ValueError('can only withdraw a sent, unanswered question; use cancel for unsent ones')
+    write(db,a.id,'cancelled',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
    elif a.cmd=='cancel':
     if row['status'] not in ('queued','send_failed'):raise ValueError('can only cancel a question known not to have been sent')
     write(db,a.id,'cancelled',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()

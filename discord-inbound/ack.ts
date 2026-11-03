@@ -50,6 +50,7 @@ async function authorized(item: { readonly id: string; readonly payload: string 
 try {
   if (stream === "inbound") await sweepExpired(delivery, state, warn);
   if (action === "pending") {
+    let printed = 0, withheld = 0;
     for (const item of delivery.pending(stream)) {
       if (stream === "context") {
         let allowed: boolean;
@@ -59,13 +60,16 @@ try {
         catch (error) {
           if (!(error instanceof Error)) throw error;
           warn(`message_id=${item.id} context replay withheld: ${error.message}`);
+          withheld++;
           continue;
         }
         if (!allowed) {
           warn(`message_id=${item.id} context replay withheld by current privacy policy`);
+          withheld++;
           continue;
         }
         console.log(`CONTEXT ${item.payload}`);
+        printed++;
       }
       else {
         let payload: string;
@@ -73,11 +77,15 @@ try {
         catch (error) {
           if (!(error instanceof Error)) throw error;
           warn(`message_id=${item.id} replay withheld: ${error.message}`);
+          withheld++;
           continue;
         }
         console.log(`INBOUND ${payload}`);
+        printed++;
       }
     }
+    // A count line distinguishes an empty queue from a read that printed nothing.
+    console.log(`ACK_PENDING stream=${stream} printed=${printed} withheld=${withheld}`);
   } else if (action === "status" && id) {
     console.log(JSON.stringify({ stream, message_id: id, ...delivery.status(stream, id) }));
   } else if (action === "irrelevant" && id && reason) {

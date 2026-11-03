@@ -213,6 +213,19 @@ class QuestionTests(unittest.TestCase):
   self.assertEqual(first['status'],'awaiting_answer');self.assertEqual(first['message_id'],'300');self.assertEqual(first['recipient'],'99');self.assertEqual(first['id'],second['id'])
   self.assertEqual(len(calls),2);self.assertEqual(calls[1][2]['allowed_mentions'],{'parse':[]});self.assertEqual(calls[1][2]['nonce'],first['id']);self.assertTrue(calls[1][2]['enforce_nonce'])
   self.assertEqual((self.state/'discord-questions.sqlite').stat().st_mode & 0o777,0o600)
+ def test_withdraw_retires_only_a_sent_unanswered_question(self):
+  def request(method,path,body=None):
+   return {'id':'200'} if path=='/users/@me/channels' else {'id':'300'}
+  with patch.dict(self.g,{'request':request}):
+   sent=self.m['create_question'](self.db,'lead','owner','','Use this record?')
+  run=lambda *argv:patch('sys.argv',['helio-questions',*argv])
+  out=io.StringIO()
+  with run('withdraw',sent['id']),redirect_stdout(out):self.assertEqual(self.m['main'](),0)
+  self.assertEqual(json.loads(out.getvalue())['status'],'cancelled')
+  out=io.StringIO()
+  with run('list'),redirect_stdout(out):self.m['main']()
+  self.assertEqual(json.loads(out.getvalue()),[])
+  with run('withdraw',sent['id']),self.assertRaises(ValueError):self.m['main']()
  def test_thread_question_uses_registered_allowed_lane(self):
   (self.state/'lanes').mkdir();(self.state/'lanes/lane-one.json').write_text(json.dumps({'thread':'discord:101'}))
   calls=[]
