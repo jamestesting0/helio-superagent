@@ -105,7 +105,7 @@ Each message, forward and reply-chain entry carries what a person sees, not only
 
 ## Lane briefs
 
-Include the scope, relevant acceptance criteria, test fixtures, and evidence requirements in every lane brief. Approved work is tested with Elo Beta under work-policy.md, and current screenshot evidence is captured and delivered to the owner.
+Include the scope, relevant acceptance criteria, test fixtures, evidence requirements, and the original request's `channel_id` and `message_id` in every lane brief, so the lane delivers results with `evidence.ts` to the right place. Approved work is tested with Elo Beta under work-policy.md, and current screenshot evidence is delivered with `evidence.ts`.
 
 ## Learning the servers
 

@@ -69,6 +69,14 @@ Use the installed browser-skill instructions and `bsk` CLI for the current versi
 
 The installed BrowserSkill requires a cooperation context for shared-tab actions. Some older OmOWright method wrappers do not pass it; use the supported BrowserSkill CLI for those operations, not another input engine.
 
+### One window per test account
+
+Discord keeps one login per Chrome profile, so tabs in one profile are always the same account. Multi-account tests use the dedicated test profiles instead of the account switcher: `qa-a` is always the Elo Manager account (Dominik), and `qa-b` and `qa-c` hold other test accounts (see `helio browser accounts`). Open as many as the test needs, `helio browser ready --accounts N`: 1 for a single-user command, 2 for a match, 3 for a match plus a host or helper. Start one BrowserSkill session per profile with `bsk session start --browser <instance-id from ~/.dori/elobot/qa-accounts.json> --json` and keep each `session_id` with its role (participant A, participant B, manager). Moving between accounts is moving between sessions; nothing logs out. Check each window's account once at its first sync, not after every action. Close them with `helio browser close --all`. If a profile is not set up yet, ask the owner once to run `helio browser setup <profile>`, and use the single Helio profile with the account switcher meanwhile.
+
+### Links instead of clicks
+
+Navigate by URL, never through the server list or folders: Test thread `https://discord.com/channels/1033924790513311756/{{HELIO_TEST_CHANNEL}}`, any channel or thread `https://discord.com/channels/1033924790513311756/<channel_id>`, a message `.../<channel_id>/<message_id>`. A new match thread is opened from the link or channel mention in Elo Beta's announcement.
+
 A new session starts on a blank tab, and BrowserSkill cannot read a blank tab. So the first command after starting the session is a plain navigation to the verified channel, and only then the first sync:
 
 ```bash
@@ -126,6 +134,8 @@ cd {{HELIO_PROJECT}}
 Compare existing failures with a fresh pre-change baseline by test identity. Never weaken tests, claim skipped checks passed, or use the production database for integration.
 
 ## 6. Exercise real commands and controls
+
+**Fastest way to enter a command: the command palette.** Run `helio beta commands post` once per session (it reuses the existing palette when nothing changed, and prints its message links). It posts Elo Beta's commands as clickable mentions such as `</match queue:ID>` in the Test thread. Navigate to the palette link, click the mention of the command under test, and Discord fills exactly Elo Beta's command into the message box; then fill its options and send. The mention renders as a small `<span>` holding the command's last word inside the message content (`[id^=message-content]`); click that innermost element. Verified on 2026-11-03: clicking `/help` filled "/help · Show the command manual · Elo Beta". Escape does not remove a filled command; send it or replace it, never leave it half-filled at the end of a test. `helio beta commands list` prints the same mentions as JSON. Use the typed `/` picker below only if the palette is unavailable.
 
 In `{{HELIO_TEST_CHANNEL}}`, verify the channel, current user, and selected slash-command application. Explicitly choose **Elo Beta**, not the production bot with the same command name.
 
@@ -225,7 +235,7 @@ Save current screenshots, a short test matrix, scoped runtime logs, and before/a
 
 Capture private previews from their owning account. For UI changes include before/after screenshots and the relevant desktop/narrow views. Inspect images for unrelated content, secrets, personal data, and local desktop chrome before sending.
 
-Send the owner actual screenshot image attachments and a concise result summary in the approved work conversation or DM. `dori send discord` is text-only: use an authenticated attachment-upload path for the generated local screenshots, not a posted local path. Retain evidence and report a failed upload; do not claim delivery without a returned message or visible attachment.
+Deliver the screenshots and a concise result summary with `bun ~/.dori/elobot/evidence.ts <request channel_id> <request message_id> --text-file <summary> [--owner-only] <screenshot>...`. It replies where the request was made (trusted chat or owner/trusted DM), or for a normal-chat request sends to the owner's DM, forwards that to a trusted requester's DM and leaves a note in place. Use `--owner-only` for anything only the owner may see (see Evidence and reporting in work-policy.md). Never hand-write an upload.
 
 If any required live scenario is blocked, report it as unverified before calling the work fully tested. Passing unit tests do not replace missing browser/account/remote checks.
 

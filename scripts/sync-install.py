@@ -16,7 +16,7 @@ PROFILES=PAYLOAD['PROFILES']
 MANAGED=PAYLOAD['MANAGED']
 RETIRED=PAYLOAD['RETIRED']
 SHIPPED=PAYLOAD['PREVIOUSLY_SHIPPED']
-NEW_PAYLOAD=('helio-sessions.py',)
+NEW_PAYLOAD=('helio-sessions.py','evidence.ts','evidence.test.ts')
 def digest(b): return hashlib.sha256(b).hexdigest()
 def atomic(p, data):
  fd,tmp=tempfile.mkstemp(prefix='.helio-',dir=p.parent)
