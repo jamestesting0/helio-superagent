@@ -7,6 +7,7 @@ import struct
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +40,13 @@ class ServiceTests(unittest.TestCase):
             path=Path(temp)/'deny.json'
             path.write_text(json.dumps({'database':'elo_beta','complete':False,'records':[]}))
             with self.assertRaises(M['ServiceError']):M['read_exclusions'](path)
+            path.chmod(0o644)
+            real=os.fstat
+            as_root=lambda fd:SimpleNamespace(st_mode=real(fd).st_mode,st_uid=0,st_size=real(fd).st_size)
+            with unittest.mock.patch.object(os,'fstat',as_root):
+                with self.assertRaises(M['ServiceError']):M['read_exclusions'](path)
+                path.write_text(json.dumps({'database':'elo_beta','complete':True,'records':[]}))
+                self.assertEqual(M['read_exclusions'](path),set())
 
     def test_socket_accepts_one_scoped_request_and_preserves_preimage(self):
         with tempfile.TemporaryDirectory() as temp:

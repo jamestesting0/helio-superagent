@@ -41,7 +41,7 @@ def read_exclusions(path: Path) -> set[tuple[str,str]]:
             data=json.load(stream)
     finally:
         if fd>=0:os.close(fd)
-    if not isinstance(data,dict) or set(data)!={'database','complete','records'} or data['database']!='elo_beta' or data['complete'] is not True or not isinstance(data['records'],list) or not data['records']:
+    if not isinstance(data,dict) or set(data)!={'database','complete','records'} or data['database']!='elo_beta' or data['complete'] is not True or not isinstance(data['records'],list):
         raise ServiceError('exclusions must be explicitly completed before service start')
     excluded=set()
     for record in data['records']:
@@ -97,7 +97,6 @@ def serve(root: Path, socket_path: Path, allowed_uid: int, socket_gid: int, data
     parent=socket_path.parent.lstat()
     if not stat.S_ISDIR(parent.st_mode) or parent.st_uid!=os.geteuid() or parent.st_mode&0o022:
         raise ServiceError('unsafe socket parent')
-    if not excluded:raise ServiceError('exclusions cannot be empty')
     # systemd may reset RuntimeDirectory ownership between ExecStartPre and
     # ExecStart. The owner can safely assign this directory to a supplemental
     # group so the allowed peer can traverse it without making it writable.
