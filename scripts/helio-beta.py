@@ -174,7 +174,7 @@ def main():
     inspect=sub.add_parser("inspect"); inspect.add_argument("collection"); inspect.add_argument("id_json",help="exact ID encoded as JSON")
     apply_parser=sub.add_parser("apply"); apply_parser.add_argument("file",nargs="?",type=Path)
     run_parser=sub.add_parser("run"); run_parser.add_argument("--check",action="store_true")
-    commands=sub.add_parser("commands"); commands.add_argument("action",choices=("list","post")); commands.add_argument("--force",action="store_true")
+    commands=sub.add_parser("commands"); commands.add_argument("action",choices=("list","mention","delete")); commands.add_argument("target",nargs="?",help="mention: the command, e.g. \"match base submit\""); commands.add_argument("--channel",help="mention: channel or thread ID (default: the Test thread)")
     args=parser.parse_args()
     if args.command == "status":
         exposure=process_exposure()
@@ -212,9 +212,9 @@ def main():
         except Exception as error: raise Blocked(f"Read failed ({type(error).__name__}).") from None
     if args.command == "commands":
         import runpy
-        palette=runpy.run_path(str(Path(__file__).with_name("helio_beta_commands.py")))
-        try: return palette["main"](args.action,args.force)
-        except (palette["CommandsError"],OSError) as error: raise Blocked(str(error)) from None
+        mentions=runpy.run_path(str(Path(__file__).with_name("helio_beta_commands.py")))
+        try: return mentions["main"](args.action,args.target,args.channel)
+        except (mentions["CommandsError"],OSError) as error: raise Blocked(str(error)) from None
     if args.command == "run":
         import runpy
         runner=runpy.run_path(str(Path(__file__).with_name("helio_beta_run.py")))
