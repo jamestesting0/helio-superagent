@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Discord } from "./vendor/dori-mode/scripts/src/messenger/discord.ts";
 import { type Http, type HttpRequest, MessengerError, UnsafeMessageError } from "./vendor/dori-mode/scripts/src/messenger/http.ts";
-import { sendReply } from "./reply.ts";
+import { parseArgs, sendReply } from "./reply.ts";
 
 const target = { channel_id: "123456789012345678", message_id: "234567890123456789" };
 const clock = { now: () => 0, sleep: async () => {} };
@@ -58,4 +58,29 @@ test("replies suppress issue and pull request previews without altering existing
   const http: Http = async (request) => { requests.push(request); return { status: 200, headers: {}, body: '{"id":"3"}' }; };
   await sendReply(new Discord(http, clock, "fake"), target, "Issue https://github.com/jamestesting0/elo-bot/issues/12 and <https://github.com/jamestesting0/elo-bot/pull/9>.");
   expect(JSON.parse(String(requests[0]?.body)).content).toBe("Issue <https://github.com/jamestesting0/elo-bot/issues/12> and <https://github.com/jamestesting0/elo-bot/pull/9>.");
+});
+
+test("the covered and reviewed ID lists are parsed beside the three positional arguments", () => {
+  expect(parseArgs([target.channel_id, target.message_id, "answer", "--covers", "111, 222", "--seen", "333"])).toEqual({
+    channel_id: target.channel_id, message_id: target.message_id, text: "answer", covers: ["111", "222"], seen: ["333"],
+  });
+  expect(parseArgs([target.channel_id, target.message_id, "answer"])).toEqual({
+    channel_id: target.channel_id, message_id: target.message_id, text: "answer", covers: [], seen: [],
+  });
+  expect(parseArgs([target.channel_id, target.message_id, "t", "--covers", "111", "--covers", "222"])?.covers).toEqual(["111", "222"]);
+});
+
+test("a reply whose own text looks like a flag is still sent as text", () => {
+  expect(parseArgs([target.channel_id, target.message_id, "--covers"])?.text).toBe("--covers");
+});
+
+test.each([
+  { case: "no reply text", tail: [] },
+  { case: "a stray positional", tail: ["t", "extra"] },
+  { case: "a list with no IDs", tail: ["t", "--covers"] },
+  { case: "an empty list", tail: ["t", "--covers", ""] },
+  { case: "a non-numeric ID", tail: ["t", "--covers", "11,bad"] },
+  { case: "a positional after a list", tail: ["t", "--seen", "11", "extra"] },
+])("reply arguments with $case are rejected instead of guessed", ({ tail }) => {
+  expect(parseArgs([target.channel_id, target.message_id, ...tail])).toBeUndefined();
 });

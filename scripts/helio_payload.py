@@ -62,6 +62,7 @@ INBOUND_FILES = (
     "images.test.ts", "images.ts", "message-text.ts", "message-text.test.ts", "embed-images.test.ts", "inbound.ts", "lastseen.ts", "normal-flow.test.ts", "package.json", "policy-flow.test.ts",
     "recovery-flow.test.ts", "rest.ts", "watched-channels.ts",
     "fixtures/clock.ts", "links.test.ts", "preceding.ts", "preceding.test.ts", "turns.ts", "turns.test.ts", "turns-flow.test.ts",
+    "working.ts", "working.test.ts",
 )
 CHECKOUT_DOCS = ("README.md", "base-fingerprints.md", "bot-ui.md", "copy-style.md", "discord-qa.md")
 PLACEHOLDER = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")

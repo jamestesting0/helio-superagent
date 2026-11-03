@@ -28,6 +28,7 @@ import { DiscordRestError, discordRest } from "./rest.ts";
 import { TurnAssembler, type TurnMessage } from "./turns.ts";
 import { Preceding } from "./preceding.ts";
 import { Conversations, conversationTimeoutReporter } from "./conversations.ts";
+import { sweepWorking } from "./working.ts";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -43,7 +44,8 @@ const conversations = new Conversations(`${requireEnv("DORI_STATE_DIR")}/discord
 const reportConversationTimeouts = conversationTimeoutReporter(conversations, (line) => console.log(line));
 let cfg: FilterConfig;
 try {
-  cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user));
+  cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user),
+    (channel, user, id) => conversations.workingAnchor(channel, user, id));
   await validateChannelPolicy(cfg, discordRest(token), (message) => console.log(`INBOUND_WARN ${message}`));
 } catch (error) {
   if (!(error instanceof Error)) throw error;
@@ -276,6 +278,10 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
       const message = { ...record, ...(question_id ? { question_id } : {}) };
       const payload = JSON.stringify(message);
       if (delivery.refresh(msg.id, JSON.stringify(record), payload)) {
+        // A ping opens the sender's working window, so their follow-ups count as additions until Helio replies.
+        if (message.attention === "direct" && message.role !== "BOT_BUG_REPORT" && message.addition_to === undefined) {
+          conversations.openWorking(msg.channel_id, msg.author.id, msg.id, Date.now());
+        }
         if (backlog) backlogMessages.push(message);
         else turns.push(message);
         emitted = true;
@@ -368,8 +374,12 @@ enqueue("catch-up", async () => {
   }
   turns.replay(replayMessages);
   backlogCount += await catchUp();
-  reportConversationTimeouts();
-  setInterval(() => enqueue("conversation timeouts", async () => reportConversationTimeouts()), 10 * 60 * 1000).unref();
+  const upkeep = async () => {
+    reportConversationTimeouts();
+    await sweepWorking(conversations, delivery, rest, Date.now(), warn);
+  };
+  await upkeep();
+  setInterval(() => enqueue("conversation and 👀 upkeep", upkeep), 10 * 60 * 1000).unref();
 });
 
 const listener = new DiscordBotListener(client, {

@@ -5,17 +5,18 @@ import { cachedReads, discordRest } from "./rest.ts";
 import { sweepExpired } from "./expiry.ts";
 import { contextReplayAllowed } from "./context-replay.ts";
 import { Conversations } from "./conversations.ts";
+import { addEyes, finishWorking } from "./working.ts";
 
 const [action, stream, id, reason, ...extra] = process.argv.slice(2);
 const state = process.env.DORI_STATE_DIR;
 if (!state || (stream !== "inbound" && stream !== "context") ||
     (action !== "pending" && action !== "done" && action !== "irrelevant" && action !== "status" &&
-      action !== "accept" && action !== "check") ||
-    ((action === "accept" || action === "check") && stream !== "inbound") ||
+      action !== "accept" && action !== "check" && action !== "working") ||
+    ((action === "accept" || action === "check" || action === "working") && stream !== "inbound") ||
     (action !== "pending" && (!id || !/^[0-9]{1,30}$/.test(id))) ||
     (action === "pending" && id !== undefined) || extra.length ||
     (action === "irrelevant" ? stream !== "inbound" || !reason?.trim() || reason.length > 500 : reason !== undefined)) {
-  console.error("Usage: ack pending inbound|context OR ack done|status inbound|context <message_id> OR ack accept|check inbound <message_id> OR ack irrelevant inbound <message_id> <reason>; requires DORI_STATE_DIR");
+  console.error("Usage: ack pending inbound|context OR ack done|status inbound|context <message_id> OR ack accept|check|working inbound <message_id> OR ack irrelevant inbound <message_id> <reason>; requires DORI_STATE_DIR");
   process.exit(2);
 }
 const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
@@ -29,7 +30,8 @@ let policy: Promise<ReturnType<typeof filterConfig>> | undefined;
 function currentPolicy() {
   return policy ??= (async () => {
     if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
-    const cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user));
+    const cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user),
+      (channel, user, messageId) => conversations.workingAnchor(channel, user, messageId));
     cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
     await validateChannelPolicy(cfg, rest, warn);
     return cfg;
@@ -83,11 +85,33 @@ try {
     if (item) await authorized(item);
     delivery.irrelevant(id, reason);
     await cleanupAttachments(id, `${state}/attachments/${stream}`);
+    await finishWorking(conversations, rest, [id], Date.now(), warn);
     console.log(`ACK_IRRELEVANT stream=${stream} message_id=${id}`);
   } else if (action === "done" && id) {
     delivery.acknowledge(stream, id);
     await cleanupAttachments(id, `${state}/attachments/${stream}`);
+    if (stream === "inbound") await finishWorking(conversations, rest, [id], Date.now(), warn);
     console.log(`ACK_DONE stream=${stream} message_id=${id}`);
+  } else if (action === "working" && id) {
+    const item = delivery.pending("inbound").find((item) => item.id === id);
+    if (!item) throw new RangeError(`Unknown inbound delivery ${id}`);
+    const payload = JSON.parse(await authorized(item)) as { channel_id: string; author_id: string; role: string; scope: string };
+    const row = conversations.ensureWorking(payload.channel_id, payload.author_id, id);
+    let reaction: string;
+    if (payload.role === "BOT_BUG_REPORT" || payload.scope === "evidence-only") reaction = "skipped";
+    else if (row.closed_at !== null) reaction = "skipped-already-replied";
+    else if (row.reacted) reaction = "already";
+    else {
+      // Recorded first: a crash right after adding the reaction must still leave it to be cleaned up.
+      conversations.setReacted(id, true);
+      try { await addEyes(rest!, payload.channel_id, id); reaction = "added"; }
+      catch (error) {
+        conversations.setReacted(id, false);
+        warn(`could not add 👀 to message_id=${id}; continuing without it: ${String(error)}`);
+        reaction = "failed";
+      }
+    }
+    console.log(`ACK_WORKING stream=inbound message_id=${id} reaction=${reaction}`);
   } else if ((action === "accept" || action === "check") && id) {
     delivery.check(id);
     const item = delivery.pending("inbound").find((item) => item.id === id);

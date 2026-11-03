@@ -49,6 +49,7 @@ export function discordRest(token: string): Rest {
         continue;
       }
       if (!res.ok) throw new DiscordRestError(res.status, method, path, await res.text());
+      if (res.status === 204) return undefined as T;
       return (await res.json()) as T;
     }
   };

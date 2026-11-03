@@ -6,6 +6,7 @@ import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "./rest.ts";
 /** Channel trust never grants sender authority or adds a channel to the allowlist. */
 export function filterConfig(
   values: Readonly<Record<string, string | undefined>>, inConversation?: FilterConfig["inConversation"],
+  workingAnchor?: FilterConfig["workingAnchor"],
 ): FilterConfig {
   const required = (name: string) => {
     const value = values[name]?.trim();
@@ -46,6 +47,7 @@ export function filterConfig(
     issueReportChannels: csv("DORI_DISCORD_REPORT_CHANNELS"),
     bugReportSource,
     ...(inConversation ? { inConversation } : {}),
+    ...(workingAnchor ? { workingAnchor } : {}),
     ...(scopeCategory ? { scopeCategory } : {}),
     ignoredChannels: csv("DORI_DISCORD_IGNORED_CHANNELS"),
   };
