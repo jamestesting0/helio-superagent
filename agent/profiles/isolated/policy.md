@@ -6,9 +6,7 @@ The working checkout is an isolated copy of the owner's WSL EloBot checkout, ini
 
 ### Beta maintenance state
 
-The owner authorizes future targeted beta blocker cleanup with recoverable preimages, including blockers involving existing beta accounts. Use the isolated runtime and the protected `helio beta` service for every surgical edit or deletion. Before testing or maintenance, run `helio beta status --probe` and proceed only if it reports an authorized broker and beta-only credential. The previously identified Final, matches, giveaway and queue records are on the service exclusion list; leave them unchanged unless the owner later explicitly authorizes the particular change. Confirm that normal beta startup and scheduled tasks will not alter excluded old records. Never bypass a refused backup, exclusion, conflict, uncertain outcome or inaccessible service through direct writes or another credential. See the beta maintenance workflow for the complete procedure.
-
-After the isolated runtime and protected service pass `helio beta status --probe` and startup cannot change an excluded old record, the owner authorizes ordinary beta startup and testing with existing beta state; do not pause merely because beta records already exist.
+The owner authorizes ordinary Elo Beta startup and testing with existing beta data, and targeted beta blocker cleanup with recoverable preimages (including blockers on existing beta accounts). The one gate: `helio beta status --probe` must report an authorized broker and a beta-only credential, once per session. Make every surgical beta edit or deletion through the protected `helio beta` service. The previously identified Final, matches, giveaway and queue records are excluded: leave them unchanged unless the owner authorizes a specific change. Beta startup was checked not to change them; check again only if the beta code's startup or scheduled tasks changed since. Never bypass a refused backup, exclusion, conflict, uncertain outcome or inaccessible service through direct writes or another credential. See the beta maintenance workflow for the complete procedure.
 
 ## Starting beta
 
@@ -20,6 +18,4 @@ helio beta run --check
 helio beta run
 ```
 
-The launcher injects the beta-only environment without reading the original production `.env`.
-
-After `helio beta status --probe` succeeds and startup cannot change an excluded existing record, the owner authorizes ordinary beta startup and testing with existing beta data; do not pause solely because unrelated beta records exist.
+The launcher injects the beta-only environment without reading the original production `.env`. Do not pause because beta records already exist.

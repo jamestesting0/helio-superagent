@@ -93,13 +93,13 @@ If a server-folder click reports `target_covered`, inspect the page and use Disc
 
 Discord's message composer is a structured Slate editor. Do not use BrowserSkill `fill` on it: in the observed session it replaced the editor's child structure with plain text, so Discord did not open the command picker. Focus the empty composer, send `/` as a real keypress and observe the picker before typing the command name with keypresses. Choose the explicit **Elo Beta** result. If the editor has already been damaged, reload only after ensuring there is no user-owned unsent draft; recheck the channel and account afterward. `fill` worked for the ordinary quick-switcher search field.
 
-Helio's bot is not yet in the main server. Its REST API returning 403 for that server/channel is expected and is not a prerequisite or failure of browser QA. Use the authorized real test accounts to interact with Elo Beta. Do not try to solve this by inviting Helio, changing permissions, reading browser tokens, or using a different bot token. Only a missing permission of the actual test user or Elo Beta blocks the affected live scenario.
+Helio's bot is in the main server but cannot read the test channel. Its REST API returning 403 for that channel is expected and is not a prerequisite or failure of browser QA. Use the authorized real test accounts to interact with Elo Beta. Do not try to solve this by inviting Helio, changing permissions, reading browser tokens, or using a different bot token. Only a missing permission of the actual test user or Elo Beta blocks the affected live scenario.
 
 ## 4. Verify accounts and permissions
 
 Inventory the supplied QA accounts through Discord's visible account UI, without reading credentials. Record each account's visible identity, confirmed test role, and access to the permitted channel. The older guide mentions Crystal Wolf, Tergum, and Dominik, but that is not proof of current login or roles.
 
-Use the account switcher only when available and authorized. Verify identity before every participant action and after every switch. Tabs in one profile are not independent login sessions; recheck affected tabs after switching.
+Use the account switcher only when available and authorized. Verify the active account after every switch and before the first action in each tab. Tabs in one profile are not independent login sessions; recheck affected tabs after switching.
 
 Use at least two distinct participants for cross-user behavior and a verified manager/non-manager pair where the command has permission gates. A third nonparticipant is needed for scenarios such as betting on other players' matches. Do not grant permissions just to make a test pass. Ask the owner to complete missing logins/verification.
 
@@ -192,7 +192,7 @@ These are source-derived checkpoints, not live test results. Re-read the named f
 
 Current routing constants also require attention: `COMMAND_CHANNEL=1220331873079922810` and `MATCH_CHANNEL={{DORI_DISCORD_CONTEXT_EXCLUDED}}`. They are not the user's primary slash-test channel. The code read does not establish their current category membership. Verify beta side-effect routing before executing the queue flow; do not assume typing `/match queue` in the right channel confines its DMs, fallback messages, or generated thread there.
 
-On November 2, 2026, the signed-in Tergum account's Discord channel list placed both configured channels under the permitted `{{HELIO_TEST_CATEGORY}}` competitive category. Recheck before later runs. Other destinations, including the beta state's dashboard messages and any automated jobs, need separate checks. Normal `/match war start` and `/match start` use real configured clans even though they do not themselves invoke the automatic Helper hosting job; select an owner-designated test clan, not an arbitrary available clan.
+On November 2, 2026, the signed-in Tergum account's Discord channel list placed both configured channels under the permitted `{{HELIO_TEST_CATEGORY}}` competitive category. Recheck once per test session. Other destinations, including the beta state's dashboard messages and any automated jobs, need separate checks. Normal `/match war start` and `/match start` use real configured clans even though they do not themselves invoke the automatic Helper hosting job; select an owner-designated test clan, not an arbitrary available clan.
 
 ### Example: two participants queue, create a match, then a helper acts
 
