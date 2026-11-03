@@ -12,6 +12,16 @@ Helio session starts in that checkout, so the lead and all lanes pick it up.
 | `[native].categories.deep-low` | `chatgpt-subscription/gpt-6.1-terra`, reasoning high | Model for routine delegated work inside a session |
 | `[native].categories.deep-high` | `chatgpt-subscription/gpt-6.1-sol`, reasoning high | Model for hard delegated decisions |
 
+## settings.json: keep Helio's monitors awake
+
+`settings.json` is copied to `$HELIO_PROJECT/.omo/settings.json` (and
+`knowledge-setup.py` re-adds the two values at every `helio start`). By
+default omo spaces a persistent watch to 12 wakes an hour and pauses a
+monitor after 5 wakes in a row with no human input. Helio is woken only by
+its monitors, so those defaults made it go quiet after a few Discord
+messages. Helio raises them to the maximum (3600 wakes an hour, budget 100)
+and its lead re-arms any monitor omo still pauses.
+
 ## Where each model is chosen
 
 | Session | Set in |

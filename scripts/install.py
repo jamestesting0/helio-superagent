@@ -46,6 +46,8 @@ def plan(home: Path, project: Path, profile: str) -> list[tuple[Path, bytes, int
         *((base / "project-docs" / name, (ROOT / "elobot-checkout/docs" / name).read_bytes(), 0o644)
           for name in PAYLOAD["CHECKOUT_DOCS"]),
         (project / ".omo/omo.jsonc", (ROOT / "omo/omo.jsonc").read_bytes(), 0o644),
+        *(((project / ".omo/settings.json", (ROOT / "omo/settings.json").read_bytes(), 0o644),)
+          if not (project / ".omo/settings.json").exists() else ()),
     ]
     if not (project / "AGENTS.md").exists():
         files.append((project / "AGENTS.md", (ROOT / "elobot-checkout/AGENTS.md").read_bytes(), 0o644))

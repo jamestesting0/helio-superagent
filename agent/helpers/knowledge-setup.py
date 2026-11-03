@@ -38,6 +38,22 @@ def copy_docs(source: Path, destination: Path, conflicts: list[str]) -> None:
         conflicts.append(f"expected regular file or directory: {source}")
 
 
+MONITOR_SETTINGS = {"monitorWakeBudget": 100, "monitorWakesPerHour": 3600}
+
+
+def ensure_monitor_settings(path: Path) -> None:
+    # omo pauses a monitor after a few monitor-only wakes and spaces wakes to
+    # 12 an hour by default; Helio is woken only by monitors, so raise both.
+    settings = json.loads(path.read_text()) if path.is_file() else {}
+    terminal = settings.setdefault("terminal", {})
+    if all(terminal.get(key, 0) >= value for key, value in MONITOR_SETTINGS.items()):
+        return
+    terminal.update({key: max(terminal.get(key, 0), value) for key, value in MONITOR_SETTINGS.items()})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2) + "\n")
+    print(f"KNOWLEDGE_MONITOR_SETTINGS {path}")
+
+
 def main() -> None:
     home = Path.home()
     project = Path(os.environ.get("HELIO_PROJECT", str(home / "PythonProjects/elo-bot")))
@@ -54,6 +70,8 @@ def main() -> None:
         sys.exit(f"KNOWLEDGE_ERROR expected memory.enabled=true and memory.agent=EloBot in {config_path}")
     if memory.get("sync", {}).get("enabled") is not False:
         sys.exit(f"KNOWLEDGE_ERROR keep memory.sync.enabled=false for this local alias in {config_path}")
+
+    ensure_monitor_settings(project / ".omo/settings.json")
 
     identity = "elobot-" + hashlib.sha256(b"EloBot").hexdigest()[:8]
     target = memory_home / "agents/elobot-ec289b4c"
