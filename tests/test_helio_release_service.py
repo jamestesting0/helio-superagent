@@ -12,7 +12,18 @@ class ReleaseTests(unittest.TestCase):
   self.state={'ok':True,'clean':True,'head':OLD,'tip':REV,'branch':'main','update_on_start':True,'start_file':'main.py','expected_service':True,'active':True,'restart_permission':True}
   self.request={'action':'restart','channel_id':CHANNEL,'message_id':MESSAGE,'revision':REV}
  def fetch(self,path,token):
+  if path=='/users/@me':return {'id':'777000000000000001'}
   return dict(self.message) if '/messages/' in path else {'id':CHANNEL,'type':0}
+ def test_natural_restart_request_pinned_by_push_time(self):
+  pushed=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=5)).isoformat()
+  self.message['content']='ok go ahead and restart the bot'
+  activity=lambda repo,branch:[{'after':REV,'timestamp':pushed}]
+  self.assertEqual(M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=activity),TRUSTED)
+  self.message['content']='nice'
+  with self.assertRaises(M['Refused']):M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=activity)
+  self.message['content']='restart it'
+  later=lambda repo,branch:[{'after':REV,'timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat()}]
+  with self.assertRaises(M['Refused']):M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=later)
  def test_trusted_confirmation_and_owner_confirmation(self):
   self.assertEqual(M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch),TRUSTED)
   self.message['author']={'id':OWNER}

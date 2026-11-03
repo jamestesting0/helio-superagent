@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Narrow, Discord-confirmed Oracle restart broker for isolated Helio."""
-import argparse, datetime, json, os, re, socket, sqlite3, stat, struct, subprocess, sys, urllib.error, urllib.request
+import argparse, datetime, json, os, re, runpy, socket, sqlite3, stat, struct, subprocess, sys, urllib.error, urllib.request
 from pathlib import Path
 
 SCOPE='/system.slice/helio-isolated.scope'
 SHA=re.compile(r'^[0-9a-f]{40}$')
 ID=re.compile(r'^[0-9]{5,30}$')
 MAX_REQUEST=32768
+APPROVAL=runpy.run_path(str(Path(__file__).resolve().parent/'helio_approval.py'))
 
 class Refused(Exception):pass
 
@@ -21,7 +22,7 @@ def get_json(url,token):
         with urllib.request.urlopen(req,timeout=12) as response:return json.load(response)
     except (OSError,ValueError,urllib.error.URLError):raise Refused('Discord verification failed') from None
 
-def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now=None):
+def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now=None,activity=None):
     if not ID.fullmatch(channel_id) or not ID.fullmatch(message_id) or not SHA.fullmatch(revision):raise Refused('invalid confirmation parameters')
     token=config['token']
     message=fetch('/channels/'+channel_id+'/messages/'+message_id,token)
@@ -30,12 +31,12 @@ def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now
         raise Refused('confirmation identity is invalid')
     author_id=author.get('id','')
     if author_id!=config['owner'] and author_id not in config['trusted']:raise Refused('sender is not authorized')
-    if message.get('content','').strip().lower()!='approve restart elobot '+revision:raise Refused('confirmation does not match the requested revision')
+    repo=config.get('repo','jamestesting0/elo-bot')
+    bot_id=str(fetch('/users/@me',token).get('id',''))
     try:
-        timestamp=datetime.datetime.fromisoformat(message['timestamp'].replace('Z','+00:00'))
-        age=((now or datetime.datetime.now(datetime.timezone.utc))-timestamp).total_seconds()
-    except (KeyError,TypeError,ValueError):raise Refused('invalid confirmation timestamp') from None
-    if age < -30 or age > 900:raise Refused('confirmation is too old or has a future timestamp')
+        APPROVAL['check_intent']('restart',message,bot_id,repo,None,now=now)
+        APPROVAL['check_revision'](revision,message,repo,'main',**({'activity':activity} if activity else {}))
+    except APPROVAL['Refused'] as error:raise Refused(str(error)) from None
     current=fetch('/channels/'+channel_id,token)
     if str(current.get('id',''))!=channel_id:raise Refused('channel identity changed')
     permitted=current.get('type')==1
