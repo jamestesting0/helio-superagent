@@ -208,7 +208,7 @@ dori close <key>   # close a lane whose Done signals are met
 
 ## Questions and decisions
 
-Helio asks through Discord. Worker questions are stored locally until sent and answered; reply directly to the question message. Owner-only decisions go to the owner DM. Use `helio question list` to inspect outstanding questions. A delivery error or uncertain send stays pending instead of falling back to a terminal question.
+Helio asks through Discord. Worker questions are stored locally until sent and answered; reply directly to the question message. Questions a trusted user can decide go to the trusted staff chat (`HELIO_STAFF_CHAT`) and ping you and every trusted user; only your or a trusted user's reply counts as the answer. Only decisions that only you can make (production credentials, the production database, deploys, policy and permission changes, money) go to your DM. Use `helio question list` to inspect outstanding questions. A delivery error or uncertain send stays pending instead of falling back to a terminal question.
 
 ## Beta database maintenance
 
