@@ -212,6 +212,8 @@ Helio asks through Discord. Worker questions are stored locally until sent and a
 
 ## Beta database maintenance
 
-**Owner (setup incomplete):** `helio beta status --probe` checks effective MongoDB privileges without reading or changing records; `helio beta plan FILE` validates an offline targeted-operation plan. These checks do not establish process isolation or create backups. The `apply` command is deliberately disabled until the separate beta-only database identity, hard process isolation, and protected backups are provisioned and verified. Do not change the already identified Final/match and giveaway blockers unless the owner explicitly requests a later change.
+No Elo Beta record is protected. A live beta test needs only a request from you or a trusted user; staff cannot start one. Helio may create, change or delete any `elo_beta` data a test needs and leaves it changed afterwards unless asked.
 
-**Isolated:** run `helio beta status --probe` inside the isolated runtime before testing. Use `helio beta inspect` and `helio beta plan FILE` to prepare an exact record, then `helio beta apply FILE` for a protected single-record edit or deletion. Existing protected records are excluded. The owner can inspect or export verified preimages with `helio-backup`; see `beta-maintenance-workflow.md` for the full procedure and uncertainty handling.
+**Isolated (where beta tests run):** `helio beta run` starts Elo Beta with the beta-only credential. Single-record edits go through `helio beta apply FILE`, which keeps a BSON backup you can list, verify or export with `helio-backup`. Larger changes (resetting a queue, clearing old matches) use PyMongo directly with the beta credential, limited to `elo_beta`. `/etc/helio-beta-service/exclusions.json` holds the service's protected-record list; it is empty (`"records": []`), and adding an entry there would protect that record again.
+
+**Owner profile:** reads beta data only, because it runs as your account, which can also reach production credentials. Beta tests run in the isolated runtime.

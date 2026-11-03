@@ -109,7 +109,7 @@ Read `~/.dori/elobot/beta-maintenance-workflow.md` before any beta database prep
 
 ## 5. Prepare labelled beta fixtures
 
-Inspect existing beta state first. Once the prerequisites in work-policy.md are verified, the owner permits targeted changes to a specific beta record blocking a test after a recoverable preimage and relationship/side-effect review, including old matches. Leave the already identified Final/match and giveaway blockers unchanged unless the owner explicitly requests a later change; do not automatically restore stale blockers after a future test. Create the smallest fixture needed and record IDs. Preserve unrelated state and do not equate a database rollback with reversing Discord effects.
+Inspect existing beta state first. No beta record is protected: if existing data blocks a test, change or remove it (see `beta-maintenance-workflow.md`) and carry on; do not stop to ask because beta records already exist. Record the IDs you create or change, and remember that a database change does not undo Discord effects.
 
 For bugs, reproduce the failure before changing its owner and capture the failed outcome plus relevant state/logs. For features, record the approved acceptance criteria. Seed through existing test/setup paths only when necessary; clearly distinguish seeded setup from actions exercised through Discord.
 

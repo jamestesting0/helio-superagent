@@ -1,20 +1,25 @@
 # Elo Beta maintenance workflow
 
-## Boundary and standing authorization
+## Boundary
 
-The owner authorizes careful, targeted cleanup of future beta blockers without asking solely because beta data already exists. `elo_beta` is the only database for beta work. Use only the isolated Helio runtime and the beta credential; never use production credentials or the `elo_bot` database. Run `helio beta status --probe` before testing or maintenance; proceed only when it reports `writes_enabled: true`, the beta-only credential and an authorized broker. If it fails, do not work around it with another environment, process, credential, SSH, browser or direct database write.
+`elo_beta` is the only database for beta work, and all of it is available: no beta record is protected. A live beta test needs only a request from the owner or a currently trusted user. Never use production credentials, the original `.env` or the `elo_bot` database. `helio beta run` and `helio beta status --probe` confirm the beta-only credential automatically; if they report a production or non-beta credential, stop and tell the owner.
 
-The existing Final, matches, giveaway and queue entries captured during setup are excluded from the standing authorization. The protected service refuses surgical operations on those exact existing records; do not change them by another route unless the owner later specifically authorizes it and the owner updates the protected exclusion list. Ordinary beta startup and scheduled tasks can also change data: before startup, check whether they would affect an excluded old record or produce an external effect outside the test scope. If so, stop that scenario and ask the owner; do not bypass the exclusion through normal bot startup.
+## Starting a test
 
-Use the protected service for every surgical database edit or deletion. Direct, scoped PyMongo reads of relevant records are allowed; direct PyMongo writes for maintenance bypass backups and are prohibited. The beta application may perform its ordinary test operations only after the above checks; launch it with `helio beta run` from the isolated checkout or a Helio worktree. `helio beta run --check` validates configuration without starting the bot. A beta database backup does not undo Discord messages, announcements, role changes, CoC/Helper calls, or other external effects.
+1. `cd "$HELIO_PROJECT"`, then `helio beta run --check` and `helio beta run` in a persistent background terminal.
+2. Set up whatever state the test needs. Prefer the bot's own commands when they produce it; otherwise change the data directly (below).
+3. Run the real test and report the result with evidence.
 
-## Find and plan a specific change
+## Changing beta data
 
-1. Identify the requested test, relevant account, exact blocking record and related Final, match, participant, queue and publication state. Read the minimum records needed and understand their external effects. Existing beta data alone is not a blocker or a reason to ask.
-2. Prefer the normal beta workflow when it safely produces the required state. Otherwise, use `helio beta inspect COLLECTION ID_JSON` to fetch a full exact-ID preimage and prepare one narrow operation. Use JSON Extended JSON for ObjectIds, for example `'{"$oid":"24-hex-characters"}'`.
-3. Write a private JSON plan containing exactly one operation. `database` must be `elo_beta`; include a concise `purpose`, `collection`, exact `id`, `action` (`update` or `delete`), `reason`, and the complete `before` document with the same `_id`. Updates use `set` and/or `unset` field paths. Never use bulk selectors, change `_id`, drop databases or collections, or alter unrelated records. Run `helio beta plan FILE` to validate it offline.
-4. Run `helio beta apply FILE`. The root-protected service reads the actual preimage, checks it matches the plan, durably stores the complete BSON, and performs an exact-ID atomic compare-and-set. It enforces the excluded-record list and generates an operation receipt. Report the operation ID and result without posting private documents or credentials.
-5. If the result is `conflict`, inspect the record again and make a fresh plan only if still appropriate. If the result is `uncertain`, the client disconnects, or the service refuses or fails after a request, do not retry blindly: preserve the operation ID and ask the owner to inspect the protected archive and current state. Do not automatically restore an old blocker after testing.
-6. Verify the new beta state and run the test. Retain the operation ID and test evidence. Ask via Discord only when the affected records or external effects cannot be bounded, a protected old record must change, a backup fails, an outcome is uncertain, or a genuine product decision remains.
+- One record: `helio beta inspect COLLECTION ID_JSON` (ObjectIds as `'{"$oid":"24-hex-characters"}'`), write a plan with one `update` or `delete` operation, `helio beta plan FILE`, then `helio beta apply FILE`. The service backs up the record before changing it, so this is the quick path with an undo.
+- Many records or structural changes (resetting a queue, clearing old matches, removing a stale final or giveaway): use PyMongo directly with the beta credential from `~/.dori/elobot/beta-mongo.env`, limited to the `elo_beta` database.
+- Leave changed data as it is after the test unless someone asks for it back. On `conflict`, re-read the record and retry with a fresh plan. On an uncertain result, re-read the current state before deciding what to do next.
 
-The owner can run `helio-backup list`, `helio-backup verify OPERATION_ID`, or `helio-backup export OPERATION_ID` from their normal WSL shell. Export writes a verified BSON preimage and manifest into the private `~/helio-beta-recovery` directory. Restoration is an owner-controlled, conflict-aware operation; exporting a preimage does not restore it automatically.
+## External effects
+
+A database change or backup cannot undo Discord messages, announcements, role changes or CoC/Helper calls. Keep beta output in the test channels; Elo Beta's inactive-thread cleanup scans the shared match channel, so check that routing once per session.
+
+## Backups
+
+The owner can run `helio-backup list`, `helio-backup verify OPERATION_ID` or `helio-backup export OPERATION_ID` from their normal WSL shell to recover a record changed through `helio beta apply`.

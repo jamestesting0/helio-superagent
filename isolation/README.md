@@ -19,5 +19,7 @@ host commands `helio deploy`, `helio restart` and `helio version`. It never buil
 sandbox or touches the firewall, so it is safe while Helio runs, and it writes into Helio's home
 only through link-refusing directory handles or as Helio's own user.
 
+Helio's sandbox mounts the beta and release service sockets when it starts, and systemd recreates them on every service restart. After `systemctl restart helio-beta-maintenance` or `helio-release`, restart Helio fully (stop it, then `helio start`); otherwise `helio beta status --probe` reports `backup_service: not running` and beta launches fail.
+
 `helio update` never touches any of these. Reinstall them by hand with `sudo`
 when they change.

@@ -14,7 +14,7 @@ Installed runbooks live in `~/.dori/elobot/docs/`.
 - [Discord command QA](discord-qa-workflow.md): beta launch, browser testing,
   multi-account scenarios, evidence and cleanup. Shared by both profiles; the
   profile-specific beta start commands are in work-policy.md under "Starting beta".
-- Beta maintenance (`beta-maintenance-workflow.md`): protected record maintenance,
+- Beta maintenance (`beta-maintenance-workflow.md`): changing beta data (no record is protected),
   backups and conflict handling. Per profile:
   [owner](../profiles/owner/runbooks/beta-maintenance-workflow.md),
   [isolated](../profiles/isolated/runbooks/beta-maintenance-workflow.md).
