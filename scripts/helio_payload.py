@@ -56,10 +56,12 @@ INBOUND_FILES = (
     "ack.ts", "archived-threads.ts", "archived-threads.test.ts", "authorization.ts",
     "bug-reports.test.ts", "bun.lock", "catchup.test.ts", "catchup.ts",
     "channel-policy.test.ts", "context-pending.test.ts", "context-replay.ts", "expiry.ts", "expiry.test.ts",
+    "conversations.ts", "conversations.test.ts", "conversation.ts", "conversation.test.ts",
     "context.ts", "learning-context.test.ts", "learning-scope.ts", "learning-scope.test.ts", "delivery.test.ts", "delivery.ts", "filter.test.ts", "filter.ts",
     "fixtures/discord.ts", "flow.test.ts", "forwarded.test.ts", "forwarded.ts", "reply-context.ts", "reply-context.test.ts", "question-answer.ts", "question-answer.test.ts",
-    "images.test.ts", "images.ts", "inbound.ts", "lastseen.ts", "normal-flow.test.ts", "package.json", "policy-flow.test.ts",
+    "images.test.ts", "images.ts", "message-text.ts", "message-text.test.ts", "embed-images.test.ts", "inbound.ts", "lastseen.ts", "normal-flow.test.ts", "package.json", "policy-flow.test.ts",
     "recovery-flow.test.ts", "rest.ts", "watched-channels.ts",
+    "fixtures/clock.ts", "links.test.ts", "preceding.ts", "preceding.test.ts", "turns.ts", "turns.test.ts", "turns-flow.test.ts",
 )
 CHECKOUT_DOCS = ("README.md", "base-fingerprints.md", "bot-ui.md", "copy-style.md", "discord-qa.md")
 PLACEHOLDER = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")

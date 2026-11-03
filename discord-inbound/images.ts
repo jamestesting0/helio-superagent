@@ -29,9 +29,28 @@ type FileKind = ImageKind | "text";
 
 class ImageRejected extends Error {}
 
-/** Removes explicit URL tokens, including Discord/Markdown-wrapped URLs. */
-export function omitLinks(text: string): string {
+function omitAllLinks(text: string): string {
   return text.replace(/(?:\b(?:https?|ftp|file|data|javascript):[^\s<>"`]*|\bwww\.[^\s<>"`]*)/gi, "[link omitted]");
+}
+
+/** Links into the configured repository stay readable (PRs and issues as `repo#N` references); all others are omitted. */
+export function omitLinks(text: string): string {
+  const repo = process.env.HELIO_GITHUB_REPO;
+  if (!repo || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repo)) return omitAllLinks(text);
+  return text.replace(/(<?)(\b(?:https?|ftp|file|data|javascript):[^\s<>"`]*|\bwww\.[^\s<>"`]*)(>?)/gi, (_, open: string, url: string, close: string) => {
+    const kept = repositoryLink(url, repo);
+    if (kept === undefined) return `${open}[link omitted]${close}`;
+    return kept === url ? `${open}${url}${close}` : kept;
+  });
+}
+
+// Only https://github.com/<repo> itself or a path under it; hosts, other repos and lookalike names never match.
+function repositoryLink(url: string, repo: string): string | undefined {
+  const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:([/?#])([^\\]*))?$/i.exec(url);
+  if (!match || match[1]?.toLowerCase() !== repo.toLowerCase()) return undefined;
+  const item = match[2] === "/" ? /^(pull|issues)\/([0-9]+)(?:[/?#]|$)/i.exec(match[3] ?? "") : null;
+  if (!item) return url;
+  return `${repo}#${item[2]} (${item[1]?.toLowerCase() === "pull" ? "pull request" : "issue"})`;
 }
 
 function mimeKind(value: string | null | undefined): ImageKind | undefined {
@@ -206,7 +225,7 @@ export async function prepareAttachments(
     } catch (error) {
       if (!(error instanceof Error)) throw error;
       blocked.push({
-        name: omitLinks(item.filename).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "").slice(0, 200),
+        name: omitAllLinks(item.filename).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "").slice(0, 200),
         reason: error instanceof ImageRejected ? error.message : "Attachment download, decoding or storage failed",
       });
     }

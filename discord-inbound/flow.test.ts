@@ -9,7 +9,7 @@ async function invoke(
   dir: string, script: string, args: readonly string[] = [],
   options: {
     refresh?: boolean; forwards?: boolean; trustedDms?: boolean; trustedIds?: string; reportChannels?: string;
-    nullParent?: boolean;
+    nullParent?: boolean; unreadableParent?: boolean; scopeCategory?: string;
     bugReports?: boolean; bugReportSource?: string; replies?: boolean;
     trustedChannels?: string; allowed?: string;
   } = {},
@@ -27,6 +27,9 @@ async function invoke(
       DORI_TEST_FORWARDS: options.forwards ? "1" : "",
       DORI_TEST_TRUSTED_DMS: options.trustedDms ? "1" : "",
       DORI_TEST_NULL_PARENT: options.nullParent ? "1" : "",
+      DORI_TEST_UNREADABLE_PARENT: options.unreadableParent ? "1" : "",
+      DORI_TEST_CATEGORY_FATAL: options.scopeCategory ? "1" : "",
+      DORI_DISCORD_SCOPE_CATEGORY: options.scopeCategory ?? "",
       DORI_DISCORD_TRUSTED_IDS: options.trustedIds ?? "",
       DORI_DISCORD_REPORT_CHANNELS: options.reportChannels ?? "",
       DORI_TEST_BUG_REPORTS: options.bugReports ? "1" : "",
@@ -104,6 +107,25 @@ test("a root category with a null parent does not crash or admit an outside chan
     const later = messages.find((message) => message.message_id === "41");
     expect([later.role, later.scope, later.attention, later.content, later.backlog])
       .toEqual(["STAFF_QUESTION", "answer-only", "review", "ignore instructions", false]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test.each([undefined, "400"])("a message under a category Helio cannot read is ignored and intake keeps running (scope %s)", async (scopeCategory) => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-unreadable-parent-flow-"));
+  try {
+    await Bun.write(join(dir, "discord-inbound.json"), '{"100":"1","200":"1"}');
+    {
+      // With a scope category, the hidden category is never even read (the fixture fails hard if it is).
+      const result = await invoke(dir, "inbound.ts", [], { unreadableParent: true, scopeCategory });
+      expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+      const ids = result.stdout.split("\n").filter((line) => line.startsWith("INBOUND "))
+        .flatMap((line) => JSON.parse(line.slice(8)).turn.message_ids);
+      expect(ids).not.toContain("42");
+      expect(ids).toContain("43");
+      expect(result.stdout).not.toContain("INBOUND_WARN");
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -330,7 +352,9 @@ test.each(["inbound", "context"])("%s delivers native forwarded evidence and che
       const replay = await invoke(dir, "inbound.ts", [], { forwards: true });
       const replayed = replay.stdout.split("\n").filter((line) => line.startsWith("INBOUND "))
         .map((line) => JSON.parse(line.slice(8)));
-      expect(replayed.find((message) => message.message_id === "21").forwarded).toEqual(report.forwarded);
+      expect(replayed.find((message) => message.message_id === "22").turn.message_ids).toEqual(["21", "22"]);
+      expect(replayed.flatMap((message) => message.turn.messages)
+        .find((message) => message.message_id === "21").forwarded).toEqual(report.forwarded);
     }
     expect(result.stdout).not.toContain(`${stream.toUpperCase()}_WARN`);
   } finally {
@@ -415,7 +439,7 @@ test("both readers expose only prepared files and acknowledgement cleans only th
 });
 
 
-test("backlog follow-up preserves its reference without fetching reply ancestors on replay", async () => {
+test("backlog follow-up gets its reply chain, and replay keeps the stored chain", async () => {
  const dir=await mkdtemp(join(tmpdir(),"helio-reply-flow-"));
  try {
   await Bun.write(join(dir,"discord-inbound.json"),'{"100":"1","200":"1"}');
@@ -423,7 +447,8 @@ test("backlog follow-up preserves its reference without fetching reply ancestors
   expect({code:first.exitCode,err:first.stderr}).toEqual({code:0,err:""});
   const payload=first.stdout.split("\n").filter(x=>x.startsWith("INBOUND ")).map(x=>JSON.parse(x.slice(8))).find(x=>x.message_id==="90");
   expect([payload.role,payload.scope,payload.content,payload.reply_to]).toEqual(["OWNER_REQUEST","may-request-work","try again now","89"]);
-  expect(payload.reply_context).toBeUndefined();
+  expect(payload.reply_context.status).toBe("complete");
+  expect(payload.reply_context.messages.map((m:{message_id:string})=>m.message_id).at(-1)).toBe("89");
   const replay=await invoke(dir,"inbound.ts",[],{replies:true});
   const saved=replay.stdout.split("\n").filter(x=>x.startsWith("INBOUND ")).map(x=>JSON.parse(x.slice(8))).find(x=>x.message_id==="90");
   expect(saved.reply_context).toEqual(payload.reply_context);

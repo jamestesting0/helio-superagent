@@ -1,6 +1,32 @@
 import { mock, spyOn } from "bun:test";
 import { EventEmitter } from "node:events";
 import sharp from "sharp";
+import { FakeClock } from "./clock.ts";
+
+const turnModule = await import("../turns.ts");
+const turnClock = new FakeClock(Date.parse("2026-11-02T12:00:00Z"));
+mock.module("../turns.ts", () => ({
+  ...turnModule,
+  TurnAssembler: class extends turnModule.TurnAssembler {
+    constructor(emit: ConstructorParameters<typeof turnModule.TurnAssembler>[0],
+      options: ConstructorParameters<typeof turnModule.TurnAssembler>[1] = {}) {
+      super(emit, { ...options, clock: turnClock });
+    }
+  },
+}));
+process.once("beforeExit", () => {
+  if (process.env.DORI_TEST_TURNS === "crash") process.exit(0);
+  turnClock.advance(90_000);
+});
+if (process.env.DORI_TEST_TURNS) {
+  const log = console.log;
+  console.log = (...args: unknown[]) => {
+    if (typeof args[0] === "string" && args[0].startsWith("INBOUND ")) {
+      log(`TEST_TURN_CLOCK ${turnClock.now()}`);
+    }
+    log(...args);
+  };
+}
 
 if (process.env.DORI_TEST_PREPARE_FAILURE === "1") {
   const body = await import("../forwarded.ts");
@@ -14,7 +40,14 @@ if (process.env.DORI_TEST_PREPARE_FAILURE === "1") {
 }
 
 const now = Date.parse("2026-11-02T12:00:00Z");
-Date.now = () => now;
+Date.now = turnClock.now;
+const turnMessages = [1000, 1001, 1002, 1003].map((id) => ({
+  id: String(id), channel_id: "100", guild_id: "300",
+  author: { id: "99", username: "owner" }, attachments: [],
+  content: id < 1002 ? `Context https://github.com/jamestesting0/elo-bot/pull/${id}` : "<@88>",
+  timestamp: new Date(now + (id - 1002) * 1000).toISOString(),
+  ...(id === 1003 ? { message_reference: { message_id: "999" } } : {}),
+}));
 let channel100Reads = 0;
 if (process.env.DORI_TEST_REFRESH === "1") {
   let refreshes = 0;
@@ -28,7 +61,8 @@ const messages = [11, 10].map((id) => ({
   id: String(id), channel_id: "100", guild_id: "300",
   author: { id: "99", username: "owner" }, content: `message ${id}`,
   mentions: id === 10 ? [{ id: "88" }] : [],
-  timestamp: new Date(now).toISOString(),
+  // Existing scenarios represent separate requests, not one burst.
+  timestamp: new Date(now - (id === 10 ? 122_000 : 61_000)).toISOString(),
   attachments: id === 10 ? [{
     filename: "photo.png", url: "https://cdn.discordapp.com/attachments/100/500/photo.png", content_type: "image/png",
   }] : [
@@ -36,6 +70,20 @@ const messages = [11, 10].map((id) => ({
     { filename: "program.exe", url: "https://cdn.discordapp.com/attachments/100/502/program.exe", content_type: "application/octet-stream" },
   ],
 }));
+const conversationHistory = Array.from({ length: 12 }, (_, index) => ({
+  id: String(60 + index), channel_id: "100", guild_id: "300",
+  author: { id: "66", username: "bystander" }, content: `history ${index}`,
+  timestamp: new Date(now - (process.env.DORI_TEST_CONVERSATIONS === "fresh" || index >= 10 ? 60_000 : 60 * 60 * 1000)).toISOString(),
+}));
+const conversationMessages = [
+  { id: "80", author: { id: "99", username: "owner" }, content: "initial details" },
+  { id: "81", author: { id: "88", username: "Helio", bot: true }, content: "What happened next?", message_reference: { message_id: "80" } },
+  { id: "82", author: { id: "99", username: "owner" }, content: "follow-up", message_reference: { message_id: "81" } },
+  { id: "83", author: { id: "88", username: "Helio", bot: true }, content: "anchor reply", message_reference: { message_id: "9" } },
+  { id: "84", author: { id: "88", username: "Helio", bot: true }, content: "author reply", message_reference: { message_id: "8" }, referenced_message: { author: { id: "99" } } },
+  { id: "85", author: { id: "88", username: "Helio", bot: true }, content: "unrelated" },
+  { id: "86", author: { id: "77", username: "other" }, content: "not in conversation" },
+].map((entry) => ({ ...entry, channel_id: "100", guild_id: "300", timestamp: new Date(now).toISOString(), attachments: [] }));
 const directMessages = {
   "200": [{ id: "30", channel_id: "200", author: { id: "99", username: "owner" } }],
   "201": [{ id: "31", channel_id: "201", author: { id: "77", username: "trusted-one" } }],
@@ -80,6 +128,11 @@ const replyParents:Record<string,object>={
  "89":{id:"89",channel_id:"100",guild_id:"300",author:{id:"88",username:"Helio",bot:true},content:"The Final test is blocked: browser not connected",message_reference:{message_id:"88",channel_id:"100",guild_id:"300"}},
  "88":{id:"88",channel_id:"100",guild_id:"300",author:{id:"99",username:"owner"},content:"Run the Final test"},
 };
+const replyEvent = process.env.DORI_TEST_REPLY_PARENT === "1" ? {
+  ...replyFollowup,
+  referenced_message: { ...replyParents["89"], content: "", embeds: [{ type: "rich", title: "Final blocked", fields: [{ name: "Reason", value: "browser not connected" }] }],
+    components: [{ type: 1, components: [{ type: 2, label: "Retry" }] }] },
+} : replyFollowup;
 const png = await sharp({ create: { width: 1, height: 1, channels: 3, background: "#ff0000" } }).png().toBuffer();
 
 globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -151,8 +204,18 @@ globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init
     return Response.json(replyParents[url.pathname.endsWith("/88") ? "88" : "89"]);
   }
   if (url.pathname === "/api/v10/channels/100/messages") {
+    if (process.env.DORI_TEST_CONVERSATIONS) {
+      if (url.searchParams.has("before")) {
+        console.log("TEST_CONVERSATION_HISTORY");
+        return Response.json(conversationHistory.slice(-10).reverse());
+      }
+      return Response.json(process.env.DORI_TEST_CONVERSATIONS === "rest" ? [] : [...conversationHistory].reverse());
+    }
+    if (process.env.DORI_TEST_TURNS) {
+      return Response.json(process.env.DORI_TEST_TURNS === "backlog" ? [...turnMessages].reverse() : []);
+    }
     if (process.env.DORI_TEST_REPLIES === "1") return Response.json([
-      ...(process.env.DORI_TEST_LIVE_REPLY === "1" ? [] : [replyFollowup]),
+      ...(process.env.DORI_TEST_LIVE_REPLY === "1" ? [] : [replyEvent]),
       ...(process.env.DORI_TEST_FORWARDS === "1" ? [forwarded] : []), ...messages,
     ]);
     if (process.env.DORI_TEST_BUG_REPORTS === "1") return Response.json([bugReport, ...messages]);
@@ -205,6 +268,11 @@ class Client {
     if (id === "100") return { parent_id: "400" };
     if (id === "104") return { parent_id: "600" };
     if (id === "103") return { parent_id: "100" };
+    if (process.env.DORI_TEST_UNREADABLE_PARENT === "1") {
+      if (id === "105") return { parent_id: "700" };
+      if (id === "700" && process.env.DORI_TEST_CATEGORY_FATAL === "1") throw new Error("category 700 must never be read");
+      if (id === "700") throw Object.assign(new Error("Missing Access"), { name: "DiscordBotError", code: "50001" });
+    }
     if (process.env.DORI_TEST_NULL_PARENT === "1") {
       if (id === "101") return { parent_id: "500" };
       if (id === "500") return { parent_id: null };
@@ -219,19 +287,37 @@ class Client {
 }
 
 class Listener extends EventEmitter {
+  constructor(_client: unknown, options: { intents: number }) {
+    super();
+    if (process.env.DORI_TEST_TURNS && (options.intents & 48) !== 48) throw new Error("Missing typing intents");
+  }
   async start() {
     this.emit("connected", { user: { id: process.env.DORI_TEST_UNKNOWN_BOT === "1" ? undefined : "88", username: "Helio" }, sessionId: "test" });
+    if (process.env.DORI_TEST_CONVERSATIONS) {
+      for (const message of conversationMessages) this.emit("message_create", message);
+      return;
+    }
+    if (process.env.DORI_TEST_TURNS) {
+      if (process.env.DORI_TEST_TURNS === "backlog") return;
+      for (const message of turnMessages) this.emit("message_create", message);
+      this.emit("typing_start", { type: "TYPING_START", user_id: "99", channel_id: "100", timestamp: now / 1000 });
+      return;
+    }
     this.emit("message_create", messages[0]);
     if (process.env.DORI_TEST_INACCESSIBLE_MESSAGE === "1") {
       this.emit("message_create", { ...messages[0], id: "40", channel_id: "1566842840716152962", mentions: [{ id: "88" }] });
     }
-    if (process.env.DORI_TEST_REPLIES === "1") this.emit("message_create", replyFollowup);
+    if (process.env.DORI_TEST_REPLIES === "1") this.emit("message_create", replyEvent);
     if (process.env.DORI_TEST_BUG_REPORTS === "1") {
       this.emit("message_create", bugReport);
       this.emit("message_create", { ...bugReport, id: "51" });
       this.emit("message_create", { ...bugReport, id: "52", author: { ...bugReport.author, id: "88" } });
       this.emit("message_create", { ...bugReport, id: "53", channel_id: "101" });
       this.emit("message_create", { ...bugReport, id: "54", webhook_id: "webhook" });
+    }
+    if (process.env.DORI_TEST_UNREADABLE_PARENT === "1") {
+      this.emit("message_create", { ...messages[0], id: "42", channel_id: "105" });
+      this.emit("message_create", { ...messages[0], id: "43", author: { id: "77", username: "staff" }, content: "still listening" });
     }
     if (process.env.DORI_TEST_NULL_PARENT === "1") {
       this.emit("message_create", { ...messages[0], id: "40", channel_id: "101" });
@@ -251,5 +337,8 @@ class Listener extends EventEmitter {
 mock.module("agent-messenger/discordbot", () => ({
   DiscordBotClient: Client,
   DiscordBotListener: Listener,
-  DiscordIntent: { Guilds: 1, GuildMessages: 2, MessageContent: 4, DirectMessages: 8 },
+  DiscordIntent: {
+    Guilds: 1, GuildMessages: 2, MessageContent: 4, DirectMessages: 8,
+    GuildMessageTyping: 16, DirectMessageTyping: 32,
+  },
 }));

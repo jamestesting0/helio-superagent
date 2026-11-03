@@ -24,3 +24,18 @@ test("bounds chain length and strips links from historical text",async()=>{
  const out=await replyContext(start,async(_channel,id)=>({id,channel_id:"100",content:"hello https://example.com",author:{id:"77",username:"staff"},message_reference:{message_id:String(Number(id)+1)}}));
  expect(out?.status).toBe("depth_limit");expect(out?.messages).toHaveLength(12);expect(out?.messages[0].content).toBe("hello [link omitted]");
 });
+
+test("earlier bot messages contribute their embed and component text within the character budget", async () => {
+  const { replyContext: walk } = await import("./reply-context.ts");
+  const context = await walk({ id: "3", channel_id: "100", message_reference: { message_id: "2" } }, async () => ({
+    id: "2", channel_id: "100", author: { id: "55", username: "Elo Bot", bot: true }, content: "",
+    embeds: [{ title: "Reveal Opponent", description: "Your opponent is <@77>" }],
+    components: [{ type: 1, components: [{ type: 2, label: "Report Bug" }] }],
+    mentions: [{ id: "77", username: "rival" }],
+  }));
+  expect(context?.status).toBe("complete");
+  expect(context?.messages[0]).toMatchObject({
+    message_id: "2", bot: true, content: "", embed_text: ["Reveal Opponent", "Your opponent is <@77>"],
+    component_text: ["[button: Report Bug]"], mentioned_users: { "77": "rival" },
+  });
+});

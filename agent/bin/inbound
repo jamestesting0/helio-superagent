@@ -12,4 +12,19 @@ for name in DORI_DISCORD_TOKEN DORI_DISCORD_ALLOWED DORI_DISCORD_TRUSTED_CHANNEL
 done
 export DORI_DISCORD_TRUSTED_IDS="$(<"$here/trusted-users")"
 export DORI_DISCORD_REPORT_CHANNELS="$(<"$here/report-channels")"
-exec bun "$HOME/.dori/discord-inbound/inbound.ts"
+# A runtime failure (exit 1) is retried: the saved cursor makes the restart catch up
+# on anything missed. Configuration failures (exit 2) still stop for a human.
+child=
+trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 143' TERM INT HUP
+delay=5
+while true; do
+  started=$SECONDS
+  bun "$HOME/.dori/discord-inbound/inbound.ts" & child=$!
+  code=0; wait "$child" || code=$?
+  child=
+  [ "$code" -eq 1 ] || exit "$code"
+  (( SECONDS - started > 600 )) && delay=5
+  echo "INBOUND_WARN inbound stopped after a runtime error; restarting in ${delay}s and catching up from the saved cursor"
+  sleep "$delay"
+  delay=$(( delay * 2 > 300 ? 300 : delay * 2 ))
+done

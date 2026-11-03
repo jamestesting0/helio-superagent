@@ -24,6 +24,14 @@ export class LastSeen {
     await this.save();
   }
 
+  /** Forget read positions for channels outside `channelIds`; returns how many were dropped. */
+  async retain(channelIds: ReadonlySet<string>): Promise<number> {
+    const stale = Object.keys(this.ids).filter((id) => !channelIds.has(id));
+    for (const id of stale) delete this.ids[id];
+    if (stale.length) await this.save();
+    return stale.length;
+  }
+
   async save(): Promise<void> {
     const temporary = `${this.path}.${crypto.randomUUID()}.tmp`;
     await writeFile(temporary, `${JSON.stringify(this.ids, null, 2)}\n`, { mode: 0o600 });

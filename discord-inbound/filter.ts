@@ -16,6 +16,19 @@ export interface FilterConfig {
   blockedChannels?: ReadonlySet<string>;
   issueReportChannels?: ReadonlySet<string>;
   readonly bugReportSource?: { readonly authorId: string; readonly channelId: string };
+  readonly scopeCategory?: string;
+  readonly inConversation?: (channelId: string, userId: string) => boolean;
+}
+
+export type ChannelLookup = (id: string) => Promise<{ readonly type?: number; readonly parent_id?: string | null } | undefined>;
+const THREAD_CHANNEL_TYPES = new Set([10, 11, 12]);
+
+/** A channel directly in `category`, or a thread of one. Never reads the category or anything above it. */
+export async function insideCategory(channelId: string, category: string, lookup: ChannelLookup): Promise<boolean> {
+  const channel = await lookup(channelId);
+  if (channel?.parent_id === category) return true;
+  if (!channel?.parent_id || channel.type === undefined || !THREAD_CHANNEL_TYPES.has(channel.type)) return false;
+  return (await lookup(channel.parent_id))?.parent_id === category;
 }
 
 export interface IncomingMessage extends MessageBody {
@@ -49,6 +62,7 @@ export async function classify(
   msg: IncomingMessage,
   cfg: FilterConfig,
   parentOf: ParentLookup,
+  onIneligible?: () => void,
 ): Promise<Inbound | null> {
   if (msg.author.id === cfg.botId || msg.webhook_id !== undefined) return null;
   if (msg.guild_id !== undefined && cfg.blockedChannels?.size &&
@@ -78,8 +92,13 @@ export async function classify(
     msg.mentions?.some((user) => user.id === cfg.botId) ||
     msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`)
   );
-  // Normal guild chats are opt-in through an explicit top-level ping, even for owners.
-  if (channelPolicy === "normal" && !isBugReport && !mentioned) return null;
+  const conversationFollowup = channelPolicy === "normal" && !isBugReport && !mentioned &&
+    cfg.inConversation?.(msg.channel_id, msg.author.id) === true;
+  // Open conversations admit only their owner's follow-ups in this exact channel.
+  if (channelPolicy === "normal" && !isBugReport && !mentioned && !conversationFollowup) {
+    onIneligible?.();
+    return null;
+  }
 
   const canReport = msg.guild_id !== undefined && cfg.issueReportChannels !== undefined && await insideAllowed(msg.channel_id, cfg.issueReportChannels, parentOf);
   const replyTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
@@ -102,7 +121,7 @@ export async function classify(
     sent_at: msg.timestamp,
     reply_to: replyTo,
     attachments: (msg.attachments ?? []).map((a) => a.url),
-    attention: isBugReport ? "review" : direct ? "direct" : "review",
+    attention: isBugReport || conversationFollowup ? "review" : direct ? "direct" : "review",
   };
 }
 

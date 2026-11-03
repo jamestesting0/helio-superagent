@@ -36,6 +36,10 @@ async function invoke(dir: string, settings: Record<string, string | undefined>)
         return found ? Response.json(found) : new Response("Missing access", { status: 403 });
       }
       const history = /^\\/api\\/v10\\/channels\\/(\\d+)\\/messages$/.exec(url.pathname);
+      if (history && process.env.TEST_QUIET_CHANNEL === history[1]) return Response.json([{
+        id: "5" + history[1], channel_id: history[1], guild_id: "300", author: { id: "99", username: "staff" },
+        content: "old", timestamp: "2026-09-01T00:00:00Z", attachments: [],
+      }]);
       if (history) return Response.json([{
         id: "990" + history[1], channel_id: history[1], guild_id: "300",
         author: { id: "55", username: "bot", bot: true }, content: "blocked-bot-content",
@@ -177,5 +181,30 @@ test("unset trusted channels makes every allowlisted channel normal", async () =
     expect(result.stdout.split("\n").filter(line => line.startsWith("CONTEXT "))
       .map(line => JSON.parse(line.slice(8)).channel_id)).toEqual(["104"]);
     expect(result.stdout).not.toContain(`REST /api/v10/channels/${trusted}/messages`);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a quiet learning channel still yields its newest messages on the first read, without a truncation warning", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helio-learning-quiet-"));
+  try {
+    const settings = { DORI_DISCORD_CONTEXT: trusted, TEST_QUIET_CHANNEL: trusted };
+    const first = await invoke(dir, settings);
+    expect({ exitCode: first.exitCode, stderr: first.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(first.stdout).not.toContain("CONTEXT_TRUNCATED");
+    expect(first.stdout).toContain("CONTEXT_DONE channels=1 messages=1");
+    const second = await invoke(dir, settings);
+    expect(second.stdout).not.toContain("CONTEXT_TRUNCATED");
+    expect(second.stdout.match(/^CONTEXT \{/gm)?.length).toBe(1);
+    expect(JSON.parse(await Bun.file(join(dir, "discord-context.json")).text())[trusted]).toBe("5" + trusted);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a clean refresh forgets read positions of channels that are no longer learned", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helio-learning-prune-"));
+  try {
+    await Bun.write(join(dir, "discord-context.json"), JSON.stringify({ "888075523044040729": "5", [trusted]: "1" }));
+    const result = await invoke(dir, { DORI_DISCORD_CONTEXT: trusted });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(Object.keys(JSON.parse(await Bun.file(join(dir, "discord-context.json")).text()))).toEqual([trusted]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

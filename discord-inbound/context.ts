@@ -11,6 +11,7 @@
 import { fetchBacklog, PAGE_SIZE, type Caps, type FetchPage, type RestMessage } from "./catchup.ts";
 import { LastSeen } from "./lastseen.ts";
 import { Delivery } from "./delivery.ts";
+import { sweepOrphanAttachments } from "./expiry.ts";
 import { excludedChannels, learningAllowed, learningChannelAllowed, normalChannels } from "./learning-scope.ts";
 import { prepareMessageBody } from "./forwarded.ts";
 import { DiscordRestError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES } from "./rest.ts";
@@ -32,16 +33,23 @@ const stateDir = requireEnv("DORI_STATE_DIR");
 const statePath = `${stateDir}/discord-context.json`;
 const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`);
 
-const FIRST_READ: Caps = { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxPerChannel: 200 };
+// A first read is a deliberate sample: up to 40 recent messages, and at least the newest 15 even in quiet channels.
+const FIRST_READ: Caps = { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxPerChannel: 40, minKeep: 15 };
 const LATER_READ: Caps = { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxPerChannel: 500 };
 
 const fetchPage: FetchPage = (channelId, before) =>
   rest<RestMessage[]>(`/channels/${channelId}/messages?limit=${PAGE_SIZE}${before ? `&before=${before}` : ""}`);
 
-const skip = (id: string, err: unknown) => console.log(`CONTEXT_WARN ${id} skipped: ${String(err)}`);
+let skipped = 0;
+const skip = (id: string, err: unknown) => {
+  skipped++;
+  console.log(`CONTEXT_WARN ${id} skipped: ${String(err)}`);
+};
 
 async function refresh(): Promise<void> {
   const lastRead = await LastSeen.load(statePath);
+  skipped = 0;
+  await sweepOrphanAttachments(delivery, stateDir, "context");
   const emitted = new Set<string>();
   let total = 0;
   const channels = [];
@@ -77,7 +85,8 @@ async function refresh(): Promise<void> {
       const after = lastRead.get(channel.id);
       const caps = after === undefined ? FIRST_READ : LATER_READ;
       const { messages, truncated } = await fetchBacklog(fetchPage, channel.id, after, Date.now(), caps);
-      if (truncated) console.log(`CONTEXT_TRUNCATED channel=${channel.name ?? channel.id} kept=${messages.length}`);
+      // Only a later read can miss messages; the first read's limits are the intended sample.
+      if (truncated && after !== undefined) console.log(`CONTEXT_TRUNCATED channel=${channel.name ?? channel.id} kept=${messages.length}`);
       for (const msg of messages) {
         if (msg.author.bot || ("webhook_id" in msg && msg.webhook_id !== undefined)) continue;
         if (delivery.contains("context", msg.id)) continue;
@@ -108,6 +117,8 @@ async function refresh(): Promise<void> {
       skip(channel.id, err);
     }
   }
+  // Only a refresh that reached every channel may forget read positions of channels no longer learned.
+  if (skipped === 0) await lastRead.retain(new Set(channels.map((channel) => channel.id)));
   await lastRead.save();
   console.log(`CONTEXT_DONE channels=${channels.length} messages=${total}`);
 }

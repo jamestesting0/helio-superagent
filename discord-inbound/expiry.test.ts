@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Delivery, REQUEST_MAX_AGE_MS } from "./delivery.ts";
-import { sweepExpired } from "./expiry.ts";
+import { sweepExpired, sweepOrphanAttachments } from "./expiry.ts";
 
 const NOW = Date.parse("2026-11-02T12:00:00Z");
 const payload = (sentAt: number) => JSON.stringify({
@@ -166,3 +166,21 @@ test.each([undefined, "not-a-timestamp", "2026-02-30T12:00:00Z"])(
     }
   },
 );
+
+test("leftover attachment folders of finished messages are removed; pending ones and non-ID names stay", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-orphans-"));
+  const delivery = new Delivery(join(dir, "discord-delivery.sqlite"));
+  try {
+    delivery.stage("context", "10", JSON.stringify({ channel_id: "1" }));
+    delivery.stage("context", "20", JSON.stringify({ channel_id: "1" }));
+    delivery.acknowledge("context", "20");
+    const pending = join(dir, "attachments/context/pending");
+    for (const name of ["10", "20", "30", "notes"]) await Bun.write(join(pending, name, "a.png"), "x");
+    expect(await sweepOrphanAttachments(delivery, dir, "context")).toBe(2);
+    expect((await Array.fromAsync(new Bun.Glob("*/a.png").scan(pending))).sort()).toEqual(["10/a.png", "notes/a.png"]);
+    expect(await sweepOrphanAttachments(delivery, dir, "inbound")).toBe(0);
+  } finally {
+    delivery.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -15,6 +15,8 @@ export type FetchPage = (channelId: string, before?: string) => Promise<RestMess
 export interface Caps {
   maxAgeMs: number;
   maxPerChannel: number;
+  /** Keep at least this many newest messages even when they are older than maxAgeMs. */
+  minKeep?: number;
 }
 
 export interface Backlog {
@@ -43,7 +45,9 @@ export async function fetchBacklog(
     const page = await fetchPage(channelId, before);
     for (const msg of page) {
       if (after !== undefined && !newerId(msg.id, after)) return { messages: kept.reverse(), truncated: false };
-      if (Date.parse(msg.timestamp) < oldestAllowed) return { messages: kept.reverse(), truncated: true };
+      if (Date.parse(msg.timestamp) < oldestAllowed && kept.length >= (caps.minKeep ?? 0)) {
+        return { messages: kept.reverse(), truncated: true };
+      }
       if (kept.length === caps.maxPerChannel) return { messages: kept.reverse(), truncated: true };
       kept.push(msg);
     }

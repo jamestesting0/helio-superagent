@@ -4,6 +4,7 @@ import { filterConfig, reauthorize, validateChannelPolicy } from "./authorizatio
 import { discordRest } from "./rest.ts";
 import { sweepExpired } from "./expiry.ts";
 import { contextReplayAllowed } from "./context-replay.ts";
+import { Conversations } from "./conversations.ts";
 
 const [action, stream, id, reason, ...extra] = process.argv.slice(2);
 const state = process.env.DORI_STATE_DIR;
@@ -18,13 +19,14 @@ if (!state || (stream !== "inbound" && stream !== "context") ||
   process.exit(2);
 }
 const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
+const conversations = new Conversations(`${state}/discord-conversations.sqlite`);
 const stateDir = state;
 const warn = (message: string) => console.error(`ACK_WARN ${message}`);
 async function authorized(item: { readonly id: string; readonly payload: string }): Promise<string> {
   const token = process.env.DORI_DISCORD_TOKEN;
   if (!token) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
   const rest = discordRest(token);
-  const cfg = filterConfig(process.env);
+  const cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user));
   cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
   await validateChannelPolicy(cfg, rest, warn);
   const current = await reauthorize(item.payload, cfg, rest);
@@ -93,5 +95,6 @@ try {
     if (stream === "inbound") await sweepExpired(delivery, state, warn);
   } finally {
     delivery.close();
+    conversations.dispose();
   }
 }

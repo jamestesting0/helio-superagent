@@ -87,6 +87,15 @@ describe("fetchBacklog", () => {
     expect(calls).toEqual([undefined]);
   });
 
+  test("minKeep keeps the newest messages past the age cap, then stops at it", async () => {
+    const { fetchPage } = channel([message(1, 100), message(2, 80), message(3, 10)]);
+    expect(await fetchBacklog(fetchPage, "c1", undefined, NOW, { ...CAPS, minKeep: 3 }))
+      .toMatchObject({ truncated: false });
+    expect(ids((await fetchBacklog(fetchPage, "c1", undefined, NOW, { ...CAPS, minKeep: 3 })).messages)).toEqual([1, 2, 3]);
+    const sampled = await fetchBacklog(fetchPage, "c1", undefined, NOW, { ...CAPS, minKeep: 2 });
+    expect([ids(sampled.messages), sampled.truncated]).toEqual([[2, 3], true]);
+  });
+
   test("nothing new returns an empty, untruncated backlog", async () => {
     const { fetchPage } = channel([message(1, 1), message(2, 1)]);
     expect(await fetchBacklog(fetchPage, "c1", "2", NOW, CAPS)).toEqual({ messages: [], truncated: false });

@@ -1,8 +1,12 @@
-import { classify, insideAllowed, type FilterConfig, type IncomingMessage } from "./filter.ts";
+import { createHash } from "node:crypto";
+
+import { classify, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./filter.ts";
 import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "./rest.ts";
 
 /** Channel trust never grants sender authority or adds a channel to the allowlist. */
-export function filterConfig(values: Readonly<Record<string, string | undefined>>): FilterConfig {
+export function filterConfig(
+  values: Readonly<Record<string, string | undefined>>, inConversation?: FilterConfig["inConversation"],
+): FilterConfig {
   const required = (name: string) => {
     const value = values[name]?.trim();
     if (!value) throw new TypeError(`Missing ${name}`);
@@ -31,6 +35,8 @@ export function filterConfig(values: Readonly<Record<string, string | undefined>
     bugReportSource = { authorId, channelId };
   }
   required("DORI_DISCORD_ALLOWED");
+  const scopeCategory = values.DORI_DISCORD_SCOPE_CATEGORY?.trim();
+  if (scopeCategory && !/^\d+$/.test(scopeCategory)) throw new TypeError("Invalid DORI_DISCORD_SCOPE_CATEGORY");
   return {
     ownerId: required("DORI_DISCORD_OWNER_ID"),
     allowed: csv("DORI_DISCORD_ALLOWED"),
@@ -39,6 +45,8 @@ export function filterConfig(values: Readonly<Record<string, string | undefined>
     normalChannels,
     issueReportChannels: csv("DORI_DISCORD_REPORT_CHANNELS"),
     bugReportSource,
+    ...(inConversation ? { inConversation } : {}),
+    ...(scopeCategory ? { scopeCategory } : {}),
   };
 }
 
@@ -47,7 +55,6 @@ const THREAD_TYPES = new Set([10, 11, 12]);
 export async function validateChannelPolicy(
   cfg: FilterConfig, rest: Rest, warn: (message: string) => void,
 ): Promise<void> {
-  if (!cfg.trustedChannels?.size && !cfg.normalChannels?.size) return;
   const blocked = new Set<string>();
   const channels = new Map<string, ApiChannel | undefined>();
   cfg.blockedChannels = blocked;
@@ -66,6 +73,15 @@ export async function validateChannelPolicy(
       return undefined;
     }
   };
+  if (cfg.scopeCategory) {
+    const configured = [...cfg.allowed, ...(cfg.trustedChannels ?? []), ...(cfg.normalChannels ?? []), ...(cfg.issueReportChannels ?? [])];
+    for (const id of new Set(configured)) {
+      if (id === cfg.scopeCategory || blocked.has(id) || await insideCategory(id, cfg.scopeCategory, channelOf)) continue;
+      blocked.add(id);
+      warn(`channel ${id} is outside DORI_DISCORD_SCOPE_CATEGORY ${cfg.scopeCategory}; ignored`);
+    }
+  }
+  if (!cfg.trustedChannels?.size && !cfg.normalChannels?.size) return;
   const parentOf = async (id: string) => (await rest<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined;
   for (const id of new Set([...(cfg.trustedChannels ?? []), ...(cfg.normalChannels ?? [])])) {
     const channel = await channelOf(id);
@@ -112,6 +128,8 @@ export function authorizationMetadata(msg: IncomingMessage) {
     ])],
     reply_to: msg.message_reference?.type === 1 ? null : msg.message_reference?.message_id ?? null,
     reply_author_id: msg.referenced_message?.author.id ?? null,
+    // The payload's text has links rewritten; release checks compare this against the live message instead.
+    content_sha256: createHash("sha256").update(msg.content).digest("hex"),
   };
 }
 
@@ -161,8 +179,12 @@ export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest
     // Expiry is tied to the originally queued sent_at, not a later REST response.
     sent_at: "sent_at" in saved ? saved.sent_at : undefined,
   };
-  // A queued trusted reply may become normal after configuration changes.
-  if ((current.channel_policy === "normal" || ("backlog" in saved && saved.backlog === true)) &&
-      "reply_context" in result) delete result.reply_context;
+  // A queued trusted reply may become normal after configuration changes; normal chats keep only the replied-to message.
+  if (current.channel_policy === "normal" && "reply_context" in result) {
+    const chain = result.reply_context as { messages?: unknown[] } | undefined;
+    const parent = Array.isArray(chain?.messages) ? chain.messages.at(-1) : undefined;
+    if (parent) result.reply_context = { status: "parent_only", messages: [parent] };
+    else delete result.reply_context;
+  }
   return result;
 }

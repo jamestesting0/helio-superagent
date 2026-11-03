@@ -314,3 +314,44 @@ test("omitLinks removes explicit URL tokens while preserving plain prose", () =>
   expect(omitLinks("file:///tmp/a data:image/svg+xml;base64,abc javascript:alert(1)\nPlain text example.org"))
     .toBe("[link omitted] [link omitted] [link omitted]\nPlain text example.org");
 });
+
+test("omitLinks keeps every link into the configured repository and nothing else", async () => {
+  const previous = process.env.HELIO_GITHUB_REPO;
+  process.env.HELIO_GITHUB_REPO = "jamestesting0/elo-bot";
+  try {
+    expect(omitLinks("See <https://github.com/JamesTesting0/Elo-Bot/pull/42/files?q=x#diff>"))
+      .toBe("See jamestesting0/elo-bot#42 (pull request)");
+    expect(omitLinks("https://github.com/jamestesting0/elo-bot/issues/17"))
+      .toBe("jamestesting0/elo-bot#17 (issue)");
+    for (const url of [
+      "https://github.com/other/elo-bot/pull/42",
+      "https://github.com.evil.test/jamestesting0/elo-bot/pull/42",
+      "https://www.github.com/jamestesting0/elo-bot/pull/42",
+      "https://user@github.com/jamestesting0/elo-bot/pull/42",
+      "https://github.com@evil.test/jamestesting0/elo-bot/pull/42",
+      "http://github.com/jamestesting0/elo-bot/pull/42",
+      "https://github.com:443/jamestesting0/elo-bot/pull/42",
+      "https://github.com/jamestesting0/elo-bot/pull/42\\evil",
+      "https://github.com/jamestesting0/elo-bot.evil/blob/main/main.py",
+      "https://github.com/jamestesting0/elo-bot-fork/commit/abc123",
+      "https://raw.githubusercontent.com/jamestesting0/elo-bot/main/main.py",
+    ]) expect(omitLinks(url)).toBe("[link omitted]");
+    for (const url of [
+      "https://github.com/jamestesting0/elo-bot",
+      "https://github.com/jamestesting0/elo-bot/blob/main/cogs/match_commands.py#L120-L140",
+      "https://github.com/jamestesting0/elo-bot/commit/f343d53f237b2e552f445185fcd261605c7999ff",
+      "https://github.com/jamestesting0/elo-bot/compare/main...fix-dm",
+      "https://github.com/jamestesting0/elo-bot/pull/42evil",
+    ]) expect(omitLinks(`see <${url}> or ${url}`)).toBe(`see <${url}> or ${url}`);
+    const blocked = await prepareAttachments([attachment({
+      filename: "https://github.com/jamestesting0/elo-bot/pull/42",
+    })], "100", "/unused-rejected-filename");
+    expect(blocked.blocked[0]?.name).toBe("[link omitted]");
+    delete process.env.HELIO_GITHUB_REPO;
+    expect(omitLinks("<https://github.com/jamestesting0/elo-bot/pull/42>"))
+      .toBe("<[link omitted]>");
+  } finally {
+    if (previous === undefined) delete process.env.HELIO_GITHUB_REPO;
+    else process.env.HELIO_GITHUB_REPO = previous;
+  }
+});

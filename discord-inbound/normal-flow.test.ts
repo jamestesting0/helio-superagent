@@ -6,7 +6,7 @@ import { Delivery } from "./delivery.ts";
 
 async function run(dir: string, options: {
   readonly trusted?: boolean; readonly unknown?: boolean; readonly script?: string; readonly args?: readonly string[];
-  readonly liveReply?: boolean;
+  readonly liveReply?: boolean; readonly replyParent?: boolean;
 } = {}) {
   const child = Bun.spawn([
     process.execPath, "--preload", join(import.meta.dir, "fixtures/discord.ts"),
@@ -15,7 +15,7 @@ async function run(dir: string, options: {
     env: {
       ...process.env, DORI_STATE_DIR: dir, DORI_DISCORD_TOKEN: "test", DORI_DISCORD_OWNER_ID: "99",
       DORI_DISCORD_ALLOWED: "100", DORI_DISCORD_TRUSTED_CHANNELS: options.trusted ? "100" : "",
-      DORI_DISCORD_NORMAL_CHANNELS: "",
+      DORI_DISCORD_NORMAL_CHANNELS: "", DORI_TEST_REPLY_PARENT: options.replyParent ? "1" : "",
       DORI_DISCORD_TRUSTED_IDS: "", DORI_DISCORD_REPORT_CHANNELS: "", DORI_DISCORD_BUG_REPORT_SOURCE: undefined,
       DORI_TEST_REPLIES: "1", DORI_TEST_PING_REPLY: "1", DORI_TEST_TRACE_READS: "1",
       DORI_TEST_FORWARDS: "1", DORI_TEST_UNKNOWN_BOT: options.unknown ? "1" : "",
@@ -52,7 +52,7 @@ test("normal history and live non-pings never stage or prepare attachments/forwa
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("legacy non-pings and unknown identity are withheld on both replay paths without losing pending, and old ancestors are removed", async () => {
+test("legacy non-pings and unknown identity are withheld on both replay paths without losing pending, and a now-normal reply keeps only its parent", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dori-normal-replay-"));
   try {
     const first = await run(dir, { trusted: true, liveReply: true });
@@ -71,12 +71,28 @@ test("legacy non-pings and unknown identity are withheld on both replay paths wi
 
     const known = await run(dir, { script: "ack.ts", args: ["pending", "inbound"] });
     expect(known.exitCode).toBe(0);
-    expect(records(known.stdout).map((message) => [message.message_id, message.reply_context]))
-      .toEqual([["10", undefined], ["90", undefined]]);
+    const chain = (message: Record<string, unknown>) => message.reply_context as { status: string; messages: { message_id: string }[] } | undefined;
+    expect(records(known.stdout).map((message) => [message.message_id, chain(message)?.status,
+      chain(message)?.messages.map((m) => m.message_id)]))
+      .toEqual([["10", undefined, undefined], ["90", "parent_only", ["89"]]]);
     expect(reads(known.stdout)).toEqual([]);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
       expect(queue.pending("inbound").map((item) => item.id)).toEqual(["10", "11", "21", "22", "90"]);
     } finally { queue.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test.each([true, false])("a normal-chat ping that replies to a bot embed carries that one message, read from the event without any lookup (live %s)", async (liveReply) => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-normal-parent-"));
+  try {
+    const result = await run(dir, { replyParent: true, liveReply });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    const reply = records(result.stdout).find((message) => message.message_id === "90") as { reply_context?: { status: string; messages: Record<string, unknown>[] } };
+    expect(reply.reply_context?.status).toBe("parent_only");
+    expect(reply.reply_context?.messages.map((m) => [m.message_id, m.embed_text, m.component_text])).toEqual([
+      ["89", ["Final blocked", "Reason", "browser not connected"], ["[button: Retry]"]],
+    ]);
+    expect(reads(result.stdout)).not.toContainEqual(expect.objectContaining({ kind: "ancestor" }));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
