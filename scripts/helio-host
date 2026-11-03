@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+# Updates run in the owner home, not through the isolated workspace launcher.
+if [[ "${1:-}" == update ]]; then
+  case "$#:${2:-}" in
+    1:) update_args=(--apply) ;;
+    2:--preview) update_args=() ;;
+    *) printf '%s\n' 'Usage: helio update [--preview]' >&2; exit 2 ;;
+  esac
+  updater="$HOME/PythonProjects/helio-superagent/scripts/sync-install.py"
+  if [[ ! -f "$updater" ]]; then
+    printf 'Maintained updater missing: %s\n' "$updater" >&2
+    exit 1
+  fi
+  # Never adopt a baseline or opt in to replacing the host launcher here.
+  exec python3 "$updater" --home "$HOME" "${update_args[@]}"
+fi
+if (( $# > 1 )); then printf '%s\n' 'Unexpected arguments.' >&2; exit 2; fi
+case "${1:-}" in
+  "") mode= ;;
+  start) mode=--start ;;
+  resume) mode=--resume ;;
+  --check) mode=--check ;;
+  status)
+    if systemctl is-active --quiet helio-isolated.scope; then echo 'Isolated Helio workspace: running'; else echo 'Isolated Helio workspace: stopped'; fi
+    if systemctl is-active --quiet helio-beta-maintenance.service; then echo 'Protected beta service: running'; else echo 'Protected beta service: stopped'; fi
+    if systemctl is-active --quiet helio-release.service; then echo 'Oracle release service: running'; else echo 'Oracle release service: stopped'; fi
+    exit 0 ;;
+  permissions)
+    printf '%s\n' "Edit HELIO_TRUSTED_USERS, HELIO_REPORT_CHANNELS or HELIO_RELEASE_APPROVERS in $HOME/.config/helio/helio.env" "(comma-separated Discord IDs), then run: helio update. Changes load on the next isolated launch."
+    exit 0 ;;
+  *)
+    printf '%s\n' 'Run helio, helio start, or helio resume from this shell. Run doctor, beta, browser, release and other Helio commands inside the isolated Herdr workspace.' >&2
+    exit 2 ;;
+esac
+if systemctl is-active --quiet helio-isolated.scope; then
+  printf '%s\n' 'An isolated Helio workspace is already running. Use its existing window.' >&2
+  exit 2
+fi
+if [[ -n "$mode" ]]; then
+  exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- systemd-run --scope --quiet --unit helio-isolated /usr/bin/python3 /opt/helio-beta-service/scripts/helio_isolated_launcher.py "$mode"
+fi
+exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- systemd-run --scope --quiet --unit helio-isolated /usr/bin/python3 /opt/helio-beta-service/scripts/helio_isolated_launcher.py

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/env"
+for name in DORI_DISCORD_TOKEN DORI_DISCORD_ALLOWED DORI_DISCORD_BUG_REPORT_SOURCE DORI_DISCORD_CONTEXT_EXCLUDED; do
+  if [ -z "${!name:-}" ]; then
+    echo "missing $name in $here/env; set it in ~/.config/helio/helio.env and run: helio update" >&2
+    exit 2
+  fi
+done
+export DORI_DISCORD_TRUSTED_IDS="$(<"$here/trusted-users")"
+export DORI_DISCORD_REPORT_CHANNELS="$(<"$here/report-channels")"
+exec bun "$HOME/.dori/discord-inbound/ack.ts" "$@"

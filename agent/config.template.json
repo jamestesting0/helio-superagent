@@ -1,0 +1,61 @@
+{
+  "stateDir": "~/.dori/elobot/state",
+  "laneWorkspace": "",
+  "workspaces": [],
+  "ignorePanes": [],
+  "leadPane": "",
+  "defaultCwd": "{{HELIO_PROJECT}}",
+  "agentCommand": [
+    "/bin/bash",
+    "-c",
+    "source \"$HOME/.dori/elobot/env\" || exit; source \"$HOME/.dori/elobot/browser-env\" || exit; exec \"$@\"",
+    "helio-worker",
+    "/usr/bin/env",
+    "DORI_CONFIG={{HOME}}/.dori/elobot/config.json",
+    "DORI_STATE_DIR={{HOME}}/.dori/elobot/state",
+    "omo",
+    "--no-ask-user",
+    "--models",
+    "{{HELIO_MODEL_ALLOW}}",
+    "--skill",
+    "{{HELIO_BROWSER_SKILL}}",
+    "--append-system-prompt",
+    "{{HOME}}/.dori/elobot/work-policy.md",
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "defaultModel": "{{HELIO_WORKER_MODEL}}",
+  "launchKeywords": "ulw set goal and work",
+  "sessionsDir": "~/.omo/agent/sessions",
+  "nudgeAfterMin": 15,
+  "postAfterMin": 20,
+  "closeAfterMin": 5,
+  "heavySlots": 1,
+  "heavyMaxLoad": 80,
+  "deadPanePatterns": [
+    "has stopped",
+    "no suitable jobs"
+  ],
+  "guard": {
+    "loadAlert": 150,
+    "loadOk": 80,
+    "memFreeMinPct": 20,
+    "diskFreeMinGb": 50,
+    "panesMax": 20
+  },
+  "hooks": {
+    "threadReply": [
+      "bun",
+      "{{HOME}}/.dori/elobot/thread-target.ts",
+      "{thread}",
+      "{text}"
+    ],
+    "threadDone": [
+      "bun",
+      "{{HOME}}/.dori/elobot/thread-target.ts",
+      "{thread}",
+      "{text}"
+    ]
+  }
+}

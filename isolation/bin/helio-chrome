@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+base="$HOME/.local/share/helio-chrome/pkg"
+export LD_LIBRARY_PATH="$base/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$base/opt/google/chrome/chrome" --user-data-dir="$HOME/.local/share/helio-chrome/profile" --no-first-run "$@"

@@ -1,0 +1,36 @@
+{
+  "memory": {
+    "enabled": true,
+    "agent": "EloBot",
+    "sync": {
+      "enabled": false
+    }
+  },
+  "_migrations": [
+    "2026-08-reasoning-unification"
+  ],
+  "[native]": {
+    "categories": {
+      "deep-low": {
+        "model": "chatgpt-subscription/gpt-6.1-terra",
+        "reasoning": "high",
+        "models": [
+          {
+            "model": "chatgpt-subscription/gpt-6.1-terra",
+            "reasoning": "high"
+          }
+        ]
+      },
+      "deep-high": {
+        "model": "chatgpt-subscription/gpt-6.1-sol",
+        "reasoning": "high",
+        "models": [
+          {
+            "model": "chatgpt-subscription/gpt-6.1-sol",
+            "reasoning": "high"
+          }
+        ]
+      }
+    }
+  }
+}

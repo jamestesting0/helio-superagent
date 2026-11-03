@@ -1,0 +1,14 @@
+export BSK_HOME="$HOME/.bsk"
+export BSK_BIN="$HOME/.local/bin/bsk"
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+
+export HERDR_SESSION=elobot
+export HELIO_OPENAI_ONLY=1
+export HELIO_WORKTREES=1
+export HELIO_BETA_ENV="$HOME/.dori/elobot/beta.env"
+export HELIO_BETA_MONGO_ENV="$HOME/.dori/elobot/beta-mongo.env"
+
+if [ -n "${HELIO_PROJECT:-}" ] && [ -x "$HELIO_PROJECT/.venv/bin/python" ]; then
+  export VIRTUAL_ENV="$HELIO_PROJECT/.venv"
+  export PATH="$VIRTUAL_ENV/bin:$PATH"
+fi

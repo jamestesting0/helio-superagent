@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+base="$HOME/.dori/elobot"
+case "${1:-}" in
+  start) exec "$base/start" start ;;
+  resume) exec "$base/start" resume ;;
+  dori) shift; source "$base/env"; source "$base/browser-env"; unset HERDR_SOCKET_PATH; export HERDR_SESSION=elobot; exec dori "$@" ;;
+  beta) shift; source "$base/env"; source "$base/browser-env"; exec python3 "$HOME/helio-agent/scripts/helio-beta.py" "$@" ;;
+  question) shift; source "$base/env"; source "$base/browser-env"; exec python3 "$HOME/helio-agent/scripts/helio-questions.py" "$@" ;;
+  browser) shift; exec python3 "$HOME/helio-agent/scripts/helio-browser.py" "$@" ;;
+  doctor) exec bsk doctor ;;
+  release-check) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/release-check.py" "$@" ;;
+  release) shift; exec python3 "$HOME/helio-agent/scripts/helio_release_client.py" "$@" ;;
+  update) shift; exec python3 "$HOME/helio-agent/scripts/sync-install.py" "$@" ;;
+  status) exec python3 "$HOME/helio-agent/scripts/helio-status.py" ;;
+  permissions) printf '%s\n' "In the normal WSL shell, edit HELIO_TRUSTED_USERS, HELIO_REPORT_CHANNELS or HELIO_RELEASE_APPROVERS in ~/.config/helio/helio.env" "(comma-separated Discord IDs), run: helio update, then exit and relaunch the isolated workspace." ;;
+  "") printf '%s\n' 'In Herdr, run: helio start (new) or helio resume (previous)'; exec herdr --session elobot ;;
+  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
+esac

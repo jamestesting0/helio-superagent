@@ -1,0 +1,68 @@
+# Credentials must be provisioned separately. The real config lives in
+# ~/.config/helio/helio.env; only helio.env.example belongs in git.
+.env
+.env.*
+*.env
+!.env.example
+!helio.env.example
+helio.env
+env
+.envrc
+secrets/
+credential*.env
+auth.json
+ssh_config
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.ppk
+.netrc
+.npmrc
+
+# Backups and exports can contain any of the above.
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+helio-beta-recovery/
+
+# Runtime state can contain private Discord messages and attachments.
+state/
+attachments/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+sessions/
+
+# Private omo memory snapshot: kept on disk for restores, never pushed.
+# Move it between laptops through an encrypted backup (docs/migration.md).
+memory/
+
+# Agent session data and evidence (screenshots, transcripts).
+.omo/
+evidence/
+
+# Recreated dependencies and local artifacts.
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+dist/
+build/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.log
+/~/

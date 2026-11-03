@@ -1,0 +1,53 @@
+#!/bin/bash
+# Starts the EloBot Dori lead in the current herdr pane. Run inside: herdr --session elobot
+set -euo pipefail
+
+mode="${1:-start}"
+if [[ "$mode" != start && "$mode" != resume ]] || (( $# > 1 )); then
+  echo "Usage: helio start | helio resume" >&2; exit 2
+fi
+here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/env"
+source "$here/browser-env"
+
+for name in DORI_DISCORD_TOKEN DORI_DISCORD_OWNER_ID DORI_DISCORD_ALLOWED HELIO_PROJECT HELIO_LEAD_MODEL HELIO_LEAD_THINKING HELIO_MODEL_ALLOW HELIO_BROWSER_SKILL; do
+  if [ -z "${!name:-}" ]; then
+    echo "missing $name in $here/env; set it in ~/.config/helio/helio.env and run: helio update" >&2
+    exit 2
+  fi
+done
+if [ -z "${HERDR_PANE_ID:-}" ]; then
+  echo "run this inside a herdr pane (herdr --session elobot)" >&2
+  exit 2
+fi
+
+if [ ! -r "$here/setup-prompt.md" ] || [ ! -s "$here/setup-prompt.md" ]; then
+  echo "missing, unreadable, or empty $here/setup-prompt.md" >&2
+  exit 2
+fi
+if [ ! -r "$here/work-policy.md" ] || [ ! -s "$here/work-policy.md" ]; then
+  echo "missing, unreadable, or empty $here/work-policy.md" >&2
+  exit 2
+fi
+cd "$HELIO_PROJECT"
+python3 "$here/knowledge-setup.py"
+
+if [[ "$mode" == resume ]]; then
+  session_ref="$(python3 "$here/helio-sessions.py" latest)"
+  session_args=(--session "$session_ref")
+else
+  session_ref="$(python3 "$here/helio-sessions.py" new)"
+  session_args=(--session-id "$session_ref")
+fi
+
+mkdir -p "$DORI_STATE_DIR"
+bun -e '
+  const path = process.env.DORI_CONFIG;
+  const config = await Bun.file(path).json();
+  config.leadPane = process.env.HERDR_PANE_ID;
+  await Bun.write(path, JSON.stringify(config, null, 2) + "\n");
+'
+
+# OmO's positional prompt starts the interactive lead's first turn automatically.
+startup='Start Helio mode. Initialize or recover the required persistent Discord inbound, learning context, lane watcher, dead-pane, guard, freshness, and Discord question monitors from the setup instructions. Check for existing live monitors in this session before creating any; do not duplicate watchers. Confirm readiness and surface errors, then reconcile pending deliveries under the current channel and permission rules. Wait for requests.'
+exec omo "${session_args[@]}" --no-ask-user --model "$HELIO_LEAD_MODEL" --thinking "$HELIO_LEAD_THINKING" --models "$HELIO_MODEL_ALLOW" --skill "$HELIO_BROWSER_SKILL" --append-system-prompt "$here/setup-prompt.md" --append-system-prompt "$here/work-policy.md" "$startup"

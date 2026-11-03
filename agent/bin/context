@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Read-only: prints new messages from Helio's learning channels as CONTEXT lines.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+source "$here/env"
+for name in DORI_DISCORD_TOKEN DORI_DISCORD_CONTEXT DORI_DISCORD_CONTEXT_EXCLUDED; do
+  if [ -z "${!name:-}" ]; then
+    echo "missing $name in $here/env; set it in ~/.config/helio/helio.env and run: helio update" >&2
+    exit 2
+  fi
+done
+exec bun "$HOME/.dori/discord-inbound/context.ts" "$@"

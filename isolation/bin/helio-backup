@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+case "${1:-}" in
+  list) [[ $# -eq 1 ]] || exit 2 ;;
+  verify|export) [[ $# -eq 2 && "$2" =~ ^[0-9a-f]{32}$ ]] || { echo 'Provide a 32-character operation ID.' >&2; exit 2; } ;;
+  *) echo 'Usage: helio-backup list | verify OPERATION_ID | export OPERATION_ID' >&2; exit 2 ;;
+esac
+exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- env PYTHONPATH=/opt/helio-beta-service/packages PYTHONNOUSERSITE=1 /opt/helio-beta-service/python/bin/python3.12 -P /opt/helio-beta-service/scripts/helio_beta_backup.py "$@"

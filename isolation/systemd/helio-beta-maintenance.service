@@ -1,0 +1,32 @@
+[Unit]
+Description=Helio beta-only protected maintenance service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=helio-vault
+Group=helio-vault
+SupplementaryGroups=helio-agent
+RuntimeDirectory=helio-beta-service
+RuntimeDirectoryMode=0750
+ExecStartPre=+/usr/bin/chgrp helio-agent /run/helio-beta-service
+Environment=PYTHONPATH=/opt/helio-beta-service/packages
+Environment=PYTHONNOUSERSITE=1
+ExecStart=/opt/helio-beta-service/python/bin/python3.12 -P /opt/helio-beta-service/scripts/helio_beta_service.py --archive /var/lib/helio-beta-service/archive --socket /run/helio-beta-service/maintenance.sock --credentials /etc/helio-beta-service/credential.env --exclusions /etc/helio-beta-service/exclusions.json --allowed-uid 999 --socket-gid 999
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/helio-beta-service /run/helio-beta-service
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
