@@ -22,6 +22,13 @@ export class LaunchError extends Error {}
 
 const STARTUP_FAILURE = /Cannot find module|All fallback models failed|No API key|model_not_available|usage limit|rate limit|quota|Session crashed|unknown provider/i;
 
+/** The lane model must match the configured --models allowlist (comma-separated globs); checked before anything is created. */
+export const modelOutsideAllowlist = (model: string, allow: string | undefined): string | undefined => {
+  const patterns = (allow ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  if (!patterns.length || patterns.some((p) => new Bun.Glob(p).match(model))) return undefined;
+  return `model ${model} is outside HELIO_MODEL_ALLOW (${patterns.join(", ")}); omit --model to use the configured worker model, or pass a model matching the allowlist`;
+};
+
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   if (!LANE_KEY.test(input.key) || input.key.includes("..")) throw new LaunchError(`key must match ${LANE_KEY}`);
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
@@ -50,9 +57,8 @@ export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly 
 export const launchLane = async (deps: FlowDeps, input: LaunchInput): Promise<{ readonly lane: Lane; readonly startup: string }> => {
   await validateLaunch(deps, input);
   const model = input.model ?? deps.config.defaultModel;
-  if (process.env.HELIO_OPENAI_ONLY === "1" && !/^(chatgpt-subscription|openai)\/[A-Za-z0-9._:-]+$/.test(model)) {
-    throw new LaunchError("Helio only permits OpenAI provider models");
-  }
+  const outside = modelOutsideAllowlist(model, process.env.HELIO_MODEL_ALLOW);
+  if (outside) throw new LaunchError(outside);
   const sourceCwd = input.cwd ?? deps.config.defaultCwd;
   const briefFile = Bun.file(input.brief);
   if (!(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);

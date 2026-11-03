@@ -33,5 +33,5 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 
 Tests: `scripts/test/helio-host.test.ts`.
 
-`scripts/` also carries Helio patches to some `src/` files, covered by the Helio tests in `scripts/test/helio-*.test.ts` (lifecycle, missing, model). Check those tests before taking upstream changes to the same files.
+`scripts/` also carries Helio patches to some `src/` files, covered by the Helio tests in `scripts/test/helio-*.test.ts` (lifecycle, missing, model). Check those tests before taking upstream changes to the same files. `launch.ts` refuses a lane model that matches none of the comma-separated globs in `HELIO_MODEL_ALLOW` (the same allowlist passed to `omo --models`), before any brief, worktree or tab is created; with the variable unset there is no check.
 - `dori send --text-file PATH`: reads the message text from a file, so callers never put text with backticks or `$` inside a shell command.

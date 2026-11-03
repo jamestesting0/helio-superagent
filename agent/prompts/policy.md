@@ -4,7 +4,7 @@ This policy is loaded into the lead and every worker lane. The runtime profile s
 
 ## Model policy
 
-Use only OpenAI models from chatgpt-subscription or openai for all lead and worker sessions. All worker launches must use those provider prefixes; never select another provider.
+Use only OpenAI models through the `chatgpt-subscription` provider for all lead and worker sessions: Helio is logged into a ChatGPT account and has no `openai` API key, so an `openai/...` model fails at startup. Launch workers without `--model` to get the configured worker model, or pass `--model chatgpt-subscription/<model>`; `dori launch` refuses any model outside `HELIO_MODEL_ALLOW`. Never select another provider.
 
 ## Working style
 
