@@ -28,7 +28,7 @@ import { DiscordRestError, discordRest } from "./rest.ts";
 import { TurnAssembler, type TurnMessage } from "./turns.ts";
 import { Preceding } from "./preceding.ts";
 import { Conversations, conversationTimeoutReporter } from "./conversations.ts";
-import { sweepWorking } from "./working.ts";
+import { reactOnArrival, sweepWorking } from "./working.ts";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -281,6 +281,7 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
         // A ping opens the sender's working window, so their follow-ups count as additions until Helio replies.
         if (message.attention === "direct" && message.role !== "BOT_BUG_REPORT" && message.addition_to === undefined) {
           conversations.openWorking(msg.channel_id, msg.author.id, msg.id, Date.now());
+          if (!backlog) void reactOnArrival(conversations, rest, message, warn);
         }
         if (backlog) backlogMessages.push(message);
         else turns.push(message);

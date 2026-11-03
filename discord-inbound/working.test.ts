@@ -7,7 +7,7 @@ import { classify, type IncomingMessage } from "./filter.ts";
 import { Conversations, snowflakeTime } from "./conversations.ts";
 import { Delivery } from "./delivery.ts";
 import { DiscordRestError, type Rest } from "./rest.ts";
-import { guardedReply, sweepWorking } from "./working.ts";
+import { guardedReply, reactOnArrival, sweepWorking } from "./working.ts";
 
 const normal = "1199770187738644652";
 const other = "1220331873079922810";
@@ -229,5 +229,35 @@ test("upkeep clears 👀 left on handled messages, warns once at 30 minutes, giv
     expect(warnings.filter((w) => w.includes(stale) && w.includes("2 hours"))).toHaveLength(1);
     expect([store.working(stale)?.reacted, store.working(stale)?.closed_at]).toEqual([0, T0 + 121 * MIN]);
     expect(calls.filter((call) => call === eyesPath(stale))).toHaveLength(1);
+  });
+});
+
+test("a DM or trusted-chat ping gets the 👀 on arrival; normal chats, additions and bot reports wait for the lead", async () => {
+  await withStores(async (_delivery, store) => {
+    const calls: string[] = [];
+    const rest = (async (path: string, init?: { method?: string }) => { calls.push(`${init?.method ?? "GET"} ${path}`); }) as Rest;
+    const base = { channel_id: normal, channel_policy: "trusted", attention: "direct", role: "OWNER_REQUEST" };
+    const ids = [idAt(T0), idAt(T0, 1), idAt(T0, 2), idAt(T0, 3)];
+    for (const id of ids) store.ensureWorking(normal, "66", id);
+    expect(await reactOnArrival(store, rest, { ...base, message_id: ids[0]! }, () => {})).toBe(true);
+    expect(store.working(ids[0]!)?.reacted).toBe(1);
+    expect(await reactOnArrival(store, rest, { ...base, message_id: ids[0]! }, () => {})).toBe(false);
+    expect(await reactOnArrival(store, rest, { ...base, message_id: ids[1]!, channel_policy: "normal" }, () => {})).toBe(false);
+    expect(await reactOnArrival(store, rest, { ...base, message_id: ids[2]!, addition_to: ids[0]! }, () => {})).toBe(false);
+    expect(await reactOnArrival(store, rest, { ...base, message_id: ids[3]!, role: "BOT_BUG_REPORT" }, () => {})).toBe(false);
+    expect(calls).toEqual([`PUT /channels/${normal}/messages/${ids[0]}/reactions/%F0%9F%91%80/@me`]);
+  });
+});
+
+test("a refused 👀 on arrival is recorded as not shown and never blocks intake", async () => {
+  await withStores(async (_delivery, store) => {
+    const id = idAt(T0);
+    store.ensureWorking(normal, "66", id);
+    const refuse = (async () => { throw new DiscordRestError(403, "PUT", "/x", "Missing Permissions"); }) as Rest;
+    const warnings: string[] = [];
+    const shown = await reactOnArrival(store, refuse,
+      { message_id: id, channel_id: normal, channel_policy: "trusted", attention: "direct", role: "OWNER_REQUEST" },
+      (w) => warnings.push(w));
+    expect([shown, store.working(id)?.reacted, warnings.length]).toEqual([false, 0, 1]);
   });
 });

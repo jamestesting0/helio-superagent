@@ -18,6 +18,31 @@ export async function removeEyes(rest: Rest, channel: string, message: string): 
   catch (error) { if (!gone(error)) throw error; }
 }
 
+/**
+ * DMs and the trusted chat answer every eligible human ping, so the 👀 goes on as soon as one arrives
+ * instead of waiting for the lead to remember it. Normal chats need a relevance decision first (`ack working`).
+ */
+export async function reactOnArrival(
+  store: Conversations, rest: Rest,
+  message: { readonly message_id: string; readonly channel_id: string; readonly channel_policy: string;
+    readonly attention: string; readonly role: string; readonly addition_to?: string },
+  warn: (message: string) => void,
+): Promise<boolean> {
+  if (message.channel_policy !== "trusted" || message.attention !== "direct" ||
+      message.role === "BOT_BUG_REPORT" || message.addition_to !== undefined) return false;
+  const row = store.working(message.message_id);
+  if (!row || row.closed_at !== null || row.reacted) return false;
+  store.setReacted(message.message_id, true);
+  try {
+    await addEyes(rest, message.channel_id, message.message_id);
+    return true;
+  } catch (error) {
+    store.setReacted(message.message_id, false);
+    warn(`could not add 👀 to message_id=${message.message_id}; continuing without it: ${String(error)}`);
+    return false;
+  }
+}
+
 export async function finishWorking(
   store: Conversations, rest: Rest | undefined, ids: readonly string[], now: number, warn: (message: string) => void,
 ): Promise<void> {
