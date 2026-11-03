@@ -41,6 +41,15 @@ else
 fi
 
 mkdir -p "$DORI_STATE_DIR"
+python3 - "$here/deploy-state.json" <<'PY' || true
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if path.is_file():
+    state = json.loads(path.read_text())
+    state.update(lead_restart_pending=False, lead_version=state.get("version"))
+    path.write_text(json.dumps(state, indent=2) + "\n")
+PY
 bun -e '
   const path = process.env.DORI_CONFIG;
   const config = await Bun.file(path).json();
@@ -49,5 +58,9 @@ bun -e '
 '
 
 # OmO's positional prompt starts the interactive lead's first turn automatically.
-startup='Start Helio mode. Initialize or recover the required persistent Discord inbound, learning context, lane watcher, dead-pane, guard, freshness, and Discord question monitors from the setup instructions. Check for existing live monitors in this session before creating any; do not duplicate watchers. Confirm readiness and surface errors, then reconcile pending deliveries under the current channel and permission rules. Wait for requests.'
+if [[ "$mode" == resume ]]; then
+  startup='Resume Helio mode. This resumed session gets its persistent monitors restored automatically. Step 1, in a single eval cell: arm only the persistent monitors from the setup instructions (Discord inbound, learning context, Discord questions, issue follow-ups, lane watcher, dead panes, host guard, lane freshness) that the status line does not already show as watching, never duplicating one. Step 2, in a single eval cell: read all pending queues at once (`~/.dori/elobot/ack pending inbound`, `~/.dori/elobot/ack pending context`, `helio question list`, `helio followups list`) and reconcile them under the current rules. Then send the readiness greeting by DM with the installed version from `~/.dori/elobot/deploy-state.json`, and surface any errors.'
+else
+  startup='Start Helio mode. This is a brand-new session, so none of its monitors exist yet; there is nothing to list or check first. Step 1, in a single eval cell: arm all eight persistent monitors from the setup instructions (Discord inbound, learning context, Discord questions, issue follow-ups, lane watcher, dead panes, host guard, lane freshness) right away. Step 2, in a single eval cell: read all pending queues at once (`~/.dori/elobot/ack pending inbound`, `~/.dori/elobot/ack pending context`, `helio question list`, `helio followups list`) and reconcile them under the current rules. Then send the readiness greeting by DM with the installed version from `~/.dori/elobot/deploy-state.json`, and surface any errors.'
+fi
 exec omo "${session_args[@]}" --no-ask-user --model "$HELIO_LEAD_MODEL" --thinking "$HELIO_LEAD_THINKING" --models "$HELIO_MODEL_ALLOW" --skill "$HELIO_BROWSER_SKILL" --append-system-prompt "$here/setup-prompt.md" --append-system-prompt "$here/work-policy.md" "$startup"
