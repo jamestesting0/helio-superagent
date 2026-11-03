@@ -125,6 +125,7 @@ test("a newer message holds the reply; covering it sends one reply and marks it 
     stage(delivery, anchor);
     stage(delivery, addition, { content: "also on mobile", attention: "review", addition_to: anchor });
     store.openWorking(normal, "66", anchor, T0);
+    store.setReacted(anchor, true);
     const { rest } = fakeRest({ [anchor]: "help" });
 
     const held = reply(delivery, store, rest, anchor, T0 + 10_000);
@@ -160,6 +161,8 @@ test("holding stops after two holds, then the reply goes out and names what was 
     const anchor = idAt(T0), next = idAt(T0 + 5000);
     stage(delivery, anchor);
     stage(delivery, next, { author_id: "67", content: "<@88> different question" });
+    store.ensureWorking(normal, "66", anchor);
+    store.setReacted(anchor, true);
     const { rest } = fakeRest({ [anchor]: "help" });
     expect((await reply(delivery, store, rest, anchor, T0 + 10_000).result).code).toBe(3);
     expect((await reply(delivery, store, rest, anchor, T0 + 20_000).result).code).toBe(3);
@@ -236,7 +239,7 @@ test("a DM or trusted-chat ping gets the 👀 on arrival; normal chats, addition
   await withStores(async (_delivery, store) => {
     const calls: string[] = [];
     const rest = (async (path: string, init?: { method?: string }) => { calls.push(`${init?.method ?? "GET"} ${path}`); }) as Rest;
-    const base = { channel_id: normal, channel_policy: "trusted", attention: "direct", role: "OWNER_REQUEST" };
+    const base = { channel_id: normal, author_id: "66", channel_policy: "trusted", attention: "direct", role: "OWNER_REQUEST" };
     const ids = [idAt(T0), idAt(T0, 1), idAt(T0, 2), idAt(T0, 3)];
     for (const id of ids) store.ensureWorking(normal, "66", id);
     expect(await reactOnArrival(store, rest, { ...base, message_id: ids[0]! }, () => {})).toBe(true);
@@ -256,8 +259,31 @@ test("a refused 👀 on arrival is recorded as not shown and never blocks intake
     const refuse = (async () => { throw new DiscordRestError(403, "PUT", "/x", "Missing Permissions"); }) as Rest;
     const warnings: string[] = [];
     const shown = await reactOnArrival(store, refuse,
-      { message_id: id, channel_id: normal, channel_policy: "trusted", attention: "direct", role: "OWNER_REQUEST" },
+      { message_id: id, channel_id: normal, author_id: "66", channel_policy: "trusted", attention: "direct", role: "OWNER_REQUEST" },
       (w) => warnings.push(w));
     expect([shown, store.working(id)?.reacted, warnings.length]).toEqual([false, 0, 1]);
+  });
+});
+
+test("an unpinged follow-up in an open conversation gets the 👀 on arrival; one without a conversation waits for the lead", async () => {
+  await withStores(async (_delivery, store) => {
+    const calls: string[] = [];
+    const rest = (async (path: string, init?: { method?: string }) => { calls.push(`${init?.method ?? "GET"} ${path}`); }) as Rest;
+    const followup = { message_id: idAt(T0), channel_id: normal, author_id: "66", channel_policy: "normal", attention: "review", role: "STAFF_QUESTION" };
+    expect(await reactOnArrival(store, rest, { ...followup, message_id: idAt(T0, 1) }, () => {})).toBe(false);
+    expect(await reactOnArrival(store, rest, followup, () => {}, true)).toBe(true);
+    expect(store.working(followup.message_id)?.reacted).toBe(1);
+    expect(store.workingAnchor(normal, "66", idAt(T0 + MIN))).toBe(followup.message_id);
+    expect(calls).toEqual([`PUT /channels/${normal}/messages/${followup.message_id}/reactions/%F0%9F%91%80/@me`]);
+  });
+});
+
+test("a reply sent without any 👀 shown says so, so the skipped first step is visible", async () => {
+  await withStores(async (delivery, store) => {
+    const anchor = idAt(T0);
+    stage(delivery, anchor);
+    const { rest } = fakeRest({ [anchor]: "help" });
+    const { result } = reply(delivery, store, rest, anchor, T0 + 10_000);
+    expect((await result).lines).toEqual(["SENT 900", "REPLY_NOTE no 👀 was shown for this turn; run ack working first when you pick a turn up"]);
   });
 });

@@ -19,18 +19,22 @@ export async function removeEyes(rest: Rest, channel: string, message: string): 
 }
 
 /**
- * DMs and the trusted chat answer every eligible human ping, so the 👀 goes on as soon as one arrives
- * instead of waiting for the lead to remember it. Normal chats need a relevance decision first (`ack working`).
+ * DMs and the trusted chat answer every eligible human ping, and a person in an open conversation is almost
+ * always answered, so the 👀 goes on as soon as such a message arrives instead of waiting for the lead to
+ * remember it. Other unpinged messages need a relevance decision first (`ack working`).
  */
 export async function reactOnArrival(
   store: Conversations, rest: Rest,
-  message: { readonly message_id: string; readonly channel_id: string; readonly channel_policy: string;
-    readonly attention: string; readonly role: string; readonly addition_to?: string },
+  message: { readonly message_id: string; readonly channel_id: string; readonly author_id: string;
+    readonly channel_policy: string; readonly attention: string; readonly role: string; readonly addition_to?: string },
   warn: (message: string) => void,
+  inConversation = false,
 ): Promise<boolean> {
-  if (message.channel_policy !== "trusted" || message.attention !== "direct" ||
-      message.role === "BOT_BUG_REPORT" || message.addition_to !== undefined) return false;
-  const row = store.working(message.message_id);
+  if (message.role === "BOT_BUG_REPORT" || message.addition_to !== undefined) return false;
+  const ping = message.channel_policy === "trusted" && message.attention === "direct";
+  if (!ping && !inConversation) return false;
+  const row = inConversation ? store.ensureWorking(message.channel_id, message.author_id, message.message_id)
+    : store.working(message.message_id);
   if (!row || row.closed_at !== null || row.reacted) return false;
   store.setReacted(message.message_id, true);
   try {
@@ -188,6 +192,8 @@ export async function guardedReply(o: {
   const authors = new Set(covered.map((id) => pending.get(id)?.author_id).filter((id): id is string => !!id));
   const mentions = [...authors].filter((id) => id !== targetAuthor);
   if (targetAuthor) authors.add(targetAuthor);
+  const shown = [o.target, ...covered].some((id) => o.store.working(id)?.reacted) ||
+    o.store.openWorkingRows().some((row) => row.reacted && row.channel_id === o.channel && authors.has(row.user_id));
 
   const lines = [`SENT ${await o.send(mentions)}`];
   for (const id of covered) {
@@ -201,5 +207,6 @@ export async function guardedReply(o: {
   if (covered.length) lines.push(`REPLY_COVERED ${covered.join(",")}`);
   if (notCovered.length) lines.push(`REPLY_NOTE not marked handled (not pending in this channel): ${notCovered.join(",")}`);
   if (check.leftover.length) lines.push(`REPLY_NOTE newer messages left as their own turns: ${check.leftover.join(",")}`);
+  if (!shown) lines.push("REPLY_NOTE no 👀 was shown for this turn; run ack working first when you pick a turn up");
   return { code: 0, lines };
 }

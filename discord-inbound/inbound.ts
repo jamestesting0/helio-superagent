@@ -281,7 +281,9 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
         // A ping opens the sender's working window, so their follow-ups count as additions until Helio replies.
         if (message.attention === "direct" && message.role !== "BOT_BUG_REPORT" && message.addition_to === undefined) {
           conversations.openWorking(msg.channel_id, msg.author.id, msg.id, Date.now());
-          if (!backlog) void reactOnArrival(conversations, rest, message, warn);
+          if (!backlog) void reactOnArrival(conversations, rest, message, warn, conversation !== undefined);
+        } else if (!backlog && conversation && message.attention === "review" && message.addition_to === undefined) {
+          void reactOnArrival(conversations, rest, message, warn, true);
         }
         if (backlog) backlogMessages.push(message);
         else turns.push(message);
