@@ -38,3 +38,22 @@ class BetaRunTests(unittest.TestCase):
   with self.assertRaises(M['RunError']):self.prepare()
 
 if __name__=='__main__':unittest.main()
+
+
+class MainCheckTests(unittest.TestCase):
+ def git(self,*args):
+  import subprocess
+  return subprocess.run(['git','-C',str(self.repo),'-c','user.name=t','-c','user.email=t@t',*args],check=True,capture_output=True,text=True).stdout.strip()
+ def setUp(self):
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.repo=Path(self.tmp.name)
+  self.git('init','-q','-b','main');(self.repo/'a').write_text('1');self.git('add','a');self.git('commit','-qm','base')
+  self.git('checkout','-qb','pr');(self.repo/'b').write_text('pr');self.git('add','b');self.git('commit','-qm','pr change')
+  self.git('checkout','-q','main');(self.repo/'a').write_text('2');self.git('commit','-qam','guard on main')
+  self.git('checkout','-q','pr')
+ def test_a_branch_without_current_main_is_refused_with_the_fix(self):
+  self.assertIn('no origin/main',M['missing_main'](self.repo,fetch=False))
+  self.git('update-ref','refs/remotes/origin/main','main')
+  problem=M['missing_main'](self.repo,fetch=False)
+  self.assertIn('does not contain origin/main',problem);self.assertIn('git merge --no-edit origin/main',problem)
+  self.git('merge','-q','--no-edit','origin/main')
+  self.assertIsNone(M['missing_main'](self.repo,fetch=False))

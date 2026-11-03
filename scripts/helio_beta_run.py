@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Start beta with the scoped environment; never source a production .env."""
-import ast,os,pwd,runpy,stat
+import ast,os,pwd,runpy,stat,subprocess
 from pathlib import Path
 from dotenv import dotenv_values
 
@@ -37,9 +37,23 @@ def prepare(home: Path, cwd: Path, broker_ok: bool, uid: int):
     env['PYTHONUNBUFFERED']='1'
     return str(python),str(script),env
 
+def missing_main(cwd: Path, fetch=True):
+    """Beta must run code that includes current main: main carries the guards that keep beta off production
+    (for example the inactive-thread cleanup that only the main bot runs). Returns the fix to print, or None."""
+    git=['git','-C',str(cwd)]
+    if fetch:subprocess.run(git+['fetch','-q','origin','main'],capture_output=True,timeout=30)
+    if subprocess.run(git+['rev-parse','-q','--verify','origin/main'],capture_output=True).returncode:
+        return 'this checkout has no origin/main to compare against; run: git fetch origin main'
+    if subprocess.run(git+['merge-base','--is-ancestor','origin/main','HEAD'],capture_output=True).returncode==0:return None
+    return ('this checkout does not contain origin/main, so it misses fixes beta relies on. Test it merged with main in a '
+            'local worktree (never push the merge): git worktree add ~/.dori/elobot/state/worktrees/<name> HEAD && '
+            'cd ~/.dori/elobot/state/worktrees/<name> && git merge --no-edit origin/main && helio beta run')
+
 def start(home: Path,check=False):
     client=runpy.run_path(str(Path(__file__).with_name('helio_beta_client.py')))
     python,script,env=prepare(home,Path.cwd(),client['healthy'](),os.getuid())
+    problem=missing_main(Path.cwd())
+    if problem:raise RunError(problem)
     if check:
         print('Beta launch configuration: isolated account, beta identity and scoped credential verified; bot not started.')
         return 0

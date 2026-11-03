@@ -18,7 +18,7 @@
 
 ## External effects
 
-A database change or backup cannot undo Discord messages, announcements, role changes or CoC/Helper calls. Keep beta output in the test channels; Elo Beta's inactive-thread cleanup scans the shared match channel, so check that routing once per session.
+A database change or backup cannot undo Discord messages, announcements, role changes or CoC/Helper calls, so keep beta output in the test channels. Since Elo Bot `26e3136` the inactive-thread cleanup runs only on the main bot, never on Elo Beta. `helio beta run` therefore requires a checkout that contains `origin/main`; for an older PR branch it prints the commands to test the branch merged with main in a local worktree. Never push that merge.
 
 ## Backups
 
