@@ -24,7 +24,7 @@ export async function contextReplayAllowed(
   const normal = ids("DORI_DISCORD_NORMAL_CHANNELS");
   const allowed = ids("DORI_DISCORD_ALLOWED");
   const trusted = ids("DORI_DISCORD_TRUSTED_CHANNELS");
-  const excluded = ids("DORI_DISCORD_CONTEXT_EXCLUDED");
+  const excluded = new Set([...ids("DORI_DISCORD_CONTEXT_EXCLUDED"), ...ids("DORI_DISCORD_IGNORED_CHANNELS")]);
   const learning = ids("DORI_DISCORD_CONTEXT");
   if (normal.has(payload.channel_id) || excluded.has(payload.channel_id) ||
       (allowed.has(payload.channel_id) && !trusted.has(payload.channel_id))) return false;

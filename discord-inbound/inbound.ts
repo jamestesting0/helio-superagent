@@ -197,6 +197,8 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
     // Server messages outside the configured category are not Helio's business: no lookup above it, no warning.
     if (msg.guild_id !== undefined && cfg.scopeCategory && !(await insideCategory(msg.channel_id, cfg.scopeCategory, channelInfo))) {
       inbound = null;
+    } else if (msg.guild_id !== undefined && cfg.ignoredChannels?.size && await insideAllowed(msg.channel_id, cfg.ignoredChannels, parentOf)) {
+      inbound = null;
     } else if (msg.guild_id !== undefined && cfg.blockedChannels?.size &&
         await insideAllowed(msg.channel_id, cfg.blockedChannels, parentOf)) {
       warn(`channel policy blocked channel=${msg.channel_id} message_id=${msg.id}; cursor retained`);
@@ -380,6 +382,8 @@ listener.on("connected", ({ user }) => { cfg.botId = user.id; });
 listener.on("channel_update", () => channels.clear());
 listener.on("channel_delete", () => channels.clear());
 listener.on("message_create", (event) => {
+  // Ignored channels are not read, cached or processed at all.
+  if (cfg.ignoredChannels?.has(event.channel_id)) return;
   seen(event as unknown as ReplyMessage);
   seen((event as { referenced_message?: ReplyMessage | null }).referenced_message);
   enqueue(`message ${event.id} in ${event.channel_id}`, () => deliver(event, false));

@@ -17,6 +17,7 @@ export interface FilterConfig {
   issueReportChannels?: ReadonlySet<string>;
   readonly bugReportSource?: { readonly authorId: string; readonly channelId: string };
   readonly scopeCategory?: string;
+  readonly ignoredChannels?: ReadonlySet<string>;
   readonly inConversation?: (channelId: string, userId: string) => boolean;
 }
 

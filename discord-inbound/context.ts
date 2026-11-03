@@ -28,6 +28,7 @@ function requireEnv(name: string): string {
 const rest = discordRest(requireEnv("DORI_DISCORD_TOKEN"));
 const ids = requireEnv("DORI_DISCORD_CONTEXT").split(",").map((s) => s.trim()).filter(Boolean);
 const excluded = excludedChannels(process.env.DORI_DISCORD_CONTEXT_EXCLUDED ?? "");
+for (const id of excludedChannels(process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "")) excluded.add(id);
 for (const id of normalChannels(process.env)) excluded.add(id);
 const stateDir = requireEnv("DORI_STATE_DIR");
 const statePath = `${stateDir}/discord-context.json`;

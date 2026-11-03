@@ -9,7 +9,7 @@ async function invoke(
   dir: string, script: string, args: readonly string[] = [],
   options: {
     refresh?: boolean; forwards?: boolean; trustedDms?: boolean; trustedIds?: string; reportChannels?: string;
-    nullParent?: boolean; unreadableParent?: boolean; scopeCategory?: string;
+    nullParent?: boolean; unreadableParent?: boolean; scopeCategory?: string; ignored?: string;
     bugReports?: boolean; bugReportSource?: string; replies?: boolean;
     trustedChannels?: string; allowed?: string;
   } = {},
@@ -30,6 +30,7 @@ async function invoke(
       DORI_TEST_UNREADABLE_PARENT: options.unreadableParent ? "1" : "",
       DORI_TEST_CATEGORY_FATAL: options.scopeCategory ? "1" : "",
       DORI_DISCORD_SCOPE_CATEGORY: options.scopeCategory ?? "",
+      DORI_DISCORD_IGNORED_CHANNELS: options.ignored ?? "",
       DORI_DISCORD_TRUSTED_IDS: options.trustedIds ?? "",
       DORI_DISCORD_REPORT_CHANNELS: options.reportChannels ?? "",
       DORI_TEST_BUG_REPORTS: options.bugReports ? "1" : "",
@@ -470,4 +471,20 @@ test("authorized Discord reply resolves only its matching stored question", asyn
   const saved=new Database(path,{readonly:true});
   expect(saved.query("SELECT status,answer_id,answer_author,answer_text FROM questions").get()).toEqual({status:"answered",answer_id:"90",answer_author:"99",answer_text:"try again now"});saved.close();
  } finally {await rm(dir,{recursive:true,force:true})}
+});
+
+test("an ignored channel produces nothing, live or during catch-up", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-ignored-flow-"));
+  try {
+    await Bun.write(join(dir, "discord-inbound.json"), '{"100":"1","200":"1"}');
+    const baseline = await invoke(dir, "inbound.ts", []);
+    expect(baseline.stdout).toContain('"channel_id":"100"');
+    const ignoredDir = await mkdtemp(join(tmpdir(), "dori-ignored-flow-"));
+    try {
+      await Bun.write(join(ignoredDir, "discord-inbound.json"), '{"100":"1","200":"1"}');
+      const result = await invoke(ignoredDir, "inbound.ts", [], { ignored: "100" });
+      expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+      expect(result.stdout).not.toContain('"channel_id":"100"');
+    } finally { await rm(ignoredDir, { recursive: true, force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -47,6 +47,7 @@ export function filterConfig(
     bugReportSource,
     ...(inConversation ? { inConversation } : {}),
     ...(scopeCategory ? { scopeCategory } : {}),
+    ignoredChannels: csv("DORI_DISCORD_IGNORED_CHANNELS"),
   };
 }
 
