@@ -108,4 +108,4 @@ Use the bundled Bun Discord REST/messenger helpers for API calls. If another cli
 
 ## Greeting
 
-When ready, greet me by DM in a few lines: ready or not, any errors, and the installed version (`version` in `~/.dori/elobot/deploy-state.json`, or say it is unknown).
+As soon as the monitors are armed and the pending queues are read, greet me by DM in a few lines: ready or not, any errors, the installed version (`version` in `~/.dori/elobot/deploy-state.json`, or say it is unknown) and how many items are pending. Work through the pending items after the greeting, not before it.
