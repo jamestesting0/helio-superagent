@@ -13,6 +13,7 @@ ORDER = (NONE, MONITORS, LEAD, FULL)
 KIT_RULES = (
     ("scripts/helio_isolated_launcher.py", FULL),
     ("scripts/helio_isolated_start.py", FULL),
+    ("isolation/*.md", NONE),
     ("isolation/*", FULL),
     ("scripts/helio-followups.py", MONITORS),
     ("scripts/helio-questions.py", MONITORS),

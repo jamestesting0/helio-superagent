@@ -10,7 +10,7 @@ class DeployPlanTests(unittest.TestCase):
         return P["plan"](list(kit), list(installed), env)
 
     def test_tools_docs_and_tests_need_nothing(self):
-        result = self.needs(["scripts/helio-triage.py", "docs/workflow.md", "tests/test_x.py"],
+        result = self.needs(["scripts/helio-triage.py", "docs/workflow.md", "tests/test_x.py", "isolation/README.md"],
                             ["@inbound/turns.test.ts", "@inbound/fixtures/discord.ts", "ack", "reply.ts", "@launcher"])
         self.assertEqual((result["needs"], result["monitors_changed"]), ("none", False))
 
