@@ -3,6 +3,8 @@
     helio beta commands list                                  every command, its mention, and where it can run
     helio beta commands mention "match base submit" [--channel ID]   post one mention as Elo Beta (default: Test thread)
     helio beta commands delete                                delete the posted mention message(s)
+    helio beta commands paste "TEXT"                          print a BrowserSkill evaluate expression that pastes TEXT
+                                                              into the focused Discord option (IDs, names, numbers, text)
 
 Clicking a posted mention such as </match queue:123> fills exactly Elo Beta's command into that channel's
 message box, so tests never type `/` or pick between Elo Beta and the production bot's command of the same name.
@@ -264,7 +266,20 @@ def mention(token, home, table, test_channel, target, channel):
     return 0
 
 
+def paste_expression(text):
+    """A paste event into Discord's editor: it goes through the editor's own model, so options and pickers update."""
+    return ("(()=>{const t=document.querySelector('[role=textbox][data-slate-editor]');if(!t)return 'NO_EDITOR';"
+            f"const d=new DataTransfer();d.setData('text/plain',{json.dumps(text)});"
+            "const e=new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true});t.dispatchEvent(e);"
+            "return e.defaultPrevented?'PASTED':'NOT_HANDLED';})()")
+
+
 def main(action, target=None, channel=None, home=Path.home()):
+    if action == 'paste':
+        if target is None:
+            raise CommandsError('paste needs the text to paste')
+        print(paste_expression(target))
+        return 0
     test_channel = os.environ.get('HELIO_TEST_CHANNEL', '').strip()
     if not test_channel.isdigit():
         raise CommandsError('HELIO_TEST_CHANNEL is not set')

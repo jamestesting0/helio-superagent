@@ -1,4 +1,4 @@
-import runpy, tempfile, unittest
+import json, runpy, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -94,6 +94,13 @@ class ClassifyTests(unittest.TestCase):
             with self.assertRaisesRegex(m['CommandsError'], 'did you mean /match base submit'):
                 m['mention']('t', Path(self.dir.name), table, '10', 'match base submt', '10')
         self.assertEqual(calls, [])
+
+
+class PasteTests(unittest.TestCase):
+    def test_paste_text_is_encoded_as_a_javascript_string(self):
+        expression = m['paste_expression']('a\'b"c\\n</script>')
+        self.assertIn(json.dumps('a\'b"c\\n</script>'), expression)
+        self.assertTrue(expression.startswith('(()=>{') and expression.endswith('})()'))
 
 
 if __name__ == '__main__':

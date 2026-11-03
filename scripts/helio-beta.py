@@ -174,7 +174,7 @@ def main():
     inspect=sub.add_parser("inspect"); inspect.add_argument("collection"); inspect.add_argument("id_json",help="exact ID encoded as JSON")
     apply_parser=sub.add_parser("apply"); apply_parser.add_argument("file",nargs="?",type=Path)
     run_parser=sub.add_parser("run"); run_parser.add_argument("--check",action="store_true")
-    commands=sub.add_parser("commands"); commands.add_argument("action",choices=("list","mention","delete")); commands.add_argument("target",nargs="?",help="mention: the command, e.g. \"match base submit\""); commands.add_argument("--channel",help="mention: channel or thread ID (default: the Test thread)")
+    commands=sub.add_parser("commands"); commands.add_argument("action",choices=("list","mention","delete","paste")); commands.add_argument("target",nargs="?",help="mention: the command, e.g. \"match base submit\"; paste: the text"); commands.add_argument("--channel",help="mention: channel or thread ID (default: the Test thread)")
     args=parser.parse_args()
     if args.command == "status":
         exposure=process_exposure()
