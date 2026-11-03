@@ -91,6 +91,48 @@ test("closing directly refuses while a signal is not live and leaves the pane al
   expect(closedVia()).toHaveLength(0);
 });
 
+const failed: Lane = { ...lane, tab: "w:t1", launchState: "failed", launchError: "startup failure: No API key" };
+const notified = () => world.calls.filter((c) => c[0] === "notify");
+const storedFailed = async () => {
+  const current = (await at(T0).registry.read("demo-lane"))!;
+  await at(T0).registry.write({ ...current, tab: failed.tab, launchState: failed.launchState, launchError: failed.launchError });
+  return (await at(T0).registry.read("demo-lane"))!;
+};
+const statusNow = async () => { const l = await at(T0).registry.read("demo-lane"); return l && statusOf(l); };
+
+test("a failed launch whose pane is gone is retired without Done signals, keeping quiet in the work thread", async () => {
+  world.prState = "OPEN";
+  world.panes = [];
+  const r = await closeLane(at(T0), await storedFailed(), "launch failed");
+  expect(r.closed).toBe(true);
+  expect(r.lines.at(-1)).toContain("no Done signals checked");
+  expect(await statusNow()).toBe("closed");
+  expect(closedVia()).toHaveLength(0);
+  expect(notified()).toHaveLength(0);
+});
+
+test("a failed launch is not retired while an agent is still working or idle in its pane", async () => {
+  world.prState = "OPEN";
+  for (const agent_status of ["working", "idle"]) {
+    world.panes = [{ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status }];
+    const r = await closeLane(at(T0), await storedFailed(), "launch failed");
+    expect(r.closed).toBe(false);
+    expect(r.lines.at(-1)).toContain(`an agent is still ${agent_status}`);
+  }
+  expect(closedVia()).toHaveLength(0);
+  expect(await statusNow()).toBe("working");
+});
+
+test("a failed launch whose pane only holds a shell is retired and its tab closed", async () => {
+  world.prState = "OPEN";
+  world.panes = [{ pane_id: "w:p1", workspace_id: "w", agent: "", agent_status: "unknown" }];
+  const r = await closeLane(at(T0), await storedFailed(), "launch failed");
+  expect(r.closed).toBe(true);
+  expect(await statusNow()).toBe("closed");
+  expect(closedVia()).toEqual([["herdr", "tab", "close", "w:t1"]]);
+  expect(notified()).toHaveLength(0);
+});
+
 test("delivery is confirmed by the pane's agent status moving to working, with exactly one Enter", async () => {
   world.panes = [{ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" }];
   world.onEnterStatus = "working";

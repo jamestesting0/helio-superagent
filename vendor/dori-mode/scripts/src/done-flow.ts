@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { type DoriConfig, fill } from "./config.ts";
 import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
-import { sendVerified } from "./panes.ts";
+import { sendVerified, statusLookup } from "./panes.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
 
 export type FlowDeps = {
@@ -64,10 +64,34 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
   return reasons;
 };
 
+/**
+ * A launch that failed never did its work, so its Done signals can never read back live. It may be retired without
+ * them, but only once no agent can still be running in its pane: the failure is detected from screen text, and an agent
+ * that printed such text and recovered must not be closed. The worktree is kept and the work thread is not told "done".
+ */
+const retireFailedLaunch = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+  const cleanup: string[] = [];
+  if (lane.pane) {
+    const { status, error } = await statusLookup(deps.run, lane.pane);
+    if (error) return { closed: false, lines: [`REFUSED ${lane.key}: cannot confirm pane ${lane.pane} is no longer running an agent: ${error.slice(0, 160)}`] };
+    if (status === "working" || status === "idle") {
+      return { closed: false, lines: [`REFUSED ${lane.key}: an agent is still ${status} in pane ${lane.pane}; check its screen, and if the launch really failed close the tab first (herdr tab close ${lane.tab ?? "<tab>"})`] };
+    }
+    if (status !== undefined && lane.tab) cleanup.push((await deps.run(["herdr", "tab", "close", lane.tab])).code === 0 ? `tab ${lane.tab} closed` : `tab ${lane.tab} not closed`);
+  }
+  const exists = deps.exists ?? existsSync;
+  for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) cleanup.push(`worktree ${wt} retained for manual review`);
+  const at = iso(deps.clock);
+  const receipt = { checks: [], note, cleanup, retired: `launch failed (${lane.launchError ?? "no detail"}); no Done signals checked` };
+  await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+  return { closed: true, lines: [`CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
+};
+
 export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   const exists = deps.exists ?? existsSync;
   const unsafe = await unpushedWork(deps, lane);
   if (unsafe.length) return { closed: false, lines: [`REFUSED ${lane.key}: ${unsafe.join("; ")}`] };
+  if (lane.launchState === "failed") return retireFailedLaunch(deps, lane, note);
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };

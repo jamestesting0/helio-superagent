@@ -10,7 +10,7 @@ dori launch fix-login --title "Fix the login redirect loop" \
   --thread "telegram:<chat>/<topic>" --model anthropic/claude-opus-5-5
 ```
 
-`launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds checks the start: `STARTUP_ERROR` on a known failure (missing module, no API key, rate limit, quota), `STARTUP_OK` only when herdr reports the agent idle or working, `STARTUP_UNCONFIRMED` otherwise. On `STARTUP_ERROR`, relaunch on another model; on `STARTUP_UNCONFIRMED`, look at the pane before doing anything else.
+`launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds checks the start: `STARTUP_ERROR` on a known failure (missing module, no API key, rate limit, quota), `STARTUP_OK` only when herdr reports the agent idle or working, `STARTUP_UNCONFIRMED` otherwise. On `STARTUP_ERROR`, relaunch on another model; on `STARTUP_UNCONFIRMED`, look at the pane before doing anything else. After a `STARTUP_ERROR`, fix the cause (for a model error, use one the allowlist permits) and relaunch under a new key; then retire the failed lane with `dori close <key> --note "launch failed: <cause>"`. That close skips the Done signals but refuses while an agent is still working or idle in its pane: check the screen, and close the tab first only if the launch really failed.
 
 Write the brief like a careful prompt:
 
