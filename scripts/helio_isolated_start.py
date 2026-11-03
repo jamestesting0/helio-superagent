@@ -10,17 +10,24 @@ env=dict(os.environ,HERDR_SESSION='elobot')
 server=subprocess.Popen([herdr,'--session','elobot','server'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 def run(args,timeout=15):
     p=subprocess.run([herdr,*args],env=env,capture_output=True,text=True,timeout=timeout)
-    if p.returncode:raise RuntimeError('private Herdr operation failed: '+args[0])
+    if p.returncode:raise RuntimeError('private Herdr operation failed: '+' '.join(args[:2])+': '+(p.stderr or p.stdout).strip()[-400:])
     return p.stdout
 try:
     for _ in range(120):
-        try:run(['status','server'],2);break
-        except (RuntimeError,subprocess.SubprocessError):
-            if server.poll() is not None:raise RuntimeError('private Herdr server exited')
-            time.sleep(.1)
+        try:
+            if 'status: running' in run(['status','server'],2):break
+        except (RuntimeError,subprocess.SubprocessError):pass
+        if server.poll() is not None:raise RuntimeError('private Herdr server exited')
+        time.sleep(.1)
     else:raise RuntimeError('private Herdr server did not start')
     if mode!='shell':
-        result=json.loads(run(['tab','create','--cwd','/home/james/PythonProjects/elo-bot','--label','Helio','--focus']))['result']
+        for tab in json.loads(run(['tab','list']))['result']['tabs']:
+            if tab.get('label')=='Helio':run(['tab','close',tab['tab_id']])
+        if json.loads(run(['workspace','list']))['result']['workspaces']:
+            result=json.loads(run(['tab','create','--cwd','/home/james/PythonProjects/elo-bot','--label','Helio','--focus']))['result']
+        else:
+            result=json.loads(run(['workspace','create','--cwd','/home/james/PythonProjects/elo-bot','--label','Helio','--focus']))['result']
+            run(['tab','rename',result['tab']['tab_id'],'Helio'])
         pane=result['root_pane']['pane_id']
         run(['pane','run',pane,'helio '+mode])
     result=subprocess.run([herdr,'--session','elobot'],env=env)

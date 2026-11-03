@@ -73,6 +73,15 @@ def refresh_owner_policy():
         if os.path.exists(tmp):os.unlink(tmp)
     return policy
 
+NS_GET_USERNS=0xb701  # ioctl from linux/nsfs.h: fd of the user namespace that owns a namespace
+
+def netns_owner(pid):
+    # bwrap nests the sandboxed process in a second user namespace that has no
+    # rights over the network namespace; slirp4netns must join the owning one.
+    fd=os.open(f'/proc/{pid}/ns/net',os.O_RDONLY)
+    try:return fcntl.ioctl(fd,NS_GET_USERNS)
+    finally:os.close(fd)
+
 def wait_byte(fd,proc,seconds=20):
     ready,_,_=select.select([fd],[],[],seconds)
     if not ready:raise RuntimeError('Sandbox setup timed out')
@@ -155,7 +164,8 @@ try:
         elif '--suite-check' in sys.argv[1:]:
             command=['/home/james/.bun/bin/bun','test','/home/james/helio-agent/vendor/dori-mode/scripts/test/helio-lifecycle.test.ts','/home/james/helio-agent/vendor/dori-mode/scripts/test/helio-model.test.ts']
         elif '--sync-check' in sys.argv[1:]:
-            command=['/usr/bin/python3','/home/james/helio-agent/scripts/sync-install.py','--apply']
+            # In the isolated home ~/.local/bin/helio is the inner helio-wsl command, never the host wrapper.
+            command=['/usr/bin/python3','/home/james/helio-agent/scripts/sync-install.py','--apply','--update-launcher']
         elif '--worker-check' in sys.argv[1:]:
             command=['/home/james/PythonProjects/elo-bot/.venv/bin/python','/home/james/.cache/test_isolated_worker.py']
         elif '--model-check' in sys.argv[1:]:
@@ -193,10 +203,17 @@ try:
         os.close(info_w)
         try:info=info_json(info_r)
         finally:os.close(info_r)
+        owner=netns_owner(info['child-pid'])
+        slirp_log=tempfile.TemporaryFile()
         ready_r,ready_w=os.pipe()
-        network=subprocess.Popen(['setpriv','--reuid',uid,'--regid',gid,'--clear-groups','--no-new-privs','slirp4netns','--configure','--disable-host-loopback','--ready-fd',str(ready_w),str(info['child-pid']),'tap0'],pass_fds=(ready_w,),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            network=subprocess.Popen(['setpriv','--reuid',uid,'--regid',gid,'--clear-groups','--no-new-privs','slirp4netns','--configure','--disable-host-loopback','--userns-path',f'/proc/self/fd/{owner}','--ready-fd',str(ready_w),str(info['child-pid']),'tap0'],pass_fds=(ready_w,owner),stdout=subprocess.DEVNULL,stderr=slirp_log)
+        finally:os.close(owner)
         os.close(ready_w)
         try:wait_byte(ready_r,network)
+        except RuntimeError as error:
+            slirp_log.seek(0);detail=slirp_log.read()[-500:].decode(errors='replace').strip()
+            raise RuntimeError(f'{error}: {detail}' if detail else str(error)) from None
         finally:os.close(ready_r)
         Path(control,'ready').touch()
         if interactive:relay(master,sandbox);code=sandbox.wait(timeout=15)
