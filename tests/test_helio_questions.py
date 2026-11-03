@@ -226,6 +226,27 @@ class QuestionTests(unittest.TestCase):
   with run('list'),redirect_stdout(out):self.m['main']()
   self.assertEqual(json.loads(out.getvalue()),[])
   with run('withdraw',sent['id']),self.assertRaises(ValueError):self.m['main']()
+ def test_staff_question_goes_to_the_staff_chat_and_pings_owner_and_trusted_users(self):
+  calls=[]
+  def request(method,path,body=None):
+   calls.append((method,path,body));return {'id':'300'}
+  with patch.dict(self.g,{'request':request,'STAFF':'100'}),patch.dict('os.environ',{'DORI_DISCORD_TRUSTED_IDS':'77,78'}):
+   sent=self.m['create_question'](self.db,'lead','staff','','Push the merge to PR #1?')
+   row=self.db.execute('SELECT * FROM questions WHERE id=?',(sent['id'],)).fetchone()
+   self.assertEqual([self.m['may_answer'](row,x) for x in ('99','77','78','66')],[True,True,True,False])
+  self.assertEqual((sent['status'],sent['channel_id']),('awaiting_answer','100'))
+  body=calls[-1][2]
+  self.assertEqual(calls[-1][1],'/channels/100/messages')
+  self.assertTrue(body['content'].startswith('<@99> <@77> <@78>\nQuestion ['))
+  self.assertEqual(body['allowed_mentions'],{'parse':[],'users':['99','77','78']})
+ def test_owner_and_thread_questions_ping_nobody(self):
+  calls=[]
+  def request(method,path,body=None):
+   calls.append((method,path,body));return {'id':'200'} if path=='/users/@me/channels' else {'id':'300'}
+  with patch.dict(self.g,{'request':request}),patch.dict('os.environ',{'DORI_DISCORD_TRUSTED_IDS':'77'}):
+   self.m['create_question'](self.db,'lead','owner','','Rotate the production token?')
+  self.assertEqual(calls[-1][2]['allowed_mentions'],{'parse':[]})
+  self.assertFalse(calls[-1][2]['content'].startswith('<@'))
  def test_thread_question_uses_registered_allowed_lane(self):
   (self.state/'lanes').mkdir();(self.state/'lanes/lane-one.json').write_text(json.dumps({'thread':'discord:101'}))
   calls=[]

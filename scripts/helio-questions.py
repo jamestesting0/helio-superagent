@@ -11,6 +11,15 @@ STATE=Path(os.environ.get('DORI_STATE_DIR',''))
 TOKEN=os.environ.get('DORI_DISCORD_TOKEN','')
 OWNER=os.environ.get('DORI_DISCORD_OWNER_ID','')
 ALLOWED=set(x.strip() for x in os.environ.get('DORI_DISCORD_ALLOWED','').split(',') if x.strip())
+STAFF=os.environ.get('HELIO_STAFF_CHAT','').strip()
+
+def trusted_now():
+ return {x.strip() for x in os.environ.get('DORI_DISCORD_TRUSTED_IDS','').split(',') if ID.fullmatch(x.strip())}
+
+def may_answer(row,author):
+ # Staff questions accept the owner or anyone trusted at the moment they answer.
+ if row['audience']=='staff':return author==OWNER or author in trusted_now()
+ return author==OWNER or (row['audience']=='thread' and author==row['recipient'])
 
 def db_connect():
  if not STATE.is_absolute():raise ValueError('DORI_STATE_DIR must be an absolute path')
@@ -61,6 +70,9 @@ def channel_for(row):
   if lane_path.is_symlink() or not lane_path.is_file():raise ValueError('no registered lane for this question')
   lane=json.loads(lane_path.read_text());channel=str(lane.get('thread','')).removeprefix('discord:')
   if not ID.fullmatch(channel) or not allowed_channel(channel):raise ValueError('lane has no authorized Discord work thread')
+ elif row['audience']=='staff':
+  channel=STAFF
+  if not ID.fullmatch(channel) or not allowed_channel(channel):raise ValueError('HELIO_STAFF_CHAT is not an allowed channel')
  else:raise ValueError('invalid question audience')
  if not ID.fullmatch(channel):raise ValueError('invalid Discord channel')
  return channel
@@ -82,7 +94,7 @@ def reconcile_pending(db):
   row=db.execute("SELECT * FROM questions WHERE status='awaiting_answer' AND channel_id=? AND message_id=?",(message.get('channel_id'),message.get('reply_to'))).fetchone()
   if not row:continue
   author=message.get('author_id')
-  if author!=OWNER and (row['audience']=='owner' or author!=row['recipient']):continue
+  if not may_answer(row,author):continue
   if not ID.fullmatch(str(message.get('message_id',''))) or not isinstance(message.get('content'),str):continue
   # Stored roles and channel_policy are historical decisions, not current authority.
   origin=message.get('discord_origin')
@@ -178,9 +190,11 @@ def send_question(db,id):
  changed=db.execute("UPDATE questions SET status='sending',channel_id=?,error=NULL,updated=? WHERE id=? AND status IN ('queued','send_failed')",(channel,int(time.time()*1000),id)).rowcount
  db.commit()
  if not changed:return event(db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone())
- content=f"Question [{id}]\n{format_links(row['question'])}\n\nPlease reply directly to this message so I can route your answer to the right task."
+ pings=[x for x in dict.fromkeys([OWNER,*sorted(trusted_now())]) if ID.fullmatch(x)] if row['audience']=='staff' else []
+ mention=' '.join(f'<@{x}>' for x in pings)
+ content=(mention+'\n' if mention else '')+f"Question [{id}]\n{format_links(row['question'])}\n\nPlease reply directly to this message so I can route your answer to the right task."
  try:
-  result=request('POST',f'/channels/{channel}/messages',{'content':content,'allowed_mentions':{'parse':[]},'nonce':id,'enforce_nonce':True})
+  result=request('POST',f'/channels/{channel}/messages',{'content':content,'allowed_mentions':{'parse':[],**({'users':pings[:100]} if pings else {})},'nonce':id,'enforce_nonce':True})
   mid=str(result.get('id',''))
   if not ID.fullmatch(mid):raise ValueError('Discord returned an invalid message ID')
   write(db,id,'awaiting_answer',message_id=mid,error=None)
@@ -192,7 +206,8 @@ def send_question(db,id):
 def create_question(db,lane,audience,recipient,text):
  if not LANE.fullmatch(lane) or '..' in lane:raise ValueError('invalid lane key')
  if audience=='owner':recipient=OWNER
- if audience not in ('owner','thread') or not ID.fullmatch(recipient):raise ValueError('expected a valid recipient ID')
+ if audience=='staff':recipient=STAFF
+ if audience not in ('owner','thread','staff') or not ID.fullmatch(recipient):raise ValueError('expected a valid recipient ID')
  text=text.strip()
  if not text or len(text)>1500:raise ValueError('question must have 1-1500 characters')
  fingerprint=hashlib.sha256(json.dumps([lane,audience,recipient,text],ensure_ascii=False).encode()).hexdigest()
@@ -254,7 +269,7 @@ def watch(db,lane):
 
 def main():
  parser=argparse.ArgumentParser();sub=parser.add_subparsers(dest='cmd',required=True)
- ask=sub.add_parser('ask');ask.add_argument('--lane',required=True);ask.add_argument('--audience',choices=('owner','thread'),required=True);ask.add_argument('--recipient',default='');ask.add_argument('--text',required=True)
+ ask=sub.add_parser('ask');ask.add_argument('--lane',required=True);ask.add_argument('--audience',choices=('owner','staff','thread'),required=True);ask.add_argument('--recipient',default='');ask.add_argument('--text',required=True)
  for name in ('retry','recover','ack','cancel','withdraw','show'):
   command=sub.add_parser(name);command.add_argument('id')
  w=sub.add_parser('watch');w.add_argument('--lane')

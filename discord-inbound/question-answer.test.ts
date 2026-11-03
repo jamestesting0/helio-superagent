@@ -102,3 +102,11 @@ m["reconcile_pending"](db);print(json.dumps(m["event"](db.execute("SELECT * FROM
    .toEqual({role:"STAFF_QUESTION",scope:"answer-only",text:message.content});
  }finally{delivery.close();rmSync(dir,{recursive:true,force:true})}
 });
+
+test("staff questions accept the owner or a currently trusted user, never other staff",()=>{
+ const f=fixture("staff","1218071208197623880");try{
+  expect(recordAnswer(f.dir,"99",{...answer,author_id:"78",role:"STAFF_QUESTION"})).toBeUndefined();
+  expect(recordAnswer(f.dir,"99",{...answer,author_id:"77",role:"TRUSTED_REQUEST"})).toBe("q1");
+  expect((f.db.query("SELECT answer_author FROM questions").get() as any).answer_author).toBe("77");
+ }finally{f.db.close();rmSync(f.dir,{recursive:true,force:true})}
+});

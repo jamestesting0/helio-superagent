@@ -20,7 +20,10 @@ export function recordAnswer(stateDir: string, owner: string, inbound: Answer): 
    ).get(inbound.channel_id,inbound.reply_to!);
    if (!row) return;
    if (row.status==="answered") return row.answer_id===inbound.message_id ? row.id : undefined;
-   if (row.audience==="owner" ? inbound.author_id!==owner : inbound.author_id!==row.recipient && inbound.author_id!==owner) return;
+   // Staff questions accept the owner or anyone trusted when they answer (role is decided from the current trusted list).
+   const allowed = inbound.author_id===owner || (row.audience==="staff" ? inbound.role==="TRUSTED_REQUEST" :
+     row.audience==="thread" && inbound.author_id===row.recipient);
+   if (!allowed) return;
    db.query("UPDATE questions SET status='answered',answer_id=?,answer_author=?,answer_role=?,answer_scope=?,answer_text=?,updated=? WHERE id=? AND status='awaiting_answer'")
     .run(inbound.message_id,inbound.author_id,inbound.role,inbound.scope,inbound.content,Date.now(),row.id);
    return row.id;

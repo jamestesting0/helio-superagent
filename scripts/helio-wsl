@@ -7,7 +7,9 @@ case "${1:-}" in
   resume) exec "$base/start" resume ;;
   dori) shift; source "$base/env"; source "$base/browser-env"; unset HERDR_SOCKET_PATH; export HERDR_SESSION=elobot; exec dori "$@" ;;
   beta) shift; source "$base/env"; source "$base/browser-env"; exec python3 "$HOME/helio-agent/scripts/helio-beta.py" "$@" ;;
-  question) shift; source "$base/env"; source "$base/browser-env"; exec python3 "$HOME/helio-agent/scripts/helio-questions.py" "$@" ;;
+  question) shift; source "$base/env"; source "$base/browser-env"
+    export DORI_DISCORD_TRUSTED_IDS="$(<"$base/trusted-users")" DORI_DISCORD_REPORT_CHANNELS="$(<"$base/report-channels")"
+    exec python3 "$HOME/helio-agent/scripts/helio-questions.py" "$@" ;;
   browser) shift; exec python3 "$HOME/helio-agent/scripts/helio-browser.py" "$@" ;;
   triage) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-triage.py" "$@" ;;
   followups) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-followups.py" "$@" ;;
