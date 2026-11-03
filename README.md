@@ -1,10 +1,10 @@
 # Helio
 
 Helio is the EloBot Dori: an always-on agent you talk to on Discord. It
-answers questions about EloBot, turns staff bug reports into GitHub issues,
-runs coding work in its own omo sessions ("lanes") in herdr, tests changes on
-the beta bot, and only merges or restarts production with explicit
-confirmation.
+answers questions about EloBot, talks bug reports and feature ideas through
+with whoever raised them before filing review-ready GitHub issues, runs coding
+work in its own omo sessions ("lanes") in herdr, tests changes on the beta bot,
+and only merges or restarts production with explicit approval.
 
 This repository is everything needed to rebuild and update Helio: its
 instructions, Discord intake, launchers, the forked Dori skill, the omo
@@ -28,6 +28,16 @@ helio start
 
 Everyday use: **[docs/workflow.md](docs/workflow.md)**. Edit, then
 `helio update --preview`, `helio update` and `helio start`.
+
+## How Helio handles requests
+
+- **Listening:** in the trusted chat it answers every ping; in normal chats only pings, plus a person's answers while it has an open conversation with them. It only ever looks at channels inside `DORI_DISCORD_SCOPE_CATEGORY`. Quick bursts of messages are answered once, with a native reply that pings the person.
+- **Reading:** it sees text, bot embeds, Components V2 text, buttons and Discord-hosted images, plus reply chains (DMs and the trusted chat) or the replied-to message (normal chats). Links into the EloBot repo stay readable; all other links are hidden.
+- **Requests:** bugs, quality-of-life ideas and features follow one procedure (`policy.md`, Request intake). Helio talks it through in place, checks the commit Elo Bot actually runs and any existing work (`helio triage`), plays the request back, then files a labelled issue (`bug`, `qol`, `feature`, `confirmed`, `needs-owner-review`) and announces it in the staff chat. When the issue closes, `helio followups` tells the requester it is live, declined or done; silent conversations are dropped after 72 hours.
+- **Authority:** only you and trusted users can approve PRs, merges, restarts and closing issues. Merge and restart approvals are natural language but pinned to the exact revision that existed when they were given (`release-check`, root release broker).
+- **Working style:** inside clear boundaries (beta, test channels, its own branches) Helio acts without asking; production, credentials and other people's accounts always need approval.
+
+Inside the isolated workspace: `helio triage`, `helio conversation open|close|list`, `helio followups add|check|done|list`, `helio release inspect`, `helio release-check`, `helio beta ...`, `helio browser ready|close`, `helio question ...`, `helio doctor`.
 
 ## Configuration: one file
 

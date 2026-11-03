@@ -11,7 +11,7 @@ repo --(sudo rsync, then helio update inside)--> /var/lib/helio-agent/home (isol
 
 - **Lead**: one omo session in herdr (`start`), loaded with the Dori skill,
   `setup-prompt.md` and `work-policy.md`. It runs the monitors (`inbound`,
-  `context`, `helio question watch`, `dori watch/dead-panes/guard/freshness`).
+  `context`, `helio question watch`, `helio followups watch`, `dori watch/dead-panes/guard/freshness`).
 - **Lanes**: omo sessions launched by `dori launch` using `config.json`'s
   `agentCommand`, loaded with `work-policy.md`.
 - **Discord intake**: `discord-inbound/` classifies each message (role, scope,

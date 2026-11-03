@@ -20,9 +20,9 @@ Helio installs in one of two profiles. Most of this guide applies to both; diffe
 
 | Where | Who | Can |
 |---|---|---|
-| DM to Helio | You (653894110884921366) and configured trusted users | You: request work. Trusted users: request verified-fix commits and pushes. trusted users may request PR creation and explicitly confirm PR merges and `elobot` restarts. Other DMs are dropped. |
+| DM to Helio | You (653894110884921366) and configured trusted users | You: request work. Trusted users: request verified-fix commits and pushes, PR creation, and close or reopen issues; they explicitly confirm PR merges and `elobot` restarts. Other DMs are dropped. |
 | Trusted chat and its threads | Anyone who can post there, except bots | Every eligible human ping receives a response, even if only a brief out-of-scope boundary. User authority is unchanged. |
-| Normal chats and their threads | Anyone who can post there, except bots | Read only messages explicitly pinging Helio; help with EloBot bugs, user-facing problems and quality-of-life improvements, and ignore irrelevant pings. Reporting does not authorize a PR, merge or restart. |
+| Normal chats and their threads | Anyone who can post there, except bots | Read messages explicitly pinging Helio, plus a person's answers while Helio has an open conversation with them there; help with EloBot bugs, user-facing problems, quality-of-life improvements and feature requests, and ignore irrelevant pings. Reporting does not authorize a PR, merge or restart. |
 | Anywhere else | Nobody | Dropped before Helio sees it |
 
 One bot exception is configured by `inbound`: Elo Bot
@@ -144,23 +144,15 @@ Prepared files remain local while the message is pending and are removed after a
 
 ## Forwarded bug reports
 
-EloBot's user-clicked Report Bug flow keeps the developer DM and sends a
-read-only copy to `1566842840716152962`. The copy has no Respond control and
-suppresses mentions. Elo Beta does not send copies to this production
-destination. Copy failures are logged without retrying the owner DM or
-changing its success acknowledgement.
-
-Helio receives the copy's top-level textual embeds as `embed_text`, with
-links omitted and remote embed assets unfetched. How Helio treats these
-reports (untrusted evidence, independent reproduction, no reply to the bot,
-dedup and acknowledgement) is in `agent/prompts/lead.md`. This does not expand
-passive learning channels.
+Elo Bot's user-clicked Report Bug flow sends the report to the bot owner's DM only (`main.py` `report_error`, checked November 3, 2026). Helio is also configured to treat Elo Bot posts in `1566842840716152962` as `BOT_BUG_REPORT` evidence, but Elo Bot does not post there today, so that path stays idle until Elo Bot is changed to post a copy. To hand a report to Helio now, forward it into an allowed channel; Helio reads the forwarded embed (`embed_text`, `component_text`, Discord-hosted images) and runs Request intake on it.
 
 Staff can use Discord's native Forward action in an allowed inbound channel. Helio reads the included snapshot's text, textual embed details, and permitted attachments, both live and during catch-up. The forwarding staff member remains the sender; a forwarded user's text cannot become an owner request or approve a feature or production action.
 
 Original message/channel IDs are source references only. Helio does not fetch the source channel or follow links, including forwards originating outside the learning categories or in threads. This reads an explicitly forwarded snapshot, not thread history. Forwarded files use the same validation, pending storage, and acknowledgement cleanup as ordinary attachments. If Discord supplies no snapshot, Helio reports the missing body instead of treating the forward as fully read.
 
 ## Bug fixes, features, and beta QA
+
+Every report or request goes through Request intake (`agent/prompts/policy.md`): Helio talks with the person in place until the request is clear (`helio conversation` tracks the open conversation, up to 2 per person, dropped after 72 hours of silence), checks the running commit and existing work with `helio triage`, plays the request back, and only then creates a labelled issue (`bug`, `qol`, `feature`, plus `confirmed` or `needs-owner-review`). New issues are announced in the staff chat (`HELIO_STAFF_CHAT`). You or a trusted user can ask Helio to close or reopen an issue with a reason. `helio followups watch` then tells the requester when the fix is live on Oracle, or that the request was declined.
 
 The authorization rules (who may request PRs, merges and restarts), browser lifecycle, multi-account QA, test channels and evidence delivery are in `agent/prompts/policy.md`. The step-by-step QA procedure is `~/.dori/elobot/docs/discord-qa-workflow.md`. Real testing is a scoped exception to passive read-only learning; it doesn't expand the inbound/learning allowlists.
 
@@ -209,7 +201,7 @@ dori close <key>   # close a lane whose Done signals are met
 | `INBOUND_WARN channel ... 403 Missing Access` / `CONTEXT_WARN` | Helio cannot read that channel or category | Invite Helio / give it View Channel and Read Message History |
 | `INBOUND_ERROR cannot read .../discord-inbound.json` | State file damaged | Fix or delete it (deleting means the next start is a first run again) |
 | `INBOUND_ERROR gateway: ...4014` | Message Content Intent off | Developer Portal, Bot, Privileged Gateway Intents |
-| `INBOUND_ERROR gateway: ...did not become ready` | Discord did not confirm the login in time | Restart the watcher; if it repeats, check the token |
+| `INBOUND_ERROR gateway: ...did not become ready` | Discord did not confirm the login in time | The watcher restarts itself with growing delays (`INBOUND_WARN ... restarting`); if it repeats, check the token |
 | Channel messages never arrive | Helio cannot view the channel | Give its role View Channel, Read Message History, Send Messages (+ threads) |
 | Your DM never arrives | You share no server with Helio, or DMs from server members are off | Join a shared server; allow DMs in Privacy settings |
 | `dori sync` shows no lanes | Settings not loaded | `source ~/.dori/elobot/env` |
