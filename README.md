@@ -12,10 +12,25 @@ configuration and the isolated-runtime services. Secrets live only in
 `~/.config/helio/helio.env`, and the memory snapshot (`memory/`) stays on your
 machine; both are gitignored. Never commit either.
 
+## Install these first
+
+> **Helio does not run without Dori, omo and herdr.** Install and check all of
+> them before anything in this repository; `install.py` and `helio start` assume
+> they are already there.
+
+| Tool | What it is for | How | Check |
+|---|---|---|---|
+| WSL Ubuntu 22.04 with systemd | Everything runs here; the launcher calls `wsl.exe -d Ubuntu-22.04` | [setup part 1](docs/setup.md#1-windows-and-wsl) | `systemctl is-system-running` |
+| Bun, Python 3.12, `gh` | Runs the Discord intake and helpers; GitHub access | [setup part 2](docs/setup.md#2-base-tools) | `bun --version`, `gh auth status` |
+| **omo** (`bun add -g omo-ai`) | The coding agent every Helio session (lead and lanes) runs in | [setup part 3](docs/setup.md#3-oh-my-openagent-omo-and-herdr) | `omo --version` |
+| **herdr** | The terminal workspace that holds the lead and lane panes | [setup part 3](docs/setup.md#3-oh-my-openagent-omo-and-herdr) | `herdr --version` |
+| **Dori skill and `dori` CLI**, from this repo's fork in `vendor/dori-mode` (not upstream) | Lanes, watchers and Discord sends | [setup part 5](docs/setup.md#5-dori-skill-and-dori-cli) | `dori --help`; `readlink -f "$(command -v dori)"` points into `vendor/` |
+| Node 24 (via nvm) | omo's DAG pane; `helio deploy` copies it into the sandbox | `nvm install 24 && nvm alias default 24` | `node --version` |
+
 ## Quick start
 
 On a fresh Windows laptop, follow **[docs/setup.md](docs/setup.md)**. The short
-version, once WSL, Bun, omo, herdr and the Dori CLI are installed:
+version, once everything above is installed:
 
 ```sh
 cd ~/PythonProjects/helio-superagent
@@ -37,6 +52,7 @@ and running.
 - **Listening:** in the trusted chat it answers every ping; in normal chats only pings, plus a person's answers while it has an open conversation with them. It only ever looks at channels inside `DORI_DISCORD_SCOPE_CATEGORY`. Quick bursts of messages are answered once, with a native reply that pings the person.
 - **Reading:** it sees text, bot embeds, Components V2 text, buttons and Discord-hosted images, plus reply chains (DMs and the trusted chat) or the replied-to message (normal chats). Links into the EloBot repo stay readable; all other links are hidden.
 - **Requests:** bugs, quality-of-life ideas and features follow one procedure (`policy.md`, Request intake). Helio talks it through in place, checks the commit Elo Bot actually runs and any existing work (`helio triage`), plays the request back, then files a labelled issue (`bug`, `qol`, `feature`, `confirmed`, `needs-owner-review`) and announces it in the staff chat. When the issue closes, `helio followups` tells the requester it is live, declined or done; silent conversations are dropped after 72 hours.
+- **Replies:** a 👀 on your message means Helio is working on an answer. It appears at once in DMs and the trusted chat, and in normal chats as soon as Helio decides to answer; it goes away when the reply is sent. Anything you add while it drafts is folded into the same answer: `reply.ts` will not send while newer messages are unread, holding at most twice within two minutes. Reply and DM text always goes through a file (`--text-file`), never a shell command, so backticks and `$` arrive intact.
 - **Authority:** only you and trusted users can approve PRs, merges, restarts and closing issues. Merge and restart approvals are natural language but pinned to the exact revision that existed when they were given (`release-check`, root release broker).
 - **Working style:** inside clear boundaries (beta, test channels, its own branches) Helio acts without asking; production, credentials and other people's accounts always need approval.
 
