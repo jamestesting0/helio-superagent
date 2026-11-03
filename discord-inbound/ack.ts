@@ -1,7 +1,7 @@
 import { Delivery } from "./delivery.ts";
 import { cleanupAttachments } from "./images.ts";
 import { filterConfig, reauthorize, validateChannelPolicy } from "./authorization.ts";
-import { discordRest } from "./rest.ts";
+import { cachedReads, discordRest } from "./rest.ts";
 import { sweepExpired } from "./expiry.ts";
 import { contextReplayAllowed } from "./context-replay.ts";
 import { Conversations } from "./conversations.ts";
@@ -22,14 +22,22 @@ const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
 const conversations = new Conversations(`${state}/discord-conversations.sqlite`);
 const stateDir = state;
 const warn = (message: string) => console.error(`ACK_WARN ${message}`);
+// One command run checks the bot identity and channel policy once and reuses channel reads;
+// each item is still reauthorized against them. Per-item setup made a backlog take minutes.
+const rest = process.env.DORI_DISCORD_TOKEN ? cachedReads(discordRest(process.env.DORI_DISCORD_TOKEN)) : undefined;
+let policy: Promise<ReturnType<typeof filterConfig>> | undefined;
+function currentPolicy() {
+  return policy ??= (async () => {
+    if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
+    const cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user));
+    cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
+    await validateChannelPolicy(cfg, rest, warn);
+    return cfg;
+  })();
+}
 async function authorized(item: { readonly id: string; readonly payload: string }): Promise<string> {
-  const token = process.env.DORI_DISCORD_TOKEN;
-  if (!token) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
-  const rest = discordRest(token);
-  const cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user));
-  cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
-  await validateChannelPolicy(cfg, rest, warn);
-  const current = await reauthorize(item.payload, cfg, rest);
+  const cfg = await currentPolicy();
+  const current = await reauthorize(item.payload, cfg, rest!);
   if (!current) throw new RangeError(`Delivery ${item.id} is no longer authorized; keep it pending`);
   await sweepExpired(delivery, stateDir, warn);
   delivery.check(item.id);
@@ -44,8 +52,7 @@ try {
       if (stream === "context") {
         let allowed: boolean;
         try {
-          allowed = await contextReplayAllowed(item.payload, process.env,
-            process.env.DORI_DISCORD_TOKEN ? discordRest(process.env.DORI_DISCORD_TOKEN) : undefined);
+          allowed = await contextReplayAllowed(item.payload, process.env, rest);
         }
         catch (error) {
           if (!(error instanceof Error)) throw error;

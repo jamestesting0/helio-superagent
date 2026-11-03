@@ -21,6 +21,19 @@ export class DiscordRestError extends Error {
   }
 }
 
+/** Within one short-lived command, reuse channel and bot-identity reads; writes and message fetches are never cached. */
+export function cachedReads(rest: Rest): Rest {
+  const cache = new Map<string, Promise<unknown>>();
+  return <T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> => {
+    const cacheable = (init?.method ?? "GET") === "GET" && init?.body === undefined &&
+      (path === "/users/@me" || /^\/channels\/[0-9]+$/.test(path));
+    if (!cacheable) return rest<T>(path, init);
+    let hit = cache.get(path);
+    if (!hit) { hit = rest<T>(path); cache.set(path, hit); }
+    return hit as Promise<T>;
+  };
+}
+
 export function discordRest(token: string): Rest {
   return async <T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> => {
     const method = init.method ?? "GET";
