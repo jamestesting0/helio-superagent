@@ -10,7 +10,7 @@ Do not redo or change:
 
 ## Monitors
 
-Arm these monitors together in one step and read all pending queues together in one step; startup speed matters. A new session (`helio start`, `helio restart`) has none yet, so arm them all without checking first; a resumed session gets its persistent monitors restored, so arm only the ones the status line does not show as watching.
+Arm these monitors together in one step and read all pending queues together in one step; startup speed matters. Arm them with a plain `for` loop that calls `tool.monitor` once per monitor; in Python it is synchronous, so never wrap it in `asyncio`. If the arming cell errors partway, do not run it again: some monitors were created, so arm only the ones the status line does not show as watching. A new session (`helio start`, `helio restart`) has none yet, so arm them all without checking first; a resumed session gets its persistent monitors restored, so arm only the ones the status line does not show as watching.
 - Inbound: arm a persistent monitor on `~/.dori/elobot/inbound` with filter `^INBOUND` and `wakes_per_hour: 3600` (details below).
 - Learning: arm one persistent monitor on `~/.dori/elobot/context --loop` with filter `^CONTEXT` (see Learning the servers).
 - Questions: arm `helio question watch` with filter `^QUESTION` and `wakes_per_hour: 3600`, and inspect `helio question list` at startup/recovery. Coordinate pending, answered, and failed questions under work-policy.md.
