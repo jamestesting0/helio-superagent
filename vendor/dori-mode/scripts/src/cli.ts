@@ -39,7 +39,7 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID]
+  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID]   (discord: TARGET user:ID or the owner ID sends a DM)
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN)
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
@@ -196,8 +196,10 @@ try {
         else console.log(`SENT ${await tg.send(target, text)}`);
       } else if (platform === "discord") {
         const dc = new Discord(fetchHttp, realClock, token("DORI_DISCORD_TOKEN"));
-        if (edit) await dc.edit(to, edit, text);
-        else console.log(`SENT ${await dc.send(thread ?? to, text)}`);
+        const user = to.startsWith("user:") ? to.slice(5) : to === process.env.DORI_DISCORD_OWNER_ID ? to : undefined;
+        const channel = user ? await dc.openDm(user) : to;
+        if (edit) await dc.edit(channel, edit, text);
+        else console.log(`SENT ${await dc.send(thread ?? channel, text)}`);
       } else die(`unknown platform ${platform}`);
       break;
     }

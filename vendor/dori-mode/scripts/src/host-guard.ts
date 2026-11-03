@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+
 import type { GuardThresholds } from "./config.ts";
 import type { Runner } from "./run.ts";
 
@@ -14,7 +16,7 @@ const num = (s: string | undefined, fallback: number): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-export const sampleHost = async (run: Runner, dataPath = "/"): Promise<HostSample> => {
+export const sampleHost = async (run: Runner, dataPath = homedir()): Promise<HostSample> => {
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
   const load1 = num((load.code === 0 ? load.out.replace(/[{}]/g, "").trim() : loadLinux?.out ?? "").split(/\s+/)[0], 0);

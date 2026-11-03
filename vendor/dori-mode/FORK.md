@@ -26,4 +26,11 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 
 ## Code changes
 
+| File | Change | Why |
+|---|---|---|
+| `scripts/src/cli.ts`, `scripts/src/messenger/discord.ts` | `dori send discord --to user:ID` (or the owner ID) opens the DM channel first (`Discord.openDm`) | Discord rejects posting to a user ID as a channel (404 Unknown Channel), so DMs to the owner failed |
+| `scripts/src/host-guard.ts` | Disk free is measured at the home directory instead of `/` | Inside a sandbox `/` is a small in-memory root, which made the guard hold every lane |
+
+Tests: `scripts/test/helio-host.test.ts`.
+
 `scripts/` also carries Helio patches to some `src/` files, covered by the Helio tests in `scripts/test/helio-*.test.ts` (lifecycle, missing, model). Check those tests before taking upstream changes to the same files.

@@ -37,6 +37,10 @@ export class Discord {
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }
 
+  async openDm(userId: string): Promise<string> {
+    return (await this.call<{ id: string }>("POST", "/users/@me/channels", { recipient_id: userId })).id;
+  }
+
   async send(channelId: string, content: string): Promise<string> {
     return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: discordText(content), allowed_mentions: { parse: [] } })).id;
   }
