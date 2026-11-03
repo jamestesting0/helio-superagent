@@ -26,31 +26,38 @@ export async function sendReply(
   })).id;
 }
 
-const USAGE = "Usage: bun reply.ts CHANNEL_ID MESSAGE_ID TEXT [--covers ID,...] [--seen ID,...]; requires DORI_DISCORD_TOKEN (and DORI_STATE_DIR for the newer-message check)";
+const USAGE = "Usage: bun reply.ts CHANNEL_ID MESSAGE_ID (--text-file PATH | TEXT) [--covers ID,...] [--seen ID,...]; requires DORI_DISCORD_TOKEN (and DORI_STATE_DIR for the newer-message check)";
 
+// --text-file keeps reply text away from any shell: inside a shell command string, `code` and $(...) are executed and vanish.
 export function parseArgs(argv: readonly string[]):
-  { channel_id: string; message_id: string; text: string; covers: string[]; seen: string[] } | undefined {
+  { channel_id: string; message_id: string; text: string; text_file?: string; covers: string[]; seen: string[] } | undefined {
   const positional: string[] = [];
+  let textFile: string | undefined;
   const lists: Record<"--covers" | "--seen", string[]> = { "--covers": [], "--seen": [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (positional.length === 3 && (arg === "--covers" || arg === "--seen")) {
+    if (positional.length === 2 && textFile === undefined && arg === "--text-file") {
+      textFile = argv[++i];
+      if (!textFile) return undefined;
+    } else if ((positional.length === 3 || textFile !== undefined) && (arg === "--covers" || arg === "--seen")) {
       const ids = (argv[++i] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
       if (!ids.length || ids.some((id) => !/^[0-9]{1,30}$/.test(id))) return undefined;
       lists[arg].push(...ids);
-    } else if (positional.length < 3) positional.push(arg);
+    } else if (textFile === undefined && positional.length < 3) positional.push(arg);
     else return undefined;
   }
   const [channel_id, message_id, text] = positional;
-  if (channel_id === undefined || message_id === undefined || text === undefined) return undefined;
-  return { channel_id, message_id, text, covers: lists["--covers"], seen: lists["--seen"] };
+  if (channel_id === undefined || message_id === undefined || (text === undefined && textFile === undefined)) return undefined;
+  return { channel_id, message_id, text: text ?? "", ...(textFile !== undefined ? { text_file: textFile } : {}),
+    covers: lists["--covers"], seen: lists["--seen"] };
 }
 
 if (import.meta.main) {
   const args = parseArgs(process.argv.slice(2));
   const token = process.env.DORI_DISCORD_TOKEN;
   const state = process.env.DORI_STATE_DIR;
-  if (!args || !token) {
+  if (args?.text_file !== undefined) args.text = (await Bun.file(args.text_file).text()).replace(/\s+$/, "");
+  if (!args || !token || !args.text.trim()) {
     console.error(USAGE);
     process.exitCode = 2;
   } else {

@@ -39,7 +39,7 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  send <slack|telegram|discord> --to TARGET --text TEXT [--thread ID] [--edit ID]   (discord: TARGET user:ID or the owner ID sends a DM)
+  send <slack|telegram|discord> --to TARGET (--text TEXT | --text-file PATH) [--thread ID] [--edit ID]   (discord: TARGET user:ID or the owner ID sends a DM)
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN)
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
@@ -181,7 +181,9 @@ try {
     case "send": {
       const platform = key ?? die("send needs slack, telegram or discord");
       const to = need("to");
-      const text = need("text");
+      // --text-file keeps message text away from any shell, where `code` and $(...) would be executed and lost.
+      const textFile = opt("text-file");
+      const text = textFile ? (await Bun.file(textFile).text()).replace(/\s+$/, "") || die("--text-file is empty") : need("text");
       const thread = opt("thread");
       const edit = opt("edit");
       const token = (name: string) => process.env[name] ?? die(`${name} is not set`);

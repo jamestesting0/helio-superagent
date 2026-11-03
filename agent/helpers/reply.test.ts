@@ -84,3 +84,11 @@ test.each([
 ])("reply arguments with $case are rejected instead of guessed", ({ tail }) => {
   expect(parseArgs([target.channel_id, target.message_id, ...tail])).toBeUndefined();
 });
+
+test("reply text can come from a file, so no shell ever sees its backticks", () => {
+  expect(parseArgs([target.channel_id, target.message_id, "--text-file", "/tmp/r.txt", "--covers", "111"])).toEqual({
+    channel_id: target.channel_id, message_id: target.message_id, text: "", text_file: "/tmp/r.txt", covers: ["111"], seen: [],
+  });
+  expect(parseArgs([target.channel_id, target.message_id, "--text-file"])).toBeUndefined();
+  expect(parseArgs([target.channel_id, target.message_id, "--text-file", "/tmp/r.txt", "also text"])).toBeUndefined();
+});
