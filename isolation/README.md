@@ -14,5 +14,10 @@ The service code itself is in `scripts/` (`helio_beta_service.py`,
 to `/opt/helio-beta-service/scripts/`. Setup steps: `docs/setup.md` part 8.
 Design and limits: `docs/architecture.md`.
 
+`helio_isolated_admin.py` (with `helio_deploy_plan.py` and `helio_owner_policy.py`) backs the
+host commands `helio deploy`, `helio restart` and `helio version`. It never builds the networked
+sandbox or touches the firewall, so it is safe while Helio runs, and it writes into Helio's home
+only through link-refusing directory handles or as Helio's own user.
+
 `helio update` never touches any of these. Reinstall them by hand with `sudo`
 when they change.

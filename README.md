@@ -26,8 +26,11 @@ install -m 700 scripts/helio-host ~/.local/bin/helio
 helio start
 ```
 
-Everyday use: **[docs/workflow.md](docs/workflow.md)**. Edit, then
-`helio update --preview`, `helio update` and `helio start`.
+Everyday use: **[docs/workflow.md](docs/workflow.md)**. Edit, then `helio deploy`:
+it updates your install and the isolated one, even while Helio runs, and says
+what the change needs (nothing, monitors reload themselves, `helio restart` for
+the lead only, or a full `helio start`). `helio version` shows what is installed
+and running.
 
 ## How Helio handles requests
 
