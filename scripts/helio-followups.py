@@ -27,6 +27,14 @@ STATE = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/st
 KINDS = ("bug", "qol", "feature")
 
 
+def read_stamp() -> str:
+    """Read the deployed monitor version, including an absent initial stamp."""
+    try:
+        return (Path.home() / ".dori/elobot/monitors-version").read_text()
+    except FileNotFoundError:
+        return ""
+
+
 def connect() -> sqlite3.Connection:
     STATE.mkdir(parents=True, exist_ok=True)
     path = STATE / "discord-conversations.sqlite"
@@ -154,11 +162,25 @@ def main() -> int:
     elif args.action == "check":
         return check(db, include_announced=True)
     else:
+        stamp = read_stamp()
+        check_seconds = min(30.0, float(os.environ.get("HELIO_STAMP_CHECK_SECONDS", "30")))
+        if check_seconds <= 0:
+            parser.error("HELIO_STAMP_CHECK_SECONDS must be positive")
         first = True
         while True:
             check(db, include_announced=first)
             first = False
-            time.sleep(args.interval)
+            deadline = time.monotonic() + args.interval
+            while True:
+                new_stamp = read_stamp()
+                if new_stamp != stamp:
+                    version = next(iter(new_stamp.split()), "")
+                    print(f"FOLLOWUP_WARN updated to {version}; restarting to load it", flush=True)
+                    os.execv(sys.executable, [sys.executable, *sys.argv])
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(check_seconds, remaining))
     return 0
 
 

@@ -15,13 +15,64 @@ export DORI_DISCORD_REPORT_CHANNELS="$(<"$here/report-channels")"
 # A runtime failure (exit 1) is retried: the saved cursor makes the restart catch up
 # on anything missed. Configuration failures (exit 2) still stop for a human.
 child=
-trap '[ -n "$child" ] && kill "$child" 2>/dev/null; exit 143' TERM INT HUP
+timer=
+killer=
+stamp_path="$HOME/.dori/elobot/monitors-version"
+check_seconds="${HELIO_STAMP_CHECK_SECONDS:-30}"
+if ! [[ "$check_seconds" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$check_seconds" =~ [1-9] ]]; then
+  echo "HELIO_STAMP_CHECK_SECONDS must be positive" >&2
+  exit 2
+fi
+read_stamp() {
+  if [ -f "$stamp_path" ]; then cat "$stamp_path"; fi
+}
+stop_child() {
+  [ -n "$child" ] || return 0
+  kill -TERM "$child" 2>/dev/null || true
+  if kill -0 "$child" 2>/dev/null; then
+    sleep 10 & killer=$!
+    wait -n -p stopped "$child" "$killer" 2>/dev/null || true
+    if [ "${stopped:-}" = "$killer" ]; then kill -KILL "$child" 2>/dev/null || true; fi
+  fi
+  wait "$child" 2>/dev/null || true
+  kill "$killer" 2>/dev/null || true
+  wait "$killer" 2>/dev/null || true
+  child=
+  killer=
+}
+trap '[ -z "$timer" ] || kill "$timer" 2>/dev/null || true; stop_child; exit 143' TERM INT HUP
 delay=5
 while true; do
   started=$SECONDS
+  stamp="$(read_stamp)"
   bun "$HOME/.dori/discord-inbound/inbound.ts" & child=$!
-  code=0; wait "$child" || code=$?
+  updated=false
+  while true; do
+    if ! kill -0 "$child" 2>/dev/null; then
+      code=0; wait "$child" || code=$?
+      break
+    fi
+    sleep "$check_seconds" & timer=$!
+    code=0; wait -n -p finished "$child" "$timer" 2>/dev/null || code=$?
+    if [ "${finished:-}" = "$child" ] || ! kill -0 "$child" 2>/dev/null; then
+      code=0; wait "$child" || code=$?
+      kill "$timer" 2>/dev/null || true
+      wait "$timer" 2>/dev/null || true
+      timer=
+      break
+    fi
+    timer=
+    new_stamp="$(read_stamp)"
+    if [ "$new_stamp" != "$stamp" ]; then
+      read -r version _ <<< "$new_stamp" || true
+      echo "INBOUND_WARN updated to $version; restarting to load it"
+      stop_child
+      updated=true
+      break
+    fi
+  done
   child=
+  if "$updated"; then delay=5; continue; fi
   [ "$code" -eq 1 ] || exit "$code"
   (( SECONDS - started > 600 )) && delay=5
   echo "INBOUND_WARN inbound stopped after a runtime error; restarting in ${delay}s and catching up from the saved cursor"

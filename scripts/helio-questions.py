@@ -217,8 +217,18 @@ def recover(db,id):
  else:write(db,id,'delivery_unknown',error='No matching recent message; delivery is still uncertain')
  return event(db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone())
 
+def read_stamp() -> str:
+ """Read the deployed monitor version, including an absent initial stamp."""
+ try:
+  return (Path.home()/'.dori/elobot/monitors-version').read_text()
+ except FileNotFoundError:
+  return ''
+
 def watch(db,lane):
  if lane and (not LANE.fullmatch(lane) or '..' in lane):raise ValueError('invalid lane key')
+ stamp=read_stamp()
+ check_seconds=min(30.0,float(os.environ.get('HELIO_STAMP_CHECK_SECONDS','30')))
+ if check_seconds<=0:raise ValueError('HELIO_STAMP_CHECK_SECONDS must be positive')
  seen={}
  print('QUESTION_READY '+json.dumps({'lane':lane or 'all'}),flush=True)
  while True:
@@ -231,7 +241,16 @@ def watch(db,lane):
    if seen.get(row['id'])==version:continue
    seen[row['id']]=version
    print('QUESTION_'+kind+' '+json.dumps(event(row),ensure_ascii=False),flush=True)
-  time.sleep(3)
+  deadline=time.monotonic()+3
+  while True:
+   new_stamp=read_stamp()
+   if new_stamp!=stamp:
+    version=next(iter(new_stamp.split()),'')
+    print(f'QUESTION_WARN updated to {version}; restarting to load it',flush=True)
+    os.execv(sys.executable,[sys.executable,*sys.argv])
+   remaining=deadline-time.monotonic()
+   if remaining<=0:break
+   time.sleep(min(check_seconds,remaining))
 
 def main():
  parser=argparse.ArgumentParser();sub=parser.add_subparsers(dest='cmd',required=True)
