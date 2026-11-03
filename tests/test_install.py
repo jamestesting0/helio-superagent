@@ -178,7 +178,7 @@ class InstallerTests(unittest.TestCase):
                 exported = json.loads(result.stdout.splitlines()[-1])
                 self.assertEqual(exported["DORI_DISCORD_ALLOWED"],
                                  "1218071208197623880,1199770187738644652,1220331873079922810,1566842840716152962")
-                self.assertEqual(exported["DORI_DISCORD_TRUSTED_CHANNELS"], "1218071208197623880")
+                self.assertEqual(exported["DORI_DISCORD_TRUSTED_CHANNELS"], "1218071208197623880,1566842840716152962")
                 self.assertEqual(exported["DORI_DISCORD_NORMAL_CHANNELS"],
                                  "1199770187738644652,1220331873079922810")
                 self.assertEqual(exported["DORI_DISCORD_TOKEN"], "private-token")
