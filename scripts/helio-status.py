@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only summary of Helio's local setup. Never display credential values."""
 import json, os, re, sqlite3, subprocess
+from contextlib import closing
 from pathlib import Path
 h=Path.home(); base=h/'.dori/elobot'; config=base/'config.json'; project=h/'PythonProjects/elo-bot'
 def show(label, value): print(f'{label}: {value}')
@@ -36,10 +37,39 @@ for proc in Path('/proc').iterdir():
   if any(arg == str(h/'.dori/discord-inbound/inbound.ts').encode() for arg in args): watcher=True; break
  except (OSError,PermissionError): continue
 show('Discord watcher','running' if watcher else 'not running')
-db=base/'state/discord-delivery.sqlite'
+state=Path(os.environ.get('DORI_STATE_DIR',str(base/'state')))
+active_claims: set[str]=set()
+conversation_db=state/'discord-conversations.sqlite'
+if conversation_db.exists():
+ try:
+  with closing(sqlite3.connect(f'file:{conversation_db}?mode=ro',uri=True)) as con:
+   columns={row[1] for row in con.execute("PRAGMA table_info(working)")}
+   claim="claimed_at IS NOT NULL" if 'claimed_at' in columns else "reacted=1"
+   active_claims={row[0] for row in con.execute(f"SELECT message_id FROM working WHERE closed_at IS NULL AND {claim}")}
+   waiting=con.execute("""SELECT count(*) FROM conversations c WHERE c.status='open'
+    AND c.user_id=(SELECT t.author_id FROM transcript t WHERE t.channel_id=c.channel_id
+     AND t.user_id=c.user_id AND t.opened_at=c.opened_at ORDER BY t.rowid DESC LIMIT 1)""").fetchone()[0]
+  show('Claims in progress',str(len(active_claims)))
+  show('Conversations waiting on Helio',str(waiting))
+ except sqlite3.Error:
+  show('Claims in progress','unavailable'); show('Conversations waiting on Helio','unavailable')
+else:
+ show('Claims in progress','0'); show('Conversations waiting on Helio','0')
+db=state/'discord-delivery.sqlite'
 if db.exists():
  try:
-  con=sqlite3.connect(f'file:{db}?mode=ro',uri=True); count=con.execute("SELECT COUNT(*) FROM delivery WHERE stream='inbound' AND payload IS NOT NULL").fetchone()[0]; con.close(); show('Pending inbound',str(count))
- except sqlite3.Error: show('Pending inbound','unavailable')
-else: show('Pending inbound','no local queue')
+  with closing(sqlite3.connect(f'file:{db}?mode=ro',uri=True)) as con:
+   pending=con.execute("SELECT id FROM delivery WHERE stream='inbound' AND payload IS NOT NULL").fetchall()
+   accepted={row[0] for row in con.execute("SELECT id FROM acceptance WHERE stream='inbound'")} if con.execute("SELECT 1 FROM sqlite_master WHERE name='acceptance'").fetchone() else set()
+  show('Pending inbound',str(len(pending)))
+  show('Unclaimed pending inbound',str(sum(row[0] not in active_claims and row[0] not in accepted for row in pending)))
+ except sqlite3.Error:
+  show('Pending inbound','unavailable'); show('Unclaimed pending inbound','unavailable')
+else:
+ show('Pending inbound','no local queue'); show('Unclaimed pending inbound','0')
+try:
+ plans=subprocess.run(['python3',str(Path(__file__).resolve().parent/'helio-plan.py'),'list'],capture_output=True,text=True,timeout=60)
+ m=re.match(r'PLANS_AWAITING count=(\d+)',plans.stdout)
+ show('Plans awaiting approval',m.group(1) if plans.returncode==0 and m else 'unavailable')
+except (OSError,subprocess.TimeoutExpired): show('Plans awaiting approval','unavailable')
 show('Production SSH / beta setup','not checked by this status command')

@@ -63,7 +63,7 @@ while true; do
     fi
     timer=
     new_stamp="$(read_stamp)"
-    if [ "$new_stamp" != "$stamp" ]; then
+    if [ -n "$new_stamp" ] && [ "$new_stamp" != "$stamp" ]; then
       read -r version _ <<< "$new_stamp" || true
       echo "INBOUND_WARN updated to $version; restarting to load it"
       stop_child

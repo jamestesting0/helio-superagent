@@ -25,6 +25,12 @@ class SyncTests(unittest.TestCase):
   (home/'.dori/elobot/report-channels').write_text('456')
   out=quiet(SYNC['run'],home,'preview')
   self.assertIn('Managed updates: none',out)
+ def test_update_repairs_owner_execute_bit_on_unchanged_entrypoints(self):
+  quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
+  path=self.dst/'start'; content=path.read_bytes(); path.chmod(0o600)
+  quiet(SYNC['run'],self.home,'apply')
+  self.assertTrue(path.stat().st_mode & 0o100)
+  self.assertEqual(path.read_bytes(),content)
  def test_preserves_private_files_and_detects_changed_managed_files(self):
   quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
   self.assertEqual((self.dst/'env').read_text(),'private'); self.assertEqual((self.dst/'trusted-users').read_text(),'123')
@@ -62,6 +68,19 @@ class SyncTests(unittest.TestCase):
   quiet(SYNC['run'],self.home,'apply')
   self.assertEqual(launcher.read_text(),'isolated host wrapper')
   self.assertEqual(json.loads(manifest.read_text())['@launcher'],'old baseline')
+ def test_moved_inbound_files_are_retired_only_when_unchanged(self):
+  quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
+  manifest=self.dst/'.sync-manifest.json'; old=self.home/'.dori/discord-inbound/filter.ts'; shipped=b'old flat module'
+  old.write_bytes(shipped)
+  baseline=json.loads(manifest.read_text()); baseline['@inbound/filter.ts']=SYNC['digest'](shipped); baseline['@inbound/gone.ts']='x'; manifest.write_text(json.dumps(baseline))
+  out=quiet(SYNC['run'],self.home,'apply')
+  self.assertIn('@inbound/filter.ts',out); self.assertFalse(old.exists())
+  self.assertTrue((self.home/'.dori/discord-inbound/intake/filter.ts').is_file())
+  self.assertFalse({'@inbound/filter.ts','@inbound/gone.ts'}&set(json.loads(manifest.read_text())))
+  old.write_bytes(b'local edit')
+  baseline=json.loads(manifest.read_text()); baseline['@inbound/filter.ts']=SYNC['digest'](shipped); manifest.write_text(json.dumps(baseline))
+  with redirect_stdout(StringIO()), self.assertRaises(SystemExit): SYNC['run'](self.home,'apply')
+  self.assertEqual(old.read_bytes(),b'local edit')
  def test_installs_new_inbound_payload_but_refuses_unadopted_local_changes(self):
   quiet(SYNC['run'],self.home,'adopt')
   name='@inbound/ack.ts'; manifest=self.dst/'.sync-manifest.json'
@@ -73,6 +92,25 @@ class SyncTests(unittest.TestCase):
   target.write_text('local change')
   with redirect_stdout(StringIO()), self.assertRaises(SystemExit): SYNC['run'](self.home,'apply')
   self.assertEqual(target.read_text(),'local change')
+ def test_update_adds_missing_project_docs_and_reports_edited_ones_without_overwriting(self):
+  quiet(SYNC['run'],self.home,'adopt')
+  docs=self.home/'project/docs'
+  missing=docs/'bot-ui.md'; edited=docs/'copy-style.md'
+  if missing.exists(): missing.unlink()
+  edited.parent.mkdir(parents=True,exist_ok=True); edited.write_text('local edit\n')
+  out=quiet(SYNC['run'],self.home,'apply')
+  self.assertEqual(missing.read_bytes(),(ROOT/'elobot-checkout/docs/bot-ui.md').read_bytes())
+  self.assertEqual(edited.read_text(),'local edit\n')
+  self.assertIn('KNOWLEDGE_DOC_CONFLICT',out)
+  self.assertIn('copy-style.md',out)
+ def test_update_ships_the_skill_to_homes_installed_before_it(self):
+  quiet(SYNC['run'],self.home,'adopt')
+  name='skills/karpathy-guidelines/SKILL.md'; manifest=self.dst/'.sync-manifest.json'
+  baseline=json.loads(manifest.read_text()); del baseline[name]; manifest.write_text(json.dumps(baseline))
+  (self.dst/name).unlink(); (self.dst/name).parent.rmdir()
+  quiet(SYNC['run'],self.home,'apply')
+  self.assertEqual((self.dst/name).read_bytes(),(ROOT/'agent'/name).read_bytes())
+  self.assertIn('Managed updates: none',quiet(SYNC['run'],self.home,'preview'))
  def test_new_helper_payload_is_checked_before_any_writes(self):
   quiet(SYNC['run'],self.home,'adopt')
   manifest=self.dst/'.sync-manifest.json'; payload='helio-sessions.py'; target=self.dst/payload

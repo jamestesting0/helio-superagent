@@ -22,7 +22,7 @@ Use:
 
 The owner authorized choosing a configured clan as the QA default. This is a runbook default, not a change to production command defaults. Check the clan and slot are actually free before each start; beta database availability alone does not establish that the shared real clan is unused.
 
-Before invoking a command, verify every side-effect destination: announcements, match channels/threads, audit messages, logs, and notifications. Keep them within the authorized test scope using beta-specific routing. Do not change production routing to make a test pass.
+Confirm the live channel and category once per session, and on a command's first use verify every side-effect destination: announcements, match channels/threads, audit messages, logs, and notifications. Keep them within the authorized test scope using beta-specific routing. Do not change production routing to make a test pass.
 
 ## 2. Launch Elo Beta
 
@@ -36,11 +36,11 @@ pgrep -fl 'beta\.py|main\.py|watchdog\.py'
 
 Inspect `beta.py` and `common/constants.py`: the beta token must come from `BOT_BETA_TOKEN`, `DATA_BASES["beta"]` must be `elo_beta`, and `BETA_SYNC_FROM_MAIN` must remain `False`. Never print `.env` values. Do not run `main.py` or `watchdog.py`.
 
-If an existing beta process belongs to this test run and matches the intended code, reuse it. Otherwise coordinate with its owner. Once no conflicting beta process exists, launch it through a persistent background terminal/monitor using the commands in the "Starting beta" section of `~/.dori/elobot/work-policy.md`.
+If an existing beta process belongs to this test run and matches the intended code, reuse it. Otherwise coordinate with its owner. Once no conflicting beta process exists, launch it through a persistent background terminal/monitor after reading `~/.dori/elobot/docs/beta-maintenance-workflow.md` for the profile-specific start commands.
 
 Keep the returned process/monitor handle. Subscribe to startup and error output rather than sleeping or repeatedly polling. Confirm the startup log's `Logged in as` identity/ID is Elo Beta, database initialization succeeded, cogs loaded, and beta database sync is disabled. A launched process or `Starting bot...` alone is not readiness. Record the current source revision and owned process handle with the test evidence.
 
-When ordinary beta startup and testing with existing beta data are authorized, and what must be verified first, is also stated in that "Starting beta" section. The WSL worktree links to the private beta-only environment and uses the shared `.venv`. If credentials, MongoDB, CoC, Helper, or designated test resources are unavailable, report the specific missing gate. Never substitute production.
+The profile-specific Beta data rules in `~/.dori/elobot/work-policy.md` determine authorization; the beta maintenance runbook supplies the procedure. The WSL worktree links to the private beta-only environment and uses the shared `.venv`. If credentials, MongoDB, CoC, Helper, or designated test resources are unavailable, report the specific missing gate. Never substitute production.
 
 ## 3. Connect Chrome through BrowserSkill
 
@@ -55,8 +55,7 @@ helio browser ready
 
 This command opens the dedicated WSL profile and waits for the BrowserSkill extension to connect. A closed browser before running it is normal, not a blocker.
 Do not close other Chrome windows or use a new data directory. If the
-extension does not connect, is disabled, or access is denied, stop and ask the
-owner to resolve it; do not substitute another profile.
+extension does not connect or readiness fails, inspect `helio doctor` and the installed browser-skill CLI before asking the owner to resolve it. A real denial still requires the owner; do not substitute another profile.
 
 New Helio lead and worker sessions source `~/.dori/elobot/browser-env` to
 set the existing daemon's `BSK_HOME` and expose the installed `bsk` executable
@@ -120,7 +119,7 @@ Read `~/.dori/elobot/beta-maintenance-workflow.md` before any beta database prep
 
 ## 5. Prepare labelled beta fixtures
 
-Inspect existing beta state first. No beta record is protected: if existing data blocks a test, change or remove it (see `beta-maintenance-workflow.md`) and carry on; do not stop to ask because beta records already exist. Record the IDs you create or change, and remember that a database change does not undo Discord effects.
+Inspect existing beta state first and apply the runtime profile's Beta data boundary in work-policy.md. Only the isolated profile grants the exception allowing any beta record to be changed or removed; the owner profile reads only. Read `beta-maintenance-workflow.md` before preparing fixtures. Record the IDs you create or change, and remember that a database change does not undo Discord effects.
 
 For bugs, reproduce the failure before changing its owner and capture the failed outcome plus relevant state/logs. For features, record the approved acceptance criteria. Seed through existing test/setup paths only when necessary; clearly distinguish seeded setup from actions exercised through Discord.
 
@@ -248,15 +247,15 @@ Save current screenshots, a short test matrix, scoped runtime logs, and before/a
 
 Capture private previews from their owning account. For UI changes include before/after screenshots and the relevant desktop/narrow views. Inspect images for unrelated content, secrets, personal data, and local desktop chrome before sending.
 
-Deliver the screenshots and a concise result summary with `bun ~/.dori/elobot/evidence.ts <request channel_id> <request message_id> --text-file <summary> [--owner-only] <screenshot>...`. It replies where the request was made (trusted chat or owner/trusted DM), or for a normal-chat request sends to the owner's DM, forwards that to a trusted requester's DM and leaves a note in place. Use `--owner-only` for anything only the owner may see (see Evidence and reporting in work-policy.md). Never hand-write an upload.
+Deliver the screenshots and a concise result summary with `bun ~/.dori/elobot/evidence.ts <request channel_id> <request message_id> --text-file <summary> [--owner-only] <screenshot>...`. It replies where the request was made (trusted chat or owner/trusted DM), or for a normal-chat request sends to the owner's DM, forwards that to a trusted requester's DM and leaves a note in place. Use `--owner-only` for anything only the owner may see (see Evidence and reporting in work-policy.md). Never hand-write an upload. Split mixed results into shareable and owner-only calls; local paths, stale screenshots and "tests passed" messages are not screenshot delivery.
 
 If any required live scenario is blocked, report it as unverified before calling the work fully tested. Passing unit tests do not replace missing browser/account/remote checks.
 
 ## 9. Finish and clean up
 
-Commit and push only the verified in-scope working branch when authorized by the bug policy or feature request. PR creation requires an owner or trusted-user request; a PR merge and `elobot` restart remain separately confirmation-gated in `work-policy.md`; other production changes remain owner-only.
+Commit and push only the verified in-scope working branch when authorized by the bug policy or feature request. PR creation requires an owner or trusted-user request, an approved plan through `helio pr submit` (issue-plan-workflow.md), or standing autofix authorization through `helio autofix submit`; a PR merge and `elobot` restart remain separately confirmation-gated in `work-policy.md`; other production changes remain owner-only.
 
-Stop the task BrowserSkill session, then run `helio browser close` to close the dedicated profile after browser work; if another BrowserSkill session remains active, defer closure until it finishes. Stop only a beta process started by this run, using its recorded handle. Never broad-kill Python or another lane's bot. Remove only owned disposable fixtures/resources, preserve evidence and unrelated state, stop the BrowserSkill session, and return borrowed tabs. Keep logins intact.
+Always use a finally/cleanup path, including failures. Stop the task BrowserSkill session, then run `helio browser close` to close the dedicated profile after browser work; if another BrowserSkill session remains active, defer closure until it finishes. Stop only a beta process started by this run, using its recorded handle. Never broad-kill Python or another lane's bot. Remove only owned disposable fixtures/resources, preserve evidence and unrelated state subject to the isolated Beta data exception, stop the BrowserSkill session, and return borrowed tabs. Keep logins intact.
 
 ## Latest observed setup state
 
@@ -267,3 +266,15 @@ In the Test thread, Tergum ran Elo Beta's `/help` and changed its private menu f
 Later that day, Tergum and Crystal Wolf queued and confirmed the same beta match. Crystal Wolf's DM confirmation saved successfully but returned an unexpected error because `ctx.guild` was `None`; the automatic confirmation sweep later created the private match thread. Dominik then used Elo Beta's `/match war start` for Crystal Wolf with Balloon Moon. The Discord message and beta match and clan records agreed on the host and clan. The match remained active with Tergum's side unstarted. The full evidence and exact IDs are in `.omo/evidence/helio-live-20261102/results.md`; screenshots were saved locally, not verified as delivered.
 
 The owner authorized choosing a configured default; the QA default is Balloon Moon (`#2RY0QP8GY`), subject to the availability checks above. Helio's separate bot is not required for real-account browser QA.
+
+## Browser lifecycle
+
+Use section 3 for readiness and profile/session connection, section 4 for accounts and section 9 for cleanup. Do not follow macOS launch recipes.
+
+## Live beta testing
+
+Follow sections 1-7 and the profile-specific beta maintenance runbook; shared work-policy.md retains test scope, credentials and authority boundaries.
+
+## Evidence and reporting
+
+Follow section 8 for capture/delivery and section 9 for cleanup. Save command, expected/observed result and pass/fail/unverified status with the current evidence; report failures and missing live checks before committing/pushing as verified.

@@ -32,3 +32,14 @@ The agent has the restricted beta credential for running the beta application. T
 The isolated checkout, browser profile, memory and session history were copied from the original setup. `helio start` and `helio resume` launch into this isolated runtime; `helio --check` checks basic startup. The owner-managed trusted-user and report-channel lists are copied into read-only mounts on launch. `helio update` inside the workspace updates managed Helio files; it does not install updates to the root-owned services or isolation launcher.
 
 Verification included an actual OpenAI request, GitHub and Discord authentication, BrowserSkill extension connection, session discovery, a Herdr worker, host-listener and Windows-interop probes, real scoped MongoDB synthetic updates with a stored preimage, a concurrent-write conflict, protected record and peer rejection, backup export/integrity tests, and read-only Oracle inspection. The synthetic fixtures were deleted; the empty `helio_broker_verification` collection and synthetic backup archives remain. A full Helio lead/monitor startup, a real beta bot startup against existing state, account login after profile copying, and an actual production restart were not performed in this verification.
+
+## Buttons and click proof
+
+Confirmations, plan approvals and question menus use Discord buttons, menus and forms
+(`discord-inbound/interactive/`). The intake watcher answers each click itself, records it in
+`discord-prompts.sqlite`, and only then reports `INBOUND_CONFIRM` to the lead. A restart is approved by a
+button result message that Discord marks with the clicker and the clicked prompt (`interaction_metadata`);
+the release broker re-reads both messages and checks the clicker, wording, timing and single use.
+Discord does not record which button was pressed, so the prompt and result wording carry that part: a
+sandbox that holds the bot token could present a Cancel click as a confirmation, but only for a real click
+by an approver on that exact prompt within 15 minutes. Typed approvals avoid this limit and remain valid.

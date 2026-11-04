@@ -5,7 +5,7 @@ On the owner side this first regenerates env/beta/permission files from
 ~/.config/helio/helio.env (see scripts/helio_config.py), then updates managed
 files against the recorded baseline and refuses to overwrite local edits.
 """
-import argparse, hashlib, json, os, runpy, tempfile
+import argparse, hashlib, json, os, runpy, subprocess, sys, tempfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 PAYLOAD=runpy.run_path(str(ROOT/'scripts/helio_payload.py'))
@@ -16,7 +16,7 @@ PROFILES=PAYLOAD['PROFILES']
 MANAGED=PAYLOAD['MANAGED']
 RETIRED=PAYLOAD['RETIRED']
 SHIPPED=PAYLOAD['PREVIOUSLY_SHIPPED']
-NEW_PAYLOAD=('helio-sessions.py','evidence.ts','evidence.test.ts')
+NEW_PAYLOAD=('helio-sessions.py','evidence.ts','evidence.test.ts',*PAYLOAD['SKILLS'])
 def digest(b): return hashlib.sha256(b).hexdigest()
 def atomic(p, data):
  fd,tmp=tempfile.mkstemp(prefix='.helio-',dir=p.parent)
@@ -97,6 +97,10 @@ def run(home, action, update_launcher=False, profile=None):
   else: data=PAYLOAD['plain'](name).read_bytes()
   desired[name]=data
  retired={name:dst/name for name in RETIRED if (dst/name).is_file() and not (dst/name).is_symlink()}
+ # Intake files this installer recorded that the kit no longer ships (e.g. after a move) are retired the same way.
+ inbound=home/'.dori/discord-inbound'
+ dropped=[n for n in baseline if n.startswith('@inbound/') and n[9:] not in INBOUND_FILES]
+ retired.update({n:inbound/n[9:] for n in dropped if (inbound/n[9:]).is_file() and not (inbound/n[9:]).is_symlink()})
  def reviewed(name,value): return value==baseline.get(name) or value in SHIPPED[profile].get(name,())
  # Already-converged files need no write, even with an older or missing baseline.
  # Config preserves local fields in desired, so equality cannot authorize its drift.
@@ -108,10 +112,26 @@ def run(home, action, update_launcher=False, profile=None):
   if recorded_profile is None: print('If this is the owner home (not the isolated runtime), run once: python3 scripts/sync-install.py --profile owner')
   raise SystemExit(1)
  changes=[n for n in names if digest(desired[n])!=current[n]]
+ settings=Path(mapping['HELIO_PROJECT'])/'.omo/settings.json'
+ for parent in settings.parents:
+  if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+   raise SystemExit(f'Unsafe project settings directory: {parent}')
+ if settings.is_symlink() or (settings.exists() and not settings.is_file()):
+  raise SystemExit(f'Unsafe project settings file: {settings}')
+ project_settings=json.loads(settings.read_text()) if settings.exists() else {}
+ if not isinstance(project_settings,dict) or not isinstance(project_settings.get('terminal',{}),dict):
+  raise SystemExit(f'Expected project settings and terminal to be objects: {settings}')
+ terminal=project_settings.setdefault('terminal',{})
+ settings_changed=terminal.get('monitorMaxCharsPerInjection')!=16384
+ terminal['monitorMaxCharsPerInjection']=16384
  print('Managed updates: '+(', '.join(changes) if changes else 'none'))
+ print(f'Project terminal.monitorMaxCharsPerInjection: {"set to 16384" if settings_changed else "unchanged (16384)"}')
  if retired: print('Retired (no longer used, will be removed): '+', '.join(retired))
- print('Credentials, authorization lists, runtime state, project files and memory are excluded.')
+ print('Credentials, authorization lists, runtime state, other project settings and memory are excluded.')
  if action=='apply':
+  if settings_changed:
+   settings.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+   atomic(settings,(json.dumps(project_settings,indent=2)+'\n').encode())
   DOCS['organize'](dst,True,documents)
   for name in DOCS['RUNBOOKS']:
    paths[name]=dst/'docs'/name
@@ -121,12 +141,21 @@ def run(home, action, update_launcher=False, profile=None):
    atomic(paths[name],desired[name]); baseline[name]=digest(desired[name]); atomic(manifest,(json.dumps(baseline,indent=2)+'\n').encode())
   for name,p in retired.items():
    p.unlink(); baseline.pop(name,None)
+  for name in dropped: baseline.pop(name,None)
   for name in names:
    baseline[name]=digest(paths[name].read_bytes())
+  for name in PAYLOAD['EXECUTABLES']:
+   paths[name].chmod((paths[name].stat().st_mode & 0o777) | 0o100)
   baseline['config.json']=digest(paths['config.json'].read_bytes())
   baseline['_profile']=profile
   atomic(manifest,(json.dumps(baseline,indent=2)+'\n').encode())
   print('Updated managed files. Restart Helio and its watchers to load changes.')
+  # Startup only reports doc drift; adding missing project docs happens here, never overwriting.
+  script=dst/'knowledge-setup.py'
+  if (dst/'project-docs').is_dir() and script.is_file() and Path(mapping['HELIO_PROJECT']).is_dir():
+   docs=subprocess.run([sys.executable,str(script),'--reconcile-docs'],capture_output=True,text=True,timeout=120,
+                       env={**os.environ,'HOME':str(home),'HELIO_PROJECT':mapping['HELIO_PROJECT']})
+   print((docs.stdout+docs.stderr).strip() or f'KNOWLEDGE_DOCS exit={docs.returncode}')
 def main():
  p=argparse.ArgumentParser(description=__doc__)
  p.add_argument('--home',type=Path,default=Path.home())
@@ -143,4 +172,9 @@ def main():
  elif not (home/'.dori/elobot/env').is_file():
   raise SystemExit('No ~/.config/helio/helio.env and no ~/.dori/elobot/env; see docs/setup.md')
  run(home,action,args.update_launcher,args.profile)
+ # The kit ships a copy of the owner's skills; say when the owner's own copy has moved on.
+ for name in PAYLOAD['SKILLS']:
+  own=Path.home()/'.agents'/name
+  if own.is_file() and own.read_bytes()!=PAYLOAD['plain'](name).read_bytes():
+   print(f'Note: {own} differs from the kit copy agent/{name}; copy it into the kit to ship it.')
 if __name__=='__main__': main()

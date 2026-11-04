@@ -60,6 +60,8 @@ Inside the isolated workspace: `helio triage`, `helio conversation open|close|li
 
 ## Configuration: one file
 
+Helio can open automatic PRs for small confirmed bugs, including Elo Bot reports, only through `helio autofix check|submit`; regression tests must fail on main and pass with the fix. Merges and restarts still need fresh approval. Set `HELIO_AUTOFIX=off` to disable this, and use `HELIO_AUTOFIX_MAX_LINES`, `HELIO_AUTOFIX_MAX_FILES`, `HELIO_AUTOFIX_MAX_OPEN` and the comma-separated `HELIO_AUTOFIX_DENY` globs in `helio.env` to bound it; other work remains issue-only with `needs-owner-review`.
+
 All settings live in **`~/.config/helio/helio.env`** (template:
 [`helio.env.example`](helio.env.example)): the Discord token, channel and
 people IDs, the EloBot checkout path, models and beta credentials. `helio update`

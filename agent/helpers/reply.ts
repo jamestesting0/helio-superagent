@@ -69,18 +69,36 @@ if (import.meta.main) {
       console.log(`SENT ${await send([])}`);
     } else {
       // Loaded only here, so sendReply stays usable without the intake package's dependencies.
-      const [{ Delivery }, { Conversations }, { discordRest }, { cleanupAttachments }, { guardedReply }] = await Promise.all([
-        import("../discord-inbound/delivery.ts"), import("../discord-inbound/conversations.ts"),
-        import("../discord-inbound/rest.ts"), import("../discord-inbound/images.ts"), import("../discord-inbound/working.ts"),
+      const [{ Delivery }, { Conversations }, { discordRest }, { cleanupAttachments }, { guardedReply }, { sendOnce, findSentReply }] = await Promise.all([
+        import("../discord-inbound/delivery/delivery.ts"), import("../discord-inbound/conversations/conversations.ts"),
+        import("../discord-inbound/discord/rest.ts"), import("../discord-inbound/messages/images.ts"), import("../discord-inbound/conversations/reply-guard.ts"),
+        import("../discord-inbound/conversations/reply-once.ts"),
       ]);
       const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
       const store = new Conversations(`${state}/discord-conversations.sqlite`);
       try {
+        const rest = discordRest(token);
+        const bot = store.list().some((row) => row.channel_id === args.channel_id) ?
+          await rest<{ id: string }>("/users/@me") : undefined;
+        const content = discordText(args.text);
+        const once = async (mentions: readonly string[]) => {
+          const sent = await sendOnce({
+            path: `${state}/reply-sends.sqlite`, target: args.message_id, text: content, now: () => Date.now(),
+            sleep: (ms) => Bun.sleep(ms), send: () => send(mentions),
+            findSent: () => findSentReply(rest, args, content),
+          });
+          if (sent.duplicate) console.log(`REPLY_DUPLICATE ${sent.id} this reply was already sent; nothing was sent again`);
+          return sent.id;
+        };
         const result = await guardedReply({
-          delivery, store, rest: discordRest(token), channel: args.channel_id, target: args.message_id,
-          covers: args.covers, seen: args.seen, send,
+          delivery, store, rest, channel: args.channel_id, target: args.message_id,
+          covers: args.covers, seen: args.seen, send: once,
           cleanup: (id) => cleanupAttachments(id, `${state}/attachments/inbound`),
           now: () => Date.now(), warn: (message) => console.log(`REPLY_WARN ${message}`),
+          owner: process.env.DORI_DISCORD_OWNER_ID,
+          ...(bot ? { replyEntry: {
+            author_id: bot.id, author: "Helio", bot: true, content: discordText(args.text), attachment_count: 0,
+          } } : {}),
         });
         for (const line of result.lines) console.log(line);
         process.exitCode = result.code;

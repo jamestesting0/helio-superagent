@@ -111,7 +111,8 @@ class MonitorReloadTests(unittest.TestCase):
     def quiet(self, process: subprocess.Popen) -> None:
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
-            self.assertEqual(selector.select(0.2), [], "unexpected restart or warning")
+            if selector.select(0.2):
+                self.fail("unexpected restart or warning: " + self.line(process))
         self.assertIsNone(process.poll(), "persistent monitor exited")
 
     def test_wrappers_reload_new_code_once_and_keep_the_supervisor(self) -> None:
@@ -131,6 +132,8 @@ class MonitorReloadTests(unittest.TestCase):
                 restarted = self.line(process).split()
                 self.assertEqual(restarted[:2], ["START", "new"])
                 self.assertNotEqual(start[2], restarted[2])
+                self.stamp.write_text("")
+                self.quiet(process)  # An incomplete write is not a new deployed version.
                 self.stamp.write_text("b5dd1d4 2026-11-03T15:00:00Z\n")
                 self.quiet(process)  # Rewriting equal content must not restart.
                 process.send_signal(signal.SIGTERM)
@@ -230,9 +233,12 @@ class MonitorReloadTests(unittest.TestCase):
                 source = source.replace("from pathlib import Path", "from pathlib import Path" + marker)
                 script = self.home / f"helio-{name}.py"
                 script.write_text(source)
+                if name == "followups":
+                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio_issue_link.py"):
+                        (self.home / helper).write_text((ROOT / "scripts" / helper).read_text())
                 argv = [sys.executable, str(script)]
                 if name == "followups":
-                    self.executable("gh", '#!/bin/sh\necho \'{"state":"CLOSED","stateReason":"COMPLETED"}\'\n')
+                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
                     subprocess.run(
                         [*argv, "add", "--issue", "1", "--channel", "100", "--user", "7", "--reply-to", "9"],
                         env=self.env, capture_output=True, check=True, timeout=3,
@@ -250,7 +256,9 @@ class MonitorReloadTests(unittest.TestCase):
                 self.assertEqual(self.line(process),
                                  f"{prefix}_WARN updated to fresh; restarting to load it")
                 self.assertEqual(self.line(process), f"START new {process.pid}")
-                self.assertEqual(self.line(process), ready)
+                self.assertEqual(self.line(process), 'FOLLOWUP_PENDING count=1 read="helio followups list"' if name == "followups" else ready)
+                self.stamp.write_text("")
+                self.quiet(process)
                 self.stamp.write_text("fresh 2026-11-03T15:00:00Z\n")
                 self.quiet(process)
                 self.stop(process)

@@ -8,8 +8,11 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts/helio-followups.py"
 FAKE_GH = """#!{python}
-import json, sys
+import json, os, sys
 args = sys.argv[1:]
+if os.environ.get("FOLLOWUP_GH_LOG"):
+    with open(os.environ["FOLLOWUP_GH_LOG"], "a") as log:
+        log.write(" ".join(args[:3]) + "\\n")
 issues = {{
     "1": {{"state": "OPEN"}},
     "2": {{"state": "CLOSED", "stateReason": "NOT_PLANNED", "comments": [{{"body": "Out of scope for this season."}}]}},
@@ -44,7 +47,7 @@ class FollowupTests(unittest.TestCase):
         git("push", "origin", "main", cwd=project)
         bins = root / "bin"; bins.mkdir()
         (bins / "gh").write_text(FAKE_GH.format(python=sys.executable, merges=json.dumps({"30": commits[0], "40": commits[1]})))
-        (bins / "helio").write_text(f"#!/bin/sh\n[ \"$*\" = \"release inspect\" ] || exit 3\necho '{{\"head\": \"{commits[0]}\"}}'\n")
+        (bins / "helio").write_text(f"#!/bin/sh\n[ \"$*\" = \"release inspect\" ] || exit 3\necho '{{\"head\": \"{commits[0]}\", \"running_revision\": \"{commits[0]}\", \"active\": true, \"login_evidence\": \"observed\"}}'\n")
         for b in bins.iterdir():
             b.chmod(0o755)
         self.env = {**os.environ, "PATH": f"{bins}:{os.environ['PATH']}", "HELIO_GITHUB_REPO": "o/r",
@@ -59,7 +62,8 @@ class FollowupTests(unittest.TestCase):
         out = self.cli("check").stdout.splitlines()
         events = {line.split(" ", 1)[0] + ":" + str(json.loads(line.split(" ", 1)[1])["issue"]) for line in out}
         self.assertEqual(events, {"FOLLOWUP_DECLINED:2", "FOLLOWUP_LIVE:3", "FOLLOWUP_DONE:5"})
-        declined = json.loads(next(line for line in out if line.startswith("FOLLOWUP_DECLINED")).split(" ", 1)[1])
+        page = json.loads(self.cli("show", "2").stdout)
+        declined = json.loads(page["content"])[0]["announcement"]
         self.assertEqual((declined["reason"], declined["reply_to"], declined["channel_id"]), ("Out of scope for this season.", "902", "100"))
         self.assertEqual(self.cli("done", "--issue", "3", "--user", "7").returncode, 0)
         listed = self.cli("list").stdout
@@ -70,6 +74,26 @@ class FollowupTests(unittest.TestCase):
     def test_unknown_follow_up_and_bad_ids_are_refused(self):
         self.assertEqual(self.cli("done", "--issue", "9", "--user", "7").returncode, 2)
         self.assertNotEqual(self.cli("add", "--issue", "1", "--channel", "abc", "--user", "7", "--reply-to", "1").returncode, 0)
+
+    def test_one_check_reads_a_shared_issue_once_and_notifies_each_requester(self):
+        log = Path(self.tmp.name) / "gh-reads"
+        self.env["FOLLOWUP_GH_LOG"] = str(log)
+        for user in ("7", "8"):
+            self.assertEqual(self.cli("add", "--issue", "2", "--channel", "100", "--user", user, "--reply-to", "902").returncode, 0)
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = [json.loads(line.split(" ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("FOLLOWUP_DECLINED ")]
+        self.assertEqual({event["user_id"] for event in events}, {"7", "8"})
+        self.assertEqual(log.read_text().splitlines(), ["issue view 2"])
+
+    def test_checkout_only_evidence_never_announces_live(self):
+        bins = Path(self.env["PATH"].split(":")[0])
+        (bins / "helio").write_text('#!/bin/sh\necho \'{"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active":true,"login_evidence":"observed"}\'\n')
+        self.assertEqual(self.cli("add", "--issue", "3", "--channel", "100", "--user", "7", "--reply-to", "903").returncode, 0)
+        result = self.cli("check")
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("FOLLOWUP_LIVE", result.stdout)
+        self.assertIn("FOLLOWUP_WARN", result.stdout)
 
 
 if __name__ == "__main__":

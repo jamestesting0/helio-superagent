@@ -42,6 +42,19 @@ class HelioConfigTests(unittest.TestCase):
         self.assertTrue(any("DORI_DISCORD_TRUSTED_CHANNELS" in issue for issue in issues))
         self.assertTrue(any("DORI_DISCORD_TOKEN" in issue for issue in CONFIG["problems"]({})))
 
+    def test_switches_counts_and_deny_globs_are_typed(self):
+        self.assertEqual(CONFIG["problems"](SECRETS), [])
+        env = CONFIG["generate"](SECRETS, self.home)["env"][0].decode()
+        self.assertIn("export HELIO_ANSWER_FOR_OWNER=on", env)
+        self.assertIn("export HELIO_AUTOFIX_DENY='requirements*.txt,", env)
+        bad = {"HELIO_AUTOFIX": "yes", "HELIO_OWNER_PRESENT_MINUTES": "0", "HELIO_AUTOFIX_MAX_LINES": "40 ",
+               "HELIO_AUTOFIX_DENY": "main.py,../outside"}
+        issues = " ".join(CONFIG["problems"]({**SECRETS, **bad}))
+        for key in bad:
+            self.assertIn(key, issues)
+        for deny in ("/etc/passwd", "a b.py", "x,,y", "docs/.."):
+            self.assertIn("HELIO_AUTOFIX_DENY", " ".join(CONFIG["problems"]({**SECRETS, "HELIO_AUTOFIX_DENY": deny})))
+
     def test_render_writes_private_files_and_is_idempotent(self):
         self.write_settings(HELIO_TRUSTED_USERS="11111,22222")
         with redirect_stdout(StringIO()):

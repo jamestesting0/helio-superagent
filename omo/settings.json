@@ -1,5 +1,6 @@
 {
   "terminal": {
+    "monitorMaxCharsPerInjection": 16384,
     "monitorWakeBudget": 100,
     "monitorWakesPerHour": 3600
   }

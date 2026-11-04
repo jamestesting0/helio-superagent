@@ -25,6 +25,8 @@ async function fixture() {
     copyFile(join(import.meta.dir, "browser-env"), join(dori, "browser-env")),
     writeFile(join(dori, "setup-prompt.md"), "test prompt"),
     writeFile(join(dori, "work-policy.md"), "test policy"),
+    mkdir(join(dori, "skills/karpathy-guidelines"), { recursive: true })
+      .then(() => writeFile(join(dori, "skills/karpathy-guidelines/SKILL.md"), "test skill")),
     writeFile(join(dori, "env"), [
       "export DORI_DISCORD_TOKEN=fake",
       "export DORI_DISCORD_OWNER_ID=fake",
@@ -98,6 +100,7 @@ test("lead startup provides the browser and automatic monitor kickoff", async ()
         "--session-id", "11111111-1111-4111-8111-111111111111", "--no-ask-user",
         "--model", "chatgpt-subscription/gpt-6.1-terra", "--thinking", "medium", "--models", "chatgpt-subscription/*",
         "--skill", join(f.home, ".pi/agent/skills/browser-skill"),
+        "--skill", join(f.dori, "skills/karpathy-guidelines"),
         "--append-system-prompt", join(f.dori, "setup-prompt.md"),
         "--append-system-prompt", join(f.dori, "work-policy.md"),
     ]);
@@ -137,9 +140,11 @@ test("worker command exposes bsk and preserves model and prompt as literal argum
     expect(argv[8]).toBe("--no-ask-user");
     await run(["/bin/bash", "-c", argv.map(quoteForPane).join(" ")], f.env);
 
-    expect(argv[14]?.endsWith("/.dori/elobot/work-policy.md")).toBe(true);
+    expect(argv[14]?.endsWith("/.dori/elobot/skills/karpathy-guidelines")).toBe(true);
+    expect(argv[16]?.endsWith("/.dori/elobot/work-policy.md")).toBe(true);
     expect(await agentResult(f.home)).toEqual({
-      args: ["--no-ask-user", "--models", "chatgpt-subscription/*", "--skill", argv[12], "--append-system-prompt", argv[14], "--model", model, prompt],
+      args: ["--no-ask-user", "--models", "chatgpt-subscription/*", "--skill", argv[12], "--skill", argv[14],
+        "--append-system-prompt", argv[16], "--model", model, prompt],
       browser: f.browser,
       result: "fake browser executed\n",
     });

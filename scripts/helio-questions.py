@@ -27,13 +27,34 @@ def db_connect():
  if p.is_symlink():raise ValueError('refusing symlinked question database')
  fd=os.open(p,os.O_CREAT|os.O_WRONLY|os.O_NOFOLLOW,0o600);os.close(fd);os.chmod(p,0o600)
  db=sqlite3.connect(p,timeout=10);db.row_factory=sqlite3.Row
- db.execute('PRAGMA busy_timeout=10000')
+ db.execute('PRAGMA busy_timeout=10000');db.execute('PRAGMA journal_mode=WAL')
  db.execute("""CREATE TABLE IF NOT EXISTS questions (
  id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, lane TEXT NOT NULL, audience TEXT NOT NULL,
  recipient TEXT NOT NULL, question TEXT NOT NULL, status TEXT NOT NULL, channel_id TEXT,
  message_id TEXT, answer_id TEXT, answer_author TEXT, answer_role TEXT, answer_scope TEXT,
  answer_text TEXT, error TEXT, updated INTEGER NOT NULL)""")
+ present={r[1] for r in db.execute('PRAGMA table_info(questions)')}
+ for name,kind in (('options','TEXT'),('components','TEXT'),('answer_source','TEXT'),('announced_at','INTEGER'),
+                   ('cleared_at','INTEGER'),('pending_by','TEXT'),('pending_at','INTEGER')):
+  if name not in present:db.execute(f'ALTER TABLE questions ADD COLUMN {name} {kind}')
  db.commit();return db
+
+def components_for(id,options,allow_other):
+ # Option values are indexes: the watcher maps them back to the stored labels.
+ rows=[]
+ if options:
+  rows.append({'type':1,'components':[{'type':3,'custom_id':f'h1:q:{id}:pick','placeholder':'Choose an answer','min_values':1,'max_values':1,
+   'options':[{'label':label,'value':str(i)} for i,label in enumerate(options)]}]})
+ if allow_other:
+  rows.append({'type':1,'components':[{'type':2,'style':2,'label':'Other…' if options else 'Answer…','custom_id':f'h1:q:{id}:other'}]})
+ return rows
+
+def clean_options(options,allow_other):
+ options=[o.strip() for o in options or []]
+ if options and not 2<=len(options)<=5:raise ValueError('give 2-5 options')
+ if any(not 1<=len(o)<=80 for o in options) or len(set(options))!=len(options):raise ValueError('options must be unique and 1-80 characters')
+ if not options and not allow_other:raise ValueError('--no-other needs --option choices')
+ return options
 
 def request(method,path,body=None):
  if not TOKEN:raise ValueError('DORI_DISCORD_TOKEN is missing')
@@ -49,9 +70,43 @@ class DiscordError(Exception):
 def event(row):
  return {k:row[k] for k in ('id','lane','audience','recipient','question','status','channel_id','message_id','answer_id','answer_author','answer_role','answer_scope','answer_text','error')}
 
-def write(db,id,status,**values):
+def summary(row: sqlite3.Row) -> str:
+ fields={k:row[k] for k in ('id','lane','audience','status','answer_role','answer_scope')}
+ fields.update(preview=(row['answer_text'] or row['question'] or row['error'] or '')[:200],read=f"helio question show {row['id']}")
+ encoded=json.dumps(fields,ensure_ascii=True,separators=(',',':'))
+ while len(encoded)>950:
+  fields['preview']=fields['preview'][:-20]
+  encoded=json.dumps(fields,ensure_ascii=True,separators=(',',':'))
+ return encoded
+
+def poll(db: sqlite3.Connection, lane: str | None, seen: dict[str,tuple[str,int,str]]) -> None:
+ pending=0
+ for row in db.execute("SELECT * FROM questions WHERE status NOT IN ('done','cancelled') ORDER BY updated,id"):
+  if lane and row['lane']!=lane:continue
+  if row['status']=='answering':continue
+  stuck=row['status']=='sending' and int(time.time()*1000)-row['updated']>30000
+  kind='ANSWERED' if row['status']=='answered' else 'DELIVERY_ERROR' if row['status'] in ('send_failed','delivery_unknown') or stuck else 'PENDING'
+  version=(row['status'],row['updated'],kind)
+  if seen.get(row['id'])==version:
+   if row['status']=='answered':pending+=1
+   continue
+  seen[row['id']]=version
+  print('QUESTION_'+kind+' '+summary(row),flush=True)
+ if pending:
+  print(f'QUESTION_PENDING count={pending} status=answered read="helio question list"',flush=True)
+
+def detail(row: sqlite3.Row, offset: int) -> str:
+ text=json.dumps(event(row),ensure_ascii=True)
+ content=text[offset:offset+6000];next_offset=offset+len(content)
+ return json.dumps({'id':row['id'],'status':row['status'],'offset':offset,'content':content,
+  'truncated':next_offset<len(text),'read_more':f"helio question show {row['id']} --offset {next_offset}" if next_offset<len(text) else None})
+
+def write(db,id,status,when=None,**values):
+ # `when` makes the change conditional on the status just read: a Discord click may claim the question in between.
  fields={'status':status,'updated':int(time.time()*1000),**values}
- db.execute('UPDATE questions SET '+','.join(k+'=?' for k in fields)+' WHERE id=?',(*fields.values(),id));db.commit()
+ changed=db.execute('UPDATE questions SET '+','.join(k+'=?' for k in fields)+' WHERE id=?'+(' AND status=?' if when else ''),
+  (*fields.values(),id,*([when] if when else []))).rowcount;db.commit()
+ if when and not changed:raise ValueError('question changed while this command ran; inspect it again')
 
 def allowed_channel(channel):
  current=channel;seen=set()
@@ -192,9 +247,13 @@ def send_question(db,id):
  if not changed:return event(db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone())
  pings=[x for x in dict.fromkeys([OWNER,*sorted(trusted_now())]) if ID.fullmatch(x)] if row['audience']=='staff' else []
  mention=' '.join(f'<@{x}>' for x in pings)
- content=(mention+'\n' if mention else '')+f"Question [{id}]\n{format_links(row['question'])}\n\nPlease reply directly to this message so I can route your answer to the right task."
+ # Rows from before components were always added keep the reply-only hint.
+ hint=('Choose below or reply to this message.' if json.loads(row['options'] or '[]') else 'Answer below or reply to this message.') if row['components'] else 'Please reply directly to this message so I can route your answer to the right task.'
+ content=(mention+'\n' if mention else '')+f"Question [{id}]\n{format_links(row['question'])}\n\n{hint}"
+ body={'content':content,'allowed_mentions':{'parse':[],**({'users':pings[:100]} if pings else {})},'nonce':id,'enforce_nonce':True}
+ if row['components']:body['components']=json.loads(row['components'])
  try:
-  result=request('POST',f'/channels/{channel}/messages',{'content':content,'allowed_mentions':{'parse':[],**({'users':pings[:100]} if pings else {})},'nonce':id,'enforce_nonce':True})
+  result=request('POST',f'/channels/{channel}/messages',body)
   mid=str(result.get('id',''))
   if not ID.fullmatch(mid):raise ValueError('Discord returned an invalid message ID')
   write(db,id,'awaiting_answer',message_id=mid,error=None)
@@ -203,19 +262,21 @@ def send_question(db,id):
  except (OSError,ValueError,TimeoutError) as e:write(db,id,'delivery_unknown',error='Discord delivery could not be confirmed')
  return event(db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone())
 
-def create_question(db,lane,audience,recipient,text):
+def create_question(db,lane,audience,recipient,text,options=None,allow_other=True):
  if not LANE.fullmatch(lane) or '..' in lane:raise ValueError('invalid lane key')
  if audience=='owner':recipient=OWNER
  if audience=='staff':recipient=STAFF
  if audience not in ('owner','thread','staff') or not ID.fullmatch(recipient):raise ValueError('expected a valid recipient ID')
  text=text.strip()
  if not text or len(text)>1500:raise ValueError('question must have 1-1500 characters')
- fingerprint=hashlib.sha256(json.dumps([lane,audience,recipient,text],ensure_ascii=False).encode()).hexdigest()
+ options=clean_options(options,allow_other)
+ fingerprint=hashlib.sha256(json.dumps([lane,audience,recipient,text,options,allow_other],ensure_ascii=False).encode()).hexdigest()
  db.execute('BEGIN IMMEDIATE')
  existing=db.execute("SELECT * FROM questions WHERE fingerprint=? AND status NOT IN ('done','cancelled')",(fingerprint,)).fetchone()
  if existing:db.commit();return event(existing)
  id=uuid.uuid4().hex[:20]
- db.execute('INSERT INTO questions (id,fingerprint,lane,audience,recipient,question,status,updated) VALUES (?,?,?,?,?,?,?,?)',(id,fingerprint,lane,audience,recipient,text,'queued',int(time.time()*1000)));db.commit()
+ db.execute('INSERT INTO questions (id,fingerprint,lane,audience,recipient,question,status,updated,options,components) VALUES (?,?,?,?,?,?,?,?,?,?)',
+  (id,fingerprint,lane,audience,recipient,text,'queued',int(time.time()*1000),json.dumps(options),json.dumps(components_for(id,options,allow_other))));db.commit()
  return send_question(db,id)
 
 def recover(db,id):
@@ -225,7 +286,10 @@ def recover(db,id):
  me=request('GET','/users/@me');messages=request('GET',f"/channels/{row['channel_id']}/messages?limit=100")
  if not ID.fullmatch(str(me.get('id',''))) or not isinstance(messages,list):raise ValueError('cannot verify bot identity or message history')
  marker=f"Question [{id}]"
- matches=[x for x in messages if x.get('author',{}).get('id')==me.get('id') and x.get('content','').startswith(marker) and ID.fullmatch(str(x.get('id','')))]
+ # Staff posts start with mentions; the question marker is the next complete line.
+ matches=[x for x in messages if x.get('author',{}).get('id')==me.get('id')
+          and (x.get('content','').startswith(marker) or x.get('content','').splitlines()[1:2]==[marker])
+          and ID.fullmatch(str(x.get('id','')))]
  if len(matches)==1:
   write(db,id,'awaiting_answer',message_id=matches[0]['id'],error=None);reconcile_pending(db)
  elif len(matches)>1:write(db,id,'delivery_unknown',error='Multiple matching messages; inspect manually')
@@ -247,61 +311,88 @@ def watch(db,lane):
  seen={}
  print('QUESTION_READY '+json.dumps({'lane':lane or 'all'}),flush=True)
  while True:
-  rows=db.execute("SELECT * FROM questions WHERE status NOT IN ('done','cancelled') ORDER BY updated").fetchall()
-  for row in rows:
-   if lane and row['lane']!=lane:continue
-   stuck=row['status']=='sending' and int(time.time()*1000)-row['updated']>30000
-   kind='ANSWERED' if row['status']=='answered' else 'DELIVERY_ERROR' if row['status'] in ('send_failed','delivery_unknown') or stuck else 'PENDING'
-   version=(row['status'],row['updated'],kind)
-   if seen.get(row['id'])==version:continue
-   seen[row['id']]=version
-   print('QUESTION_'+kind+' '+json.dumps(event(row),ensure_ascii=False),flush=True)
+  poll(db,lane,seen)
   deadline=time.monotonic()+3
   while True:
    new_stamp=read_stamp()
-   if new_stamp!=stamp:
-    version=next(iter(new_stamp.split()),'')
+   if new_stamp and new_stamp!=stamp:
+    version=next(iter(new_stamp.split()),'')[:100]
     print(f'QUESTION_WARN updated to {version}; restarting to load it',flush=True)
     os.execv(sys.executable,[sys.executable,*sys.argv])
    remaining=deadline-time.monotonic()
    if remaining<=0:break
    time.sleep(min(check_seconds,remaining))
 
+def confirm_argv(a):
+ """`ask --action` is an approval prompt: `helio confirm ask` owns its wording, click proof and expiry."""
+ if a.text is not None or a.option or a.other or a.no_other or a.audience or a.recipient:
+  raise ValueError('--action takes no --text, --option, --other, --no-other, --audience or --recipient: the prompt wording is fixed')
+ if a.lane not in (None,'lead'):raise ValueError('only the lead asks for approvals; report to the lead instead')
+ if a.reply_to and not a.channel:raise ValueError('--reply-to needs the --channel it is in')
+ channel=a.channel or STAFF
+ if not channel:raise ValueError('HELIO_STAFF_CHAT is not set; pass --channel')
+ repo=os.environ.get('HELIO_GITHUB_REPO','jamestesting0/elo-bot');number=(a.target or '').rpartition('#')[2]
+ note=[]
+ if not a.channel:note+=[f'<@{x}>' for x in dict.fromkeys([OWNER,*sorted(trusted_now())]) if ID.fullmatch(x)]
+ if a.action!='restart' and number.isdigit():note.append(f"<https://github.com/{repo}/{'issues' if a.action=='pr' else 'pull'}/{number}>")
+ argv=['helio','confirm','ask','--action',a.action,'--target',a.target or '','--revision',a.revision or '','--channel',channel]
+ if a.reply_to:argv+=['--reply-to',a.reply_to]
+ return argv+(['--note',' '.join(note)] if note else [])
+
 def main():
  parser=argparse.ArgumentParser();sub=parser.add_subparsers(dest='cmd',required=True)
- ask=sub.add_parser('ask');ask.add_argument('--lane',required=True);ask.add_argument('--audience',choices=('owner','staff','thread'),required=True);ask.add_argument('--recipient',default='');ask.add_argument('--text',required=True)
+ ask=sub.add_parser('ask');ask.add_argument('--lane');ask.add_argument('--audience',choices=('owner','staff','thread'));ask.add_argument('--recipient',default='');ask.add_argument('--text')
+ ask.add_argument('--option',action='append');ask.add_argument('--other',action='store_true',help='accepted; a typed answer is allowed by default')
+ ask.add_argument('--no-other',action='store_true',help='menu only, no typed answer')
+ for name in ('--action','--target','--revision','--channel','--reply-to'):ask.add_argument(name,choices=('pr','merge','restart') if name=='--action' else None)
  for name in ('retry','recover','ack','cancel','withdraw','show'):
   command=sub.add_parser(name);command.add_argument('id')
+  if name=='show':command.add_argument('--offset',type=int,default=0)
  w=sub.add_parser('watch');w.add_argument('--lane')
- sub.add_parser('list')
+ listing=sub.add_parser('list');listing.add_argument('--offset',type=int,default=0)
  sub.add_parser('reconcile')
- a=parser.parse_args();db=db_connect()
+ a=parser.parse_args()
+ if a.cmd=='ask' and a.action:
+  # Before the question database opens: the router's confirm route sets the release-check environment.
+  argv=confirm_argv(a);os.execvp(argv[0],argv)
+ if a.cmd=='ask' and (not a.lane or not a.audience or a.text is None or a.target or a.revision or a.channel or a.reply_to):
+  parser.error('ask needs --lane, --audience and --text; --target/--revision/--channel/--reply-to need --action')
+ db=db_connect()
  try:
-  if a.cmd=='ask':result=create_question(db,a.lane,a.audience,a.recipient,a.text)
+  if getattr(a,'offset',0)<0:parser.error('--offset must be nonnegative')
+  if a.cmd=='ask':result=create_question(db,a.lane,a.audience,a.recipient,a.text,a.option,not a.no_other)
   elif a.cmd=='retry':result=send_question(db,a.id)
   elif a.cmd=='recover':result=recover(db,a.id)
   elif a.cmd=='watch':return watch(db,a.lane)
   elif a.cmd=='reconcile':
    reconcile_pending(db);result=[event(r) for r in db.execute("SELECT * FROM questions WHERE status='answered' ORDER BY updated")]
-  elif a.cmd=='list':result=[event(r) for r in db.execute("SELECT * FROM questions WHERE status NOT IN ('done','cancelled') ORDER BY updated")]
+  elif a.cmd=='list':
+   rows=db.execute("SELECT * FROM questions WHERE status NOT IN ('done','cancelled') ORDER BY updated,id LIMIT 26 OFFSET ?",(a.offset,)).fetchall()
+   result={'items':[json.loads(summary(r)) for r in rows[:25]],'next':f'helio question list --offset {a.offset+25}' if len(rows)>25 else None}
   else:
    row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
    if not row:raise ValueError('unknown question')
    if a.cmd=='ack':
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
-    write(db,a.id,'done',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
+    # A clicked answer keeps its text until the watcher has posted it publicly; it clears the text afterwards.
+    unposted=row['answer_source']=='component' and row['announced_at'] is None
+    write(db,a.id,'done','answered',question='',**({} if unposted else {'answer_text':None}));row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
    elif a.cmd=='withdraw':
     # A sent question that no longer matters (policy changed, answered elsewhere) would otherwise stay pending forever.
     if row['status']!='awaiting_answer':raise ValueError('can only withdraw a sent, unanswered question; use cancel for unsent ones')
-    write(db,a.id,'cancelled',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
+    write(db,a.id,'cancelled','awaiting_answer',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
    elif a.cmd=='cancel':
     if row['status'] not in ('queued','send_failed'):raise ValueError('can only cancel a question known not to have been sent')
-    write(db,a.id,'cancelled',question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
+    write(db,a.id,'cancelled',row['status'],question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
+   if a.cmd=='show':print(detail(row,a.offset));return 0
    result=event(row)
-  print(json.dumps(result,ensure_ascii=False))
+  text=json.dumps(result,ensure_ascii=False)
+  if isinstance(result,dict) and len(text.encode())>45000:
+   print(detail(db.execute('SELECT * FROM questions WHERE id=?',(result['id'],)).fetchone(),0))
+  else:print(text)
   return 1 if isinstance(result,dict) and result.get('status') in ('send_failed','delivery_unknown','sending') else 0
  finally:db.close()
 
 if __name__=='__main__':
  try:sys.exit(main())
- except (OSError,ValueError,sqlite3.Error,DiscordError) as e:print('QUESTION_ERROR '+str(e),file=sys.stderr);sys.exit(1)
+ except (OSError,ValueError,sqlite3.Error,DiscordError) as e:print(('QUESTION_ERROR '+str(e)).replace('\n',' ')[:1000],file=sys.stderr);sys.exit(1)

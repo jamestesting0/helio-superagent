@@ -19,6 +19,8 @@
     "{{HELIO_MODEL_ALLOW}}",
     "--skill",
     "{{HELIO_BROWSER_SKILL}}",
+    "--skill",
+    "{{HOME}}/.dori/elobot/skills/karpathy-guidelines",
     "--append-system-prompt",
     "{{HOME}}/.dori/elobot/work-policy.md",
     "--model",

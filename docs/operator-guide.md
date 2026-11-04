@@ -106,6 +106,9 @@ The watcher supplies `attention: direct` for DMs and direct attention such as bo
 ```bash
 ~/.dori/elobot/ack pending inbound
 ~/.dori/elobot/ack pending context
+~/.dori/elobot/ack show inbound <id>[,<id>...]
+~/.dori/elobot/ack working inbound <id>[,<id>...]
+~/.dori/elobot/ack show context <id>
 ~/.dori/elobot/ack check inbound <message_id>
 ~/.dori/elobot/ack accept inbound <message_id>
 ~/.dori/elobot/ack done inbound <message_id>
@@ -116,11 +119,49 @@ The watcher supplies `attention: direct` for DMs and direct attention such as bo
 
 The lead follows this protocol automatically. Manual acknowledgement means you have handled that exact message; it is not a way to silence an unresolved request.
 
+`INBOUND` and `CONTEXT` monitor lines are pointers capped at 1,000 characters. An inbound summary's `message_ids` and `read` command include every message in its turn. `ack show` rechecks current authorization before printing content; failures print `ACK_WITHHELD <id>: <reason>` and leave the record pending. Already-handled IDs print `ACK_HANDLED` with the recorded outcome. `ack working` also prints the turn and records a claim for every ID.
+
+`ACK_TURN` renders each section once: turn messages (8k), conversation (4k, summary, state, last 6 entries and any `recently_resolved` request), channel_since_last_claim (2k, up to 5 available messages), reply_chain (6k, up to 6 messages in trusted chats/DMs or the parent only in normal chats), and preceding (1.5k). The whole render has a 20k-character hard cap, including old stored payloads. Each section reports `truncated` and `read_more`; section detail pages use `ack show inbound <ids> --section <section> --offset N`. Learning details use `ack show context <id> --offset N`. Detail pages contain a slice of serialized JSON in `content`; concatenate the slices to recover the complete detail.
+
+Pending listings stay within 50 KB per page. Follow `ACK_PENDING ... next="ack pending <stream> --after <id>"` until no next command remains. Independently of reaction upkeep, the inbound watcher checks every five minutes and prints one `INBOUND_PENDING count=N oldest=<id>` for aged pending messages without a claim or accepted work; it stops at zero. An intake monitor overflow means run `ack pending inbound`; read other monitors' overflow files.
+
+The working receipt is a persistent claim, separate from its reaction. An explicit ping in a DM, the trusted chat or its threads is claimed on arrival. All other messages, including normal-chat pings and open-conversation chatter, receive a reaction only after `ack working`. A ping opens an invisible intake window; claims also admit additions from that person in that channel for up to 30 minutes. Unclaimed chatter and reply-guard rows cannot anchor additions. Replies (including covered messages), done, irrelevant, expiry, deletion and two-hour abandonment finish claims. Only `syncReceipts` changes reactions, after claims/finishes and at startup/upkeep; failed operations converge on persisted state. Reaction 403s are silent, and 429s wait for the next upkeep. No Discord request holds a database transaction.
+
+`helio status` and the startup greeting distinguish unclaimed pending messages, claims in progress and conversations waiting on Helio. A claim counts even when Discord forbids its reaction.
+
+## Conversations
+
+Open a conversation when asking a requester a question. In normal chats it admits their unpinged messages for review. Only messages Helio claims and Helio's linked replies join the transcript or extend activity. The last author derives `waiting_on_requester` or `waiting_on_helio`; `on_hold` carries its reason and suspends timers. Open and held conversations share the two-per-person limit.
+
+```bash
+helio conversation open CHANNEL USER ANCHOR short topic
+helio conversation list [--offset N]
+helio conversation show CHANNEL USER [--offset N]
+helio conversation note CHANNEL USER --text-file PATH
+helio conversation hold CHANNEL USER reason
+helio conversation resume CHANNEL USER
+helio conversation close CHANNEL USER answered
+helio conversation close CHANNEL USER issue --issue https://github.com/OWNER/REPO/issues/N
+helio conversation reopen CHANNEL USER
+```
+
+`list` includes state, age, idle time, summary and hold reason, with at most 25 rows per page and a byte budget. `show` pages the complete active transcript. `note` saves at most 600 characters from the existing playback. A claim ends a hold; resume preserves the last real activity and existing nudge record.
+
+While waiting on the requester, upkeep sends one native nudge after 24 hours and a close notice after 72 hours, then resolves with `timed_out`. `INBOUND_CONVERSATION_NUDGE` and `INBOUND_CONVERSATION_TIMEOUT` report notices already sent; do not reply again. Waiting-on-Helio and held conversations never time out. `INBOUND_CONVERSATION_WAITING` lists requests waiting on Helio for at least 24 hours once per UTC day. A deleted anchor, a deleted notice target or a departed server member resolves silently with `other`.
+
+Resolution deletes full transcript text and keeps topic, summary (falling back to topic), outcome and issue. For 7 days `recently_resolved` offers context, and Helio explicitly chooses `reopen` for the same request or `open` for a new one. A claim never reopens automatically. After 7 days rows archive for another 30 days, then disappear. Issue follow-ups keep their existing workflow.
+
+Every TypeScript writer applies the conversations rebuild in one immediate transaction guarded by `PRAGMA user_version=1`. Closed and timed-out rows become resolved, preserving outcomes; timeout becomes outcome `timed_out`. Working rows gain `claimed_at` and `intake_at`, separating claims from invisible windows. Transcript columns stay the same; its key includes the conversation so one covered reply can belong to two participants. The `followups` table is preserved, including the Python writer's independent `announcement` migration. The first watcher startup silently resolves legacy open conversations without a post-migration claim as `other` with their topic as summary, listing each as `INBOUND_CONVERSATION_MIGRATED`. Existing pending deliveries, context cursors and lane registry formats are unchanged.
+
+Questions and follow-ups use the same summary contract: `helio question show <id>` and `helio followups show <issue>` read details with optional `--offset N`. `helio question list` returns `items` and `next`; `helio followups list` prints a `FOLLOWUP_PAGE next=...` when needed. Both listings accept `--offset N`. Answered questions recur as one `QUESTION_PENDING count=N status=answered` per check until `helio question ack <id>`. Announced follow-ups recur as one `FOLLOWUP_PENDING count=N` per check until `helio followups done --issue N --user U`. Follow-up details are cached durably before announcement; reading them does not contact GitHub or production.
+
+Fresh installs set `terminal.monitorMaxCharsPerInjection=16384` in the project's `.omo/settings.json`; updates manage only that key and preserve other settings. Roll out the summary protocol, lead instructions and pending reminder together, with one lead restart, to avoid mixing old and new formats.
+
 `irrelevant` is a separate terminal handling disposition: the lead reviewed a shared-channel message and deliberately chose not to respond. It requires a nonempty reason (up to 500 characters). An out-of-scope direct ping in a normal channel may be marked irrelevant; a trusted-chat human mention and the evidence-only bot report may not. Ambiguous intent and failed work stay pending.
 
 The reason, disposition and handling time are committed transactionally with removal from the pending queue. Failure rolls back the decision. `status` also distinguishes `accepted` work and `expired` requests. `check` verifies current authorization and age before a side effect; `accept` records that work has been durably accepted and should not expire just because its request ages. Cleanup happens after commit and can be retried if it fails. The separate handling tables let an already-running watcher continue staging without overwriting another process's decisions.
 
-For owner replies, the lead runs `bun ~/.dori/elobot/reply.ts <channel_id> <message_id> <text>` with the top-level IDs from the specific inbound owner payload, passing text as one argv argument, not a shell string. It uses Discord's native message reference and reply-author ping, suppresses other mentions, and prints `SENT <reply_id>` only on success. `reply_to` and forwarded source IDs are not the owner message being answered. Missing references or permissions fail without an ordinary-send fallback; the message stays pending. The helper does not acknowledge deliveries. Humans in configured report channels may report bugs and request quality-of-life improvements for GitHub issues; ordinary sends and lane hooks use no-preview GitHub links.
+For owner replies, the lead runs `bun ~/.dori/elobot/reply.ts <channel_id> <message_id> <text>` with the top-level IDs from the specific inbound owner payload, passing text as one argv argument, not a shell string. It uses Discord's native message reference and reply-author ping, suppresses other mentions, and prints `SENT <reply_id>` only on success. `reply_to` and forwarded source IDs are not the owner message being answered. Missing references or permissions fail without an ordinary-send fallback; the message stays pending. The original stays pending for explicit acknowledgement; covered messages are marked handled. Humans in configured report channels may report bugs and request quality-of-life improvements for GitHub issues; ordinary sends and lane hooks use no-preview GitHub links.
 
 Delivery is at least once. A crash after replying or saving memory but before acknowledgement can replay a completed message. Helio must check existing replies and lane records before repeating actions. A crash before recording irrelevance also replays the message for review; a committed disposition prevents requeueing. Pending payloads remain local until handled; completion removes their content from the logical queue and retains the stream/message ID plus any disposition, reason and handling time. SQLite and session history are not secure-erasure mechanisms.
 
@@ -152,7 +193,9 @@ Original message/channel IDs are source references only. Helio does not fetch th
 
 ## Bug fixes, features, and beta QA
 
-Every report or request goes through Request intake (`agent/prompts/policy.md`): Helio talks with the person in place until the request is clear (`helio conversation` tracks the open conversation, up to 2 per person, dropped after 72 hours of silence), checks the running commit and existing work with `helio triage`, plays the request back, and only then creates a labelled issue (`bug`, `qol`, `feature`, plus `confirmed` or `needs-owner-review`). New issues are announced in the staff chat (`HELIO_STAFF_CHAT`). You or a trusted user can ask Helio to close or reopen an issue with a reason. `helio followups watch` then tells the requester when the fix is live on Oracle, or that the request was declined.
+Small confirmed bugs, including Elo Bot reports, may get an automatic PR through `helio autofix check` then `helio autofix submit --issue N --summary-file PATH`, with assertion failure on main and passing branch tests and unit suite. Merges and restarts still require fresh approval; ineligible fixes stay issues labelled `needs-owner-review`. Configure `HELIO_AUTOFIX=on|off`, `HELIO_AUTOFIX_MAX_LINES`, `HELIO_AUTOFIX_MAX_FILES`, `HELIO_AUTOFIX_MAX_OPEN` and comma-separated `HELIO_AUTOFIX_DENY` globs in `~/.config/helio/helio.env`, then run `helio update`.
+
+Every report or request goes through Request intake (`agent/prompts/policy.md`): Helio talks with the person in place until the request is clear (`helio conversation` tracks the open conversation, up to 2 per person, nudged at 24 hours and resolved at 72 hours only while waiting on the requester), checks the running commit and existing work with `helio triage`, plays the request back, and only then creates a labelled issue (`bug`, `qol`, `feature`, plus `confirmed` or `needs-owner-review`). New issues are announced in the staff chat (`HELIO_STAFF_CHAT`). You or a trusted user can ask Helio to close or reopen an issue with a reason. `helio followups watch` then tells the requester when the fix is live on Oracle, or that the request was declined.
 
 The authorization rules (who may request PRs, merges and restarts), browser lifecycle, multi-account QA, test channels and evidence delivery are in `agent/prompts/policy.md`. The step-by-step QA procedure is `~/.dori/elobot/docs/discord-qa-workflow.md`. Real testing is a scoped exception to passive read-only learning; it doesn't expand the inbound/learning allowlists.
 

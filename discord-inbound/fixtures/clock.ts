@@ -1,4 +1,4 @@
-import type { TurnClock } from "../turns.ts";
+import type { TurnClock } from "../intake/turns.ts";
 
 /** Deterministic timer queue shared by assembler and process-boundary fixtures. */
 export class FakeClock implements TurnClock {

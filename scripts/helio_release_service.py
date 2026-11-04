@@ -27,16 +27,24 @@ def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now
     token=config['token']
     message=fetch('/channels/'+channel_id+'/messages/'+message_id,token)
     author=message.get('author',{})
-    if message.get('id')!=message_id or message.get('channel_id')!=channel_id or author.get('bot') or message.get('webhook_id'):
-        raise Refused('confirmation identity is invalid')
-    author_id=author.get('id','')
-    if author_id!=config['owner'] and author_id not in config['trusted']:raise Refused('sender is not authorized')
-    repo=config.get('repo','jamestesting0/elo-bot')
+    if message.get('id')!=message_id or message.get('channel_id')!=channel_id:raise Refused('confirmation identity is invalid')
     bot_id=str(fetch('/users/@me',token).get('id',''))
-    try:
-        APPROVAL['check_intent']('restart',message,bot_id,repo,None,now=now)
-        APPROVAL['check_revision'](revision,message,repo,'main',**({'activity':activity} if activity else {}))
-    except APPROVAL['Refused'] as error:raise Refused(str(error)) from None
+    prompt_id=None
+    if message.get('interaction_metadata') and str(author.get('id',''))==bot_id:
+        prompt_id=str(message['interaction_metadata'].get('interacted_message_id',''))
+        if not ID.fullmatch(prompt_id):raise Refused('confirmation identity is invalid')
+        prompt=fetch('/channels/'+channel_id+'/messages/'+prompt_id,token)
+        try:author_id,_=APPROVAL['check_click']('restart',message,prompt,bot_id,None,revision,now=now)
+        except APPROVAL['Refused'] as error:raise Refused(str(error)) from None
+    else:
+        if author.get('bot') or message.get('webhook_id'):raise Refused('confirmation identity is invalid')
+        author_id=author.get('id','')
+        repo=config.get('repo','jamestesting0/elo-bot')
+        try:
+            APPROVAL['check_intent']('restart',message,bot_id,repo,None,now=now)
+            APPROVAL['check_revision'](revision,message,repo,'main',**({'activity':activity} if activity else {}))
+        except APPROVAL['Refused'] as error:raise Refused(str(error)) from None
+    if author_id!=config['owner'] and author_id not in config['trusted']:raise Refused('sender is not authorized')
     current=fetch('/channels/'+channel_id,token)
     if str(current.get('id',''))!=channel_id:raise Refused('channel identity changed')
     permitted=current.get('type')==1
@@ -46,9 +54,9 @@ def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now
         if not parent or not ID.fullmatch(str(parent)):break
         current=fetch('/channels/'+str(parent),token)
     if not permitted:raise Refused('confirmation is outside permitted channels')
-    return author_id
+    return author_id,prompt_id
 
-REMOTE_INSPECT=r'''import json,os,re,subprocess
+REMOTE_INSPECT=r'''import datetime,json,os,re,subprocess
 def r(*a):
  try:
   p=subprocess.run(a,capture_output=True,text=True,timeout=25)
@@ -69,13 +77,38 @@ if pip_only:
   if seen>20000 or any(os.path.islink(os.path.join(root,name)) for name in dirs+files):pip_only=False;break
 hc,head=r(*git,'rev-parse','HEAD')
 tc,tip=r(*git,'ls-remote','--heads','origin','refs/heads/main')
-pc,properties=r('systemctl','show','elobot','-p','ExecStartPre','-p','ExecStart','-p','ActiveState')
+pc,properties=r('systemctl','show','elobot','-p','ExecStartPre','-p','ExecStart','-p','ActiveState','-p','SubState','-p','NRestarts','-p','ExecMainStartTimestamp','-p','MainPID')
 uc,_=r('sudo','-n','-l','/usr/bin/systemctl','restart','elobot')
 ic,invocation=r('systemctl','show','elobot','-p','InvocationID','--value')
 invocation=invocation.strip()
-jc,logs=r('journalctl','-u','elobot','_SYSTEMD_INVOCATION_ID='+invocation,'-n','1000','--no-pager','-q') if ic==0 and re.fullmatch(r'[0-9a-f]{32}',invocation) else (1,'')
-login=bool(re.search(r'Logged in as.{0,500}1212767017917218876',logs,re.S)) if jc==0 else None
+jc,logs=r('journalctl','-u','elobot','_SYSTEMD_INVOCATION_ID='+invocation,'--grep',r'^(Logged in as|1212767017917218876|\[git\] (Already up to date at|Updated))','--reverse','-n','20','--no-pager','-q','-o','json') if ic==0 and re.fullmatch(r'[0-9a-f]{32}',invocation) else (1,'')
 lines=dict(x.split('=',1) for x in properties.splitlines() if '=' in x)
+entries=[]
+if jc==0:
+ try:entries=list(reversed([json.loads(line) for line in logs.splitlines() if line.strip()]))
+ except ValueError:jc=1
+messages='\n'.join(str(entry.get('MESSAGE','')) for entry in entries)
+login=bool(re.search(r'Logged in as.{0,500}1212767017917218876',messages,re.S)) if jc==0 else None
+login_at=None
+if login:
+ for entry in entries:
+  if '1212767017917218876' in str(entry.get('MESSAGE','')):
+   login_at=datetime.datetime.fromtimestamp(int(entry['__REALTIME_TIMESTAMP'])/1000000,datetime.timezone.utc).isoformat()
+phase={'active':'running','activating':'updating','failed':'failed','inactive':'inactive','deactivating':'stopping'}.get(lines.get('ActiveState'),'unknown')
+# Associate HEAD only when the reflog proves the checkout has not moved since process start.
+running_revision=None;revision_evidence='unavailable'
+startup=re.findall(r'\[git\] (?:Already up to date at ([0-9a-f]{7,40})|Updated [0-9a-f]{7,40} -> ([0-9a-f]{7,40}))',messages)
+if phase=='running' and startup:
+ short=next(value for value in startup[-1] if value)
+ vc,launched=r(*git,'rev-parse','--verify',short+'^{commit}')
+ if vc==0 and re.fullmatch(r'[0-9a-f]{40}',launched.strip()):
+  running_revision=launched.strip();revision_evidence='invocation_updater_log'
+start=lines.get('ExecMainStartTimestamp','')
+dc,epoch=r('date','--date='+start,'+%s') if start else (1,'')
+rc,reflog=r(*git,'reflog','-1','--date=unix','--format=%H %gD')
+stamp=re.search(r'@\{(\d+)\}',reflog)
+if not running_revision and phase=='running' and dc==0 and stamp and int(stamp.group(1))<int(epoch.strip()) and reflog.split()[0]==head.strip() and sc==0 and (not changes or pip_only):
+ running_revision=head.strip();revision_evidence='checkout_unchanged_since_start'
 pre=lines.get('ExecStartPre','');start=lines.get('ExecStart','')
 safe_pre=pre.count('{')==1 and 'path=/usr/local/sbin/elobot-update ; argv[]=/usr/local/sbin/elobot-update ;' in pre
 safe_start=start.count('{')==1 and 'path=/usr/local/bin/elobot-start ; argv[]=/usr/local/bin/elobot-start ;' in start
@@ -83,7 +116,11 @@ parts=tip.strip().split()
 out={'ok':sc==0 and hc==0 and tc==0 and pc==0,'clean':sc==0 and (not changes or pip_only),'ignored_pip_cache':pip_only,
      'head':head.strip() if hc==0 else '', 'tip':parts[0] if len(parts)==2 and parts[1]=='refs/heads/main' else '',
      'branch':c.get('repository_branch'),'update_on_start':c.get('update_on_start'),'start_file':c.get('start_file'),
-     'expected_service':safe_pre and safe_start,'active':lines.get('ActiveState')=='active','restart_permission':uc==0,'bot_login_verified':login}
+     'expected_service':safe_pre and safe_start,'active':lines.get('ActiveState')=='active','restart_permission':uc==0,'bot_login_verified':login,
+     'phase':phase,'invocation':invocation,'process_started_at':lines.get('ExecMainStartTimestamp'),
+     'restart_count':int(lines.get('NRestarts','0')),'login_evidence':'observed' if login else ('absent' if jc==0 else 'unavailable'),
+     'login_observed_at':login_at,'running_revision':running_revision,'revision_evidence':revision_evidence,'gateway_health':'unverified',
+     'observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
 print(json.dumps(out))
 '''
 
@@ -124,13 +161,18 @@ def perform(request,config,ssh_config,db_path,fetch=get_json,inspect=inspect_rem
     if request=={'action':'health'}:return {'status':'ready'}
     if request=={'action':'inspect'}:
         state=inspect(ssh_config)
-        return {k:state.get(k) for k in ('clean','ignored_pip_cache','head','tip','branch','update_on_start','start_file','expected_service','active','restart_permission','bot_login_verified')}
+        result={k:state.get(k) for k in ('clean','ignored_pip_cache','head','tip','branch','update_on_start','start_file','expected_service','active','restart_permission','bot_login_verified',
+             'phase','invocation','process_started_at','restart_count','login_evidence','login_observed_at','running_revision','revision_evidence','gateway_health','observed_at')}
+        result['broker_version']=__import__('hashlib').sha256(Path(__file__).read_bytes()+Path(__file__).with_name('helio_approval.py').read_bytes()).hexdigest()[:16]
+        return result
     if set(request)!={'action','channel_id','message_id','revision'} or request.get('action')!='restart':raise Refused('unsupported action')
     channel=str(request['channel_id']);message=str(request['message_id']);revision=str(request['revision'])
-    author=verify_confirmation(channel,message,revision,config,fetch)
+    author,prompt_id=verify_confirmation(channel,message,revision,config,fetch)
     state=inspect(ssh_config);check_release_state(state,revision)
     # Re-fetch immediately before consuming confirmation and starting restart.
-    if verify_confirmation(channel,message,revision,config,fetch)!=author:raise Refused('confirmation author changed')
+    if verify_confirmation(channel,message,revision,config,fetch)!=(author,prompt_id):raise Refused('confirmation author changed')
+    # One prompt authorizes at most one restart, whichever result message is presented.
+    if prompt_id:reserve(db_path,'prompt:'+prompt_id,channel,revision,author)
     reserve(db_path,message,channel,revision,author)
     try:
         result=runner(['ssh','-F',str(ssh_config),'-o','BatchMode=yes','-o','ConnectTimeout=8','elo-bot','sudo','-n','/usr/bin/systemctl','restart','elobot'],capture_output=True,text=True,timeout=930)
@@ -141,7 +183,7 @@ def perform(request,config,ssh_config,db_path,fetch=get_json,inspect=inspect_rem
             mark(db_path,message,'uncertain');return {'status':'uncertain','previous_revision':state['head']}
         verified=after.get('active') is True and after.get('head')==revision
         mark(db_path,message,'restarted' if verified else 'mismatch')
-        return {'status':'restarted' if verified else 'mismatch','previous_revision':state['head'],'observed_revision':after.get('head'),'service_active':after.get('active'),'bot_login_verified':after.get('bot_login_verified') is True}
+        return {'status':'restarted' if verified else 'mismatch','previous_revision':state['head'],'observed_revision':after.get('head'),'service_active':after.get('active'),'bot_login_verified':after.get('bot_login_verified') is True,'invocation':after.get('invocation')}
     except Exception:
         try:mark(db_path,message,'uncertain')
         except Exception:pass

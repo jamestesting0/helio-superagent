@@ -1,5 +1,6 @@
 // Discord inbound watcher for Dori. On start it catches up on messages missed while it was off, then streams live ones.
 // Prints one `INBOUND <json>` line per turn; run it as a persistent monitor with filter `^INBOUND`.
+// allow: SIZE_OK - startup recovery and live gateway events share one serialized delivery queue and its ordering state.
 //
 // Env:
 //   DORI_DISCORD_TOKEN     bot token (the same one `dori send discord` uses)
@@ -14,21 +15,29 @@
 //   DORI_STATE_DIR         where the last message seen per channel is kept
 
 import { DiscordBotClient, DiscordBotListener, DiscordIntent } from "agent-messenger/discordbot";
-import { fetchBacklog, PAGE_SIZE, type Caps, type FetchPage, type RestMessage } from "./catchup.ts";
-import { classify, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./filter.ts";
-import { LastSeen } from "./lastseen.ts";
-import { Delivery, REQUEST_MAX_AGE_MS, requestTimestamp } from "./delivery.ts";
-import { authorizationMetadata, filterConfig, reauthorize, validateChannelPolicy } from "./authorization.ts";
-import { sweepExpired, sweepOrphanAttachments } from "./expiry.ts";
-import { watchedChannels } from "./watched-channels.ts";
-import { prepareMessageBody } from "./forwarded.ts";
-import { describeMessage, replyContext, type ReplyMessage } from "./reply-context.ts";
-import { recordAnswer } from "./question-answer.ts";
-import { DiscordRestError, discordRest } from "./rest.ts";
-import { TurnAssembler, type TurnMessage } from "./turns.ts";
-import { Preceding } from "./preceding.ts";
-import { Conversations, conversationTimeoutReporter } from "./conversations.ts";
-import { reactOnArrival, sweepWorking } from "./working.ts";
+import { fetchBacklog, PAGE_SIZE, skippedThrough, type Caps, type FetchPage, type RestMessage } from "./intake/catchup.ts";
+import { classify, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./intake/filter.ts";
+import { LastSeen } from "./intake/lastseen.ts";
+import { Delivery, REQUEST_MAX_AGE_MS, requestTimestamp } from "./delivery/delivery.ts";
+import { authorizationMetadata, filterConfig, reauthorize, validateChannelPolicy } from "./intake/authorization.ts";
+import { sweepExpired, sweepOrphanAttachments } from "./delivery/expiry.ts";
+import { watchedChannels } from "./intake/watched-channels.ts";
+import { prepareMessageBody } from "./messages/forwarded.ts";
+import { checkImageSandbox } from "./messages/image-worker.ts";
+import { awaitsPreview, Previews, type PreviewEmbed } from "./messages/linked-files.ts";
+import { describeMessage, replyContext, type ReplyMessage } from "./messages/reply-context.ts";
+import { recordAnswer } from "./conversations/question-answer.ts";
+import { DiscordRestError, discordRest } from "./discord/rest.ts";
+import { TurnAssembler, type TurnMessage } from "./intake/turns.ts";
+import { Preceding } from "./intake/preceding.ts";
+import { Conversations } from "./conversations/conversations.ts";
+import { conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
+import { sweepConversations } from "./conversations/conversation-upkeep.ts";
+import { reactOnArrival, sweepWorking } from "./conversations/working.ts";
+import { inboundSummary, monitorLine } from "./delivery/monitor-summary.ts";
+import { pendingReminder } from "./delivery/pending-reminder.ts";
+import { PromptStore, QuestionStore } from "./interactive/store.ts";
+import { closeExpired, discordCall, expireNow, handleInteraction, sweep, type Deps } from "./interactive/handler.ts";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -40,21 +49,38 @@ function requireEnv(name: string): string {
 }
 
 const token = requireEnv("DORI_DISCORD_TOKEN");
-const conversations = new Conversations(`${requireEnv("DORI_STATE_DIR")}/discord-conversations.sqlite`);
-const reportConversationTimeouts = conversationTimeoutReporter(conversations, (line) => console.log(line));
+// The watcher answers button clicks on this same event loop: no synchronous lock wait may approach Discord's 3 s limit.
+// Longer contention fails the watcher, which restarts and catches up from its saved cursor.
+const LOCK_WAIT_MS = 1000;
+const conversations = new Conversations(`${requireEnv("DORI_STATE_DIR")}/discord-conversations.sqlite`, Date.now(), LOCK_WAIT_MS);
+for (const row of conversations.resolveLegacy(Date.now())) {
+  console.log(monitorLine(`INBOUND_CONVERSATION_MIGRATED ${JSON.stringify({
+    channel_id: row.channel_id, user_id: row.user_id, opened_at: row.opened_at, topic: row.topic, outcome: "other",
+    read: `helio conversation reopen ${row.channel_id} ${row.user_id}`,
+  })}`));
+}
+// When the owner last posted in each channel, from live events and catch-up pages: owner mentions are
+// left to the owner while they are active there.
+const ownerPosts = new Map<string, number>();
+const ownerId = requireEnv("DORI_DISCORD_OWNER_ID");
+function noteOwnerPost(message: { readonly channel_id?: string; readonly author?: { readonly id?: string }; readonly timestamp?: string }) {
+  const at = Date.parse(message.timestamp ?? "");
+  if (message.author?.id !== ownerId || !message.channel_id || !Number.isFinite(at)) return;
+  if (at > (ownerPosts.get(message.channel_id) ?? 0)) ownerPosts.set(message.channel_id, at);
+}
 let cfg: FilterConfig;
 try {
   cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user),
-    (channel, user, id) => conversations.workingAnchor(channel, user, id));
-  await validateChannelPolicy(cfg, discordRest(token), (message) => console.log(`INBOUND_WARN ${message}`));
+    (channel, user, id) => conversations.workingAnchor(channel, user, id), (channel) => ownerPosts.get(channel));
+  await validateChannelPolicy(cfg, discordRest(token), (message) => console.log(monitorLine(`INBOUND_WARN ${message}`)));
 } catch (error) {
   if (!(error instanceof Error)) throw error;
-  console.error(`INBOUND_ERROR ${error.message}`);
+  console.error(monitorLine(`INBOUND_ERROR ${error.message}`));
   process.exit(2);
 }
 const statePath = `${requireEnv("DORI_STATE_DIR")}/discord-inbound.json`;
 const lastSeen = await LastSeen.load(statePath).catch((err: unknown) => {
-  console.error(`INBOUND_ERROR cannot read ${statePath}: ${String(err)}`);
+  console.error(monitorLine(`INBOUND_ERROR cannot read ${statePath}: ${String(err)}`));
   process.exit(2);
 });
 
@@ -64,6 +90,7 @@ const rest = discordRest(token);
 const seenMessages = new Map<string, ReplyMessage>();
 function seen(message: ReplyMessage | null | undefined): void {
   if (!message?.id || !message.channel_id) return;
+  noteOwnerPost(message);
   seenMessages.delete(message.id);
   seenMessages.set(message.id, message);
   if (seenMessages.size > 2000) seenMessages.delete(seenMessages.keys().next().value as string);
@@ -79,9 +106,34 @@ const fetchReply = async (channel: string, id: string, signal: AbortSignal): Pro
   return await response.json() as ReplyMessage;
 };
 const stateDir = requireEnv("DORI_STATE_DIR");
-const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`);
+const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`, LOCK_WAIT_MS);
+// Typed answers wait at most 250 ms per attempt: a longer synchronous wait would stall button clicks too.
+const busyDatabase = (error: unknown) => error instanceof Error && "code" in error && String(error.code).startsWith("SQLITE_BUSY");
+function answerFor(answer: Parameters<typeof recordAnswer>[2]): string | undefined {
+  try { return recordAnswer(stateDir, cfg.ownerId, answer, 250); }
+  catch (error) {
+    if (!busyDatabase(error)) { warn(`question answer could not be recorded: ${String(error)}`); return undefined; }
+    void (async () => {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        await Bun.sleep(250);
+        try { recordAnswer(stateDir, cfg.ownerId, answer, 250); return; }
+        catch (retry) { if (!busyDatabase(retry)) { warn(`question answer could not be recorded: ${String(retry)}`); return; } }
+      }
+      warn("question database stayed locked; run helio question reconcile");
+    })();
+    return undefined;
+  }
+}
+for (const item of delivery.pending("inbound")) delivery.recovery.flag(item.id, item.payload);
 const preceding = new Preceding(() => Date.now());
-const turns = new TurnAssembler((turn) => console.log(`INBOUND ${JSON.stringify(turn)}`), {
+const turns = new TurnAssembler((turn) => {
+  if (turn.turn.preceding?.length) {
+    const first = delivery.pending("inbound").find((item) => item.id === turn.turn.id);
+    if (first) delivery.refresh(first.id, first.payload,
+      JSON.stringify({ ...JSON.parse(first.payload), preceding: turn.turn.preceding }));
+  }
+  console.log(inboundSummary(turn));
+}, {
   preceding: (first) => preceding.take(first),
   // Timer emissions share the delivery queue so they cannot overtake preparation.
   clock: {
@@ -91,6 +143,11 @@ const turns = new TurnAssembler((turn) => console.log(`INBOUND ${JSON.stringify(
   },
 });
 const backlogMessages: TurnMessage[] = [];
+// This safety net must run independently of the slower reaction/conversation upkeep.
+setInterval(() => {
+  const line = pendingReminder(delivery, conversations, Date.now());
+  if (line) console.log(line);
+}, 5 * 60 * 1000).unref();
 
 const recoveryPages = new Map<string, readonly RestMessage[]>();
 const fetchPage: FetchPage = async (channelId, before) => {
@@ -100,7 +157,23 @@ const fetchPage: FetchPage = async (channelId, before) => {
   return page;
 };
 
-const warn = (text: string) => console.log(`INBOUND_WARN ${text}`);
+const warn = (text: string) => console.log(monitorLine(`INBOUND_WARN ${text}`));
+const sandboxProblem = await checkImageSandbox();
+if (sandboxProblem) warn(`image sandbox check failed (${sandboxProblem}); images stay blocked until bubblewrap and prlimit work`);
+const previews = new Previews({ setTimeout: (callback, delay) => setTimeout(callback, delay), clearTimeout: (timer) => clearTimeout(timer as Timer) });
+
+// Trusted chats: a live link usually gets its preview in a MESSAGE_UPDATE just after creation.
+async function withPreviews(msg: IncomingMessage): Promise<IncomingMessage> {
+  const embeds = await previews.wait(msg.id, async () =>
+    (await rest<{ embeds?: PreviewEmbed[] }>(`/channels/${msg.channel_id}/messages/${msg.id}`)).embeds,
+  ).catch((error: unknown) => {
+    // The preview only adds files; failing to read it must not stop intake.
+    if (!(error instanceof Error)) throw error;
+    warn(`link preview unavailable message_id=${msg.id}: ${error.message}`);
+    return undefined;
+  });
+  return embeds?.length ? { ...msg, embeds } : msg;
+}
 
 const client = await new DiscordBotClient().login({ token });
 
@@ -145,18 +218,10 @@ function repliedTo(msg: IncomingMessage) {
 }
 
 async function conversationContext(msg: IncomingMessage) {
-  const conversation = conversations.get(msg.channel_id, msg.author.id);
+  const conversation = conversationSnapshot(conversations, msg.channel_id, msg.author.id, Date.now());
   if (!conversation) return undefined;
-  const previous = conversations.transcript(msg.channel_id, msg.author.id)
+  const previous = conversation.transcript
     .filter((entry) => BigInt(entry.message_id) < BigInt(msg.id));
-  const transcript = [];
-  let chars = 2;
-  for (const entry of [...previous].reverse()) {
-    const size = JSON.stringify(entry).length + (transcript.length ? 1 : 0);
-    if (transcript.length === 30 || chars + size > 12000) break;
-    transcript.unshift(entry);
-    chars += size;
-  }
   let history = [...seenMessages.values()].filter((entry) =>
     entry.channel_id === msg.channel_id && BigInt(entry.id) < BigInt(msg.id));
   if (history.length < 3) {
@@ -167,26 +232,24 @@ async function conversationContext(msg: IncomingMessage) {
     }
     history = [...combined.values()];
   }
-  const transcriptIds = new Set(previous.map((entry) => entry.message_id));
-  const recent = history.filter((entry) => !transcriptIds.has(entry.id))
+  const last = previous.at(-1);
+  const recent = history.filter((entry) => !last || BigInt(entry.id) > BigInt(last.message_id))
     .sort((a, b) => BigInt(a.id) > BigInt(b.id) ? -1 : 1)
-    .filter((entry, index) => index < 3 || Date.parse(msg.timestamp) - Date.parse(entry.timestamp ?? "") <= 15 * 60 * 1000)
-    .slice(0, 10).reverse().map((entry) => describeMessage(entry, 12000).entry);
+    .slice(0, 5).reverse().map((entry) => describeMessage(entry, 400).entry);
   return {
-    topic: conversation.topic, opened_at: new Date(conversation.opened_at).toISOString(),
-    anchor_message_id: conversation.anchor_message_id, transcript, recent,
+    ...conversation, transcript: previous.slice(-6), earlier_entries: Math.max(0, previous.length - 6), recent,
   };
 }
 
 function recordHelioReply(msg: IncomingMessage): void {
+  if (conversations.isNotice(msg.id)) return;
   const reference = msg.message_reference;
   if (!reference?.message_id || reference.type === 1 ||
       (reference.channel_id && reference.channel_id !== msg.channel_id)) return;
-  const author = msg.referenced_message?.author.id ?? seenMessages.get(reference.message_id)?.author.id;
   for (const conversation of conversations.list().filter((row) => row.channel_id === msg.channel_id)) {
-    if (conversation.user_id === author || conversation.anchor_message_id === reference.message_id ||
+    if (conversation.anchor_message_id === reference.message_id ||
         conversations.transcript(msg.channel_id, conversation.user_id).some((entry) => entry.message_id === reference.message_id)) {
-      conversations.append(msg.channel_id, conversation.user_id, describeMessage(msg, 10000).entry);
+      conversations.append(msg.channel_id, conversation.user_id, describeMessage(msg, 10000).entry, Date.parse(msg.timestamp));
     }
   }
 }
@@ -227,7 +290,7 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
   if (prior && !inbound) warn(`pending recovery withheld by current authorization message_id=${msg.id}; retained pending`);
   if (inbound) {
     if (!delivery.contains("inbound", msg.id) || recovering) {
-      const staged = { ...inbound, backlog, discord_origin: authorizationMetadata(msg) };
+      const staged = { ...inbound, backlog, ...(backlog ? { recovered: true } : {}), discord_origin: authorizationMetadata(msg) };
       const sentAt = requestTimestamp(inbound.sent_at);
       if (sentAt === undefined) {
         const payload = JSON.stringify({ ...staged, attachments: [] });
@@ -246,7 +309,10 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
         await lastSeen.advance(msg.channel_id, msg.id);
         return false;
       }
-      const body = await prepareMessageBody(msg, `${stateDir}/attachments/inbound`, inbound.role === "BOT_BUG_REPORT");
+      const source = inbound.channel_policy === "trusted" && !backlog && awaitsPreview(msg.content, msg.embeds) ?
+        await withPreviews(msg) : msg;
+      const body = await prepareMessageBody(source, `${stateDir}/attachments/inbound`, inbound.role === "BOT_BUG_REPORT",
+        inbound.channel_policy);
       const reply_context = inbound.channel_policy === "trusted" ? await replyContext(msg, fetchReply) : repliedTo(msg);
       const conversation = await conversationContext(msg);
       const record = {
@@ -255,10 +321,6 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
       };
       if (prior ? !delivery.recover(msg.id, prior.payload, JSON.stringify(record)) :
         !delivery.stage("inbound", msg.id, JSON.stringify(record))) return false;
-      if (conversation) {
-        conversations.append(msg.channel_id, msg.author.id, describeMessage(msg, 10000).entry);
-        conversations.touch(msg.channel_id, msg.author.id, Date.now());
-      }
       await sweepExpired(delivery, stateDir, warn);
       if (delivery.status("inbound", msg.id).disposition === "expired") {
         delivered.add(msg.id);
@@ -272,19 +334,16 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
         await sweepExpired(delivery, stateDir, warn);
         return false;
       }
-      let question_id: string | undefined;
-      try { question_id = recordAnswer(stateDir, cfg.ownerId, record); }
-      catch { warn("question answer could not be recorded; leave it pending and reconcile"); }
+      const question_id = answerFor(record);
       const message = { ...record, ...(question_id ? { question_id } : {}) };
       const payload = JSON.stringify(message);
+      if (backlog) delivery.recovery.flag(msg.id, payload);
       if (delivery.refresh(msg.id, JSON.stringify(record), payload)) {
-        // A ping opens the sender's working window, so their follow-ups count as additions until Helio replies.
-        if (message.attention === "direct" && message.role !== "BOT_BUG_REPORT" && message.addition_to === undefined) {
+        if (message.pinged && message.role !== "BOT_BUG_REPORT") {
           conversations.openWorking(msg.channel_id, msg.author.id, msg.id, Date.now());
-          if (!backlog) void reactOnArrival(conversations, rest, message, warn, conversation !== undefined);
-        } else if (!backlog && conversation && message.attention === "review" && message.addition_to === undefined) {
-          void reactOnArrival(conversations, rest, message, warn, true);
         }
+        await reactOnArrival({ store: conversations, rest, now: Date.now(), warn },
+          { ...message, entry: describeMessage(msg, 10_000).entry });
         if (backlog) backlogMessages.push(message);
         else turns.push(message);
         emitted = true;
@@ -303,8 +362,11 @@ async function catchUp(): Promise<number> {
     tracked.add(channel.id);
     try {
       const after = lastSeen.get(channel.id);
-      const { messages, truncated } = await fetchBacklog(fetchPage, channel.id, after, Date.now(), CAPS);
+      const backlog = await fetchBacklog(fetchPage, channel.id, after, Date.now(), CAPS);
+      const { messages, truncated } = backlog;
       if (truncated) console.log(`INBOUND_BACKLOG_TRUNCATED channel=${channel.id} kept=${messages.length}`);
+      const skipped = await skippedThrough(fetchPage, channel.id, backlog);
+      if (skipped) await lastSeen.advance(channel.id, skipped);
       const fresh = new Set(messages.map((msg) => msg.id));
       const candidates = [...(recoveryPages.get(channel.id) ?? [])].reverse()
         .filter((msg) => fresh.has(msg.id) || recoveryNeeded.has(msg.id));
@@ -331,7 +393,7 @@ function enqueue(label: string, job: () => Promise<unknown>): void {
   queue = queue.then(job).then(
     () => undefined,
     (err: unknown) => {
-      console.error(`INBOUND_ERROR ${label}: ${String(err)}`);
+      console.error(monitorLine(`INBOUND_ERROR ${label}: ${String(err)}`));
       process.exit(1);
     },
   );
@@ -366,11 +428,15 @@ enqueue("catch-up", async () => {
       recoveryNeeded.add(item.id);
       continue;
     }
-    let question_id: string | undefined;
-    try { question_id = recordAnswer(stateDir, cfg.ownerId, current); }
-    catch { warn("pending question answer could not be reconciled"); }
-    const message = { ...current, ...(question_id ? { question_id } : {}) };
+    const question_id = answerFor(current);
+    const message = { ...current, backlog: true, recovered: true, ...(question_id ? { question_id } : {}) };
     if (!delivery.refresh(item.id, item.payload, JSON.stringify(message))) continue;
+    if (message.pinged && message.role !== "BOT_BUG_REPORT") {
+      conversations.openWorking(message.channel_id, message.author_id, message.message_id, Date.now());
+    }
+    await reactOnArrival({ store: conversations, rest, now: Date.now(), warn }, {
+      ...message, entry: conversationEntry(message),
+    });
     replayMessages.push(message);
     delivered.add(item.id);
     backlogCount++;
@@ -378,8 +444,17 @@ enqueue("catch-up", async () => {
   turns.replay(replayMessages);
   backlogCount += await catchUp();
   const upkeep = async () => {
-    reportConversationTimeouts();
-    await sweepWorking(conversations, delivery, rest, Date.now(), warn);
+    await sweepConversations({
+      store: conversations, rest, now: Date.now(), emit: (line) => console.log(line),
+      canContact: async (row, guild) => {
+        if (!guild) return row.user_id === cfg.ownerId || cfg.trustedIds?.has(row.user_id) === true;
+        if (cfg.scopeCategory && !await insideCategory(row.channel_id, cfg.scopeCategory, channelInfo)) return false;
+        if (await insideAllowed(row.channel_id, cfg.ignoredChannels ?? new Set(), parentOf) ||
+            await insideAllowed(row.channel_id, cfg.blockedChannels ?? new Set(), parentOf)) return false;
+        return insideAllowed(row.channel_id, cfg.allowed, parentOf);
+      },
+    });
+    await sweepWorking({ store: conversations, delivery, rest, now: Date.now(), warn });
   };
   await upkeep();
   setInterval(() => enqueue("conversation and 👀 upkeep", upkeep), 10 * 60 * 1000).unref();
@@ -391,8 +466,54 @@ const listener = new DiscordBotListener(client, {
     DiscordIntent.GuildMessageTyping | DiscordIntent.DirectMessageTyping,
 });
 
+// Clicks bypass the delivery queue: Discord needs an answer within three seconds.
+const prompts = new PromptStore(`${stateDir}/discord-prompts.sqlite`, 300);
+const clickDeps: Deps = {
+  prompts, questions: () => QuestionStore.open(`${stateDir}/discord-questions.sqlite`, 300),
+  ownerId: cfg.ownerId, trusted: () => cfg.trustedIds ?? new Set<string>(), call: discordCall(token),
+  now: () => Date.now(), emit: (line) => console.log(line), warn,
+};
+const upkeepDeps: Deps = { ...clickDeps, call: discordCall(token, 10_000) };
+listener.on("interaction_create", (event) => { void handleInteraction(event, clickDeps); });
+let sweeping = false;
+let wake: Timer | undefined;
+// An exact timer for the next expiry or lapse; the 15-second sweep also finds prompts posted by other processes.
+const arm = () => {
+  clearTimeout(wake);
+  const at = prompts.nextDeadline();
+  if (at !== undefined) wake = setTimeout(onDeadline, Math.min(Math.max(at - Date.now(), 0) + 50, 2 ** 31 - 1)).unref();
+};
+// Runs even while a sweep waits on Discord, so a prompt never stays open past its deadline.
+function onDeadline(): void {
+  try { expireNow(upkeepDeps); }
+  catch (error) { warn(`prompt expiry failed: ${String(error)}`); }
+  arm();
+  closeExpired(upkeepDeps).catch((error: unknown) => warn(`prompt cleanup failed: ${String(error)}`));
+}
+function promptUpkeep(): void {
+  if (sweeping) return;
+  sweeping = true;
+  sweep(upkeepDeps).catch((error: unknown) => warn(`prompt upkeep failed: ${String(error)}`)).finally(() => { sweeping = false; arm(); });
+}
+void connected.promise.then(async () => {
+  arm();
+  promptUpkeep();
+  setInterval(promptUpkeep, 15_000).unref();
+  try {
+    const app = await rest<{ interactions_endpoint_url?: string | null }>("/applications/@me");
+    if (app.interactions_endpoint_url) {
+      warn(`Discord sends button clicks to ${app.interactions_endpoint_url}, not to Helio; clear the Interactions Endpoint URL in the Developer Portal`);
+    }
+  } catch (error) {
+    if (!(error instanceof DiscordRestError)) throw error;
+    warn(`could not check where Discord sends button clicks: ${error.message}`);
+  }
+});
+
 listener.on("connected", ({ user }) => { cfg.botId = user.id; });
 listener.on("channel_update", () => channels.clear());
+// Not queued: the delivery queue may be the one waiting for this preview.
+listener.on("message_update", (event) => previews.update(event.id, (event as { embeds?: PreviewEmbed[] }).embeds));
 listener.on("channel_delete", () => channels.clear());
 listener.on("message_create", (event) => {
   // Ignored channels are not read, cached or processed at all.
@@ -411,7 +532,7 @@ const DISALLOWED_INTENTS = "4014";
 function fail(err: unknown): never {
   const text = String(err);
   const hint = text.includes(DISALLOWED_INTENTS) ? " (turn on Message Content Intent in the Developer Portal)" : "";
-  console.error(`INBOUND_ERROR gateway: ${text}${hint}`);
+  console.error(monitorLine(`INBOUND_ERROR gateway: ${text}${hint}`));
   process.exit(1);
 }
 
@@ -423,5 +544,5 @@ if (!cfg.botId || !/^\d+$/.test(cfg.botId)) {
 }
 connected.resolve();
 enqueue("ready", async () => {
-  console.log(`INBOUND_READY allowed=${[...cfg.allowed].join(",")} backlog=${backlogCount}`);
+  console.log(monitorLine(`INBOUND_READY allowed=${[...cfg.allowed].join(",")} backlog=${backlogCount}`));
 });

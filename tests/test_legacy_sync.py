@@ -27,6 +27,8 @@ LEGACY_INBOUND = (
     "question-answer.test.ts", "images.test.ts", "images.ts", "inbound.ts",
     "lastseen.ts", "package.json", "rest.ts",
 )
+# The kit now keeps these modules in area folders; their bytes are what the flat layout shipped.
+SOURCE = {name: next(f for f in SYNC["INBOUND_FILES"] if f == name or f.endswith("/" + name)) for name in LEGACY_INBOUND}
 
 
 class LegacySyncTests(unittest.TestCase):
@@ -50,7 +52,7 @@ class LegacySyncTests(unittest.TestCase):
         for name in LEGACY_INBOUND:
             target = self.home / ".dori/discord-inbound" / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes((ROOT / "discord-inbound" / name).read_bytes())
+            target.write_bytes((ROOT / "discord-inbound" / SOURCE[name]).read_bytes())
             self.original_paths["@inbound/" + name] = target
         for name in ("http.ts", "discord.ts"):
             relative = Path("vendor/dori-mode/scripts/src/messenger") / name
@@ -113,8 +115,12 @@ class LegacySyncTests(unittest.TestCase):
         with redirect_stdout(StringIO()):
             SYNC["run"](self.home, "apply")
         self.assert_updated()
-        self.assertEqual(json.loads(self.manifest.read_text())["@launcher"],
-                         "previous inner launcher baseline")
+        manifest = json.loads(self.manifest.read_text())
+        self.assertEqual(manifest["@launcher"], "previous inner launcher baseline")
+        for name in ("filter.ts", "delivery.ts", "bug-reports.test.ts"):
+            self.assertFalse((self.home / ".dori/discord-inbound" / name).exists())
+            self.assertNotIn("@inbound/" + name, manifest)
+        self.assertTrue((self.home / ".dori/discord-inbound/inbound.ts").is_file())
 
     def assert_updated(self):
         documents = SYNC["PAYLOAD"]["documents"]("isolated", SYNC["PAYLOAD"]["values"](self.home, str(self.home / "project")))
@@ -132,7 +138,7 @@ class LegacySyncTests(unittest.TestCase):
         for name in ("discord-qa-workflow.md", "oracle-restart-workflow.md", "beta-maintenance-workflow.md"):
             self.assertTrue((self.base / name).is_symlink())
             self.assertEqual((self.base / name).read_bytes(), documents[name])
-        for name in ("archived-threads.ts", "archived-threads.test.ts", "authorization.ts"):
+        for name in ("intake/archived-threads.ts", "intake/archived-threads.test.ts", "intake/authorization.ts", "interactive/handler.ts"):
             self.assertEqual((self.home / ".dori/discord-inbound" / name).read_bytes(),
                              (ROOT / "discord-inbound" / name).read_bytes())
         for name in ("http.ts", "discord.ts"):

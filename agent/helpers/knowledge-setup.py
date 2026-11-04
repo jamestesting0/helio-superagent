@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Share EloBot memory and fill missing local docs without replacing user files."""
+"""Share EloBot memory; --check-docs reports drift, default reconciles at install/update."""
 
 from __future__ import annotations
 
@@ -38,6 +38,19 @@ def copy_docs(source: Path, destination: Path, conflicts: list[str]) -> None:
         conflicts.append(f"expected regular file or directory: {source}")
 
 
+def doc_drift(source: Path, destination: Path) -> int:
+    """Count managed differences without creating or replacing project files."""
+    if source.is_symlink() or destination.is_symlink():
+        return 1
+    if source.is_dir():
+        if not destination.is_dir():
+            return 1
+        return sum(doc_drift(child, destination / child.name) for child in source.iterdir())
+    if source.is_file():
+        return int(not destination.is_file() or source.read_bytes() != destination.read_bytes())
+    return 1
+
+
 MONITOR_SETTINGS = {"monitorWakeBudget": 100, "monitorWakesPerHour": 3600}
 
 
@@ -57,6 +70,14 @@ def ensure_monitor_settings(path: Path) -> None:
 def main() -> None:
     home = Path.home()
     project = Path(os.environ.get("HELIO_PROJECT", str(home / "PythonProjects/elo-bot")))
+    if "--reconcile-docs" in sys.argv[1:]:
+        # Run by `helio update`: add missing docs, never overwrite, report what needs a person.
+        conflicts: list[str] = []
+        copy_docs(home / ".dori/elobot/project-docs", project / "docs", conflicts)
+        for conflict in conflicts:
+            print(f"KNOWLEDGE_DOC_CONFLICT {conflict}")
+        print(f"KNOWLEDGE_DOCS conflicts={len(conflicts)}")
+        return
     memory_home = home / ".omo/memory"
     override = os.environ.get("OMO_MEMORY_HOME", "").strip()
     if override and Path(override).resolve() != memory_home.resolve():
@@ -87,6 +108,15 @@ def main() -> None:
             sys.exit(f"KNOWLEDGE_ERROR refusing occupied identity path: {alias}; expected link to {target}")
     # Link the whole root, not just repo, so all sessions use the same on-disk locks and queues.
     print(f"KNOWLEDGE_MEMORY {identity} -> {target} (repo and runtime/locks shared)")
+
+    if "--check-docs" in sys.argv[1:]:
+        try:
+            count = doc_drift(home / ".dori/elobot/project-docs", project / "docs")
+            if count:
+                print(f"KNOWLEDGE_DOC_DRIFT count={count}; docs preserved; reconcile with helio update")
+        except OSError:
+            print("KNOWLEDGE_DOC_DRIFT count=unknown; docs unreadable; reconcile with helio update")
+        return
 
     conflicts: list[str] = []
     copy_docs(home / ".dori/elobot/project-docs", project / "docs", conflicts)

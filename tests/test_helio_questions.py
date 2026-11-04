@@ -1,5 +1,5 @@
 import io
-import json,runpy,sqlite3,tempfile,unittest
+import json,os,runpy,sqlite3,tempfile,unittest
 import urllib.error
 from datetime import datetime
 from contextlib import closing,redirect_stderr,redirect_stdout
@@ -224,7 +224,7 @@ class QuestionTests(unittest.TestCase):
   self.assertEqual(json.loads(out.getvalue())['status'],'cancelled')
   out=io.StringIO()
   with run('list'),redirect_stdout(out):self.m['main']()
-  self.assertEqual(json.loads(out.getvalue()),[])
+  self.assertEqual(json.loads(out.getvalue()),{'items':[],'next':None})
   with run('withdraw',sent['id']),self.assertRaises(ValueError):self.m['main']()
  def test_staff_question_goes_to_the_staff_chat_and_pings_owner_and_trusted_users(self):
   calls=[]
@@ -281,6 +281,24 @@ class QuestionTests(unittest.TestCase):
    raise AssertionError(path)
   with patch.dict(self.g,{'request':request}):result=self.m['recover'](self.db,q['id'])
   self.assertEqual((result['status'],result['answer_id'],result['answer_author']),('answered','400','99'))
+ def test_staff_question_with_pings_recovers_the_accepted_post_without_sending_again(self):
+  posts=[]
+  def lost(method,path,body=None):
+   if method=='POST':
+    posts.append(body);raise TimeoutError('accepted but reply lost')
+   raise AssertionError(path)
+  with patch.dict(self.g,{'STAFF':'100','request':lost}):
+   q=self.m['create_question'](self.db,'lead','staff','','Which option?')
+  self.assertTrue(posts[0]['content'].startswith('<@99>\nQuestion ['))
+  def history(method,path,body=None):
+   if path=='/users/@me':return {'id':'88'}
+   if path=='/channels/100/messages?limit=100':
+    return [{'id':'300','author':{'id':'88'},'content':posts[0]['content']},
+            {'id':'301','author':{'id':'other-bot'},'content':posts[0]['content']}]
+   raise AssertionError(path)
+  with patch.dict(self.g,{'request':history}):recovered=self.m['recover'](self.db,q['id'])
+  self.assertEqual((recovered['status'],recovered['message_id']),('awaiting_answer','300'))
+  self.assertEqual(len(posts),1)
  def test_unavailable_owner_dm_leaves_question_pending(self):
   with patch.dict(self.g,{'request':lambda *a,**kw:(_ for _ in ()).throw(self.m['DiscordError'](403))}):
    q=self.m['create_question'](self.db,'lane-one','owner','','Decision needed')
@@ -313,4 +331,88 @@ class QuestionTests(unittest.TestCase):
    return {'parent_id':None}
   with patch.dict(self.g,{'request':request}):q=self.m['create_question'](self.db,'lane-one','thread','77','What happened?')
   self.assertEqual(q['status'],'send_failed');self.assertFalse(any(method=='POST' for method,path in calls))
+
+class QuestionChoiceTests(unittest.TestCase):
+ def setUp(self):
+  self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+  self.m=runpy.run_path(str(SCRIPT));self.g=self.m['create_question'].__globals__
+  self.state=Path(self.temp.name);self.bodies=[]
+  def request(method,path,body=None):
+   if path=='/users/@me/channels':return {'id':'200'}
+   self.bodies.append(body);return {'id':'500'}
+  patcher=patch.dict(self.g,{'STATE':self.state,'OWNER':'99','TOKEN':'fake','ALLOWED':{'100'},'request':request});patcher.start();self.addCleanup(patcher.stop)
+  self.db=self.m['db_connect']();self.addCleanup(self.db.close)
+ def test_options_render_a_menu_of_indexes_and_an_other_button(self):
+  q=self.m['create_question'](self.db,'lead','owner','','How long?',['8 hours','12 hours'],True)
+  body=self.bodies[0]
+  self.assertTrue(body['content'].endswith('How long?\n\nChoose below or reply to this message.'))
+  menu,other=body['components']
+  self.assertEqual(menu['components'][0]['custom_id'],f"h1:q:{q['id']}:pick")
+  self.assertEqual([(o['label'],o['value']) for o in menu['components'][0]['options']],[('8 hours','0'),('12 hours','1')])
+  self.assertEqual(other['components'][0]['custom_id'],f"h1:q:{q['id']}:other")
+  row=self.db.execute('SELECT options,components FROM questions WHERE id=?',(q['id'],)).fetchone()
+  self.assertEqual(json.loads(row[0]),['8 hours','12 hours']);self.assertEqual(json.loads(row[1]),body['components'])
+ def test_open_questions_get_an_answer_button(self):
+  q=self.m['create_question'](self.db,'lead','owner','','Anything else?')
+  body=self.bodies[0]
+  self.assertTrue(body['content'].endswith('Anything else?\n\nAnswer below or reply to this message.'))
+  self.assertEqual(body['components'],[{'type':1,'components':[{'type':2,'style':2,'label':'Answer…','custom_id':f"h1:q:{q['id']}:other"}]}])
+  self.assertEqual(self.db.execute('SELECT options FROM questions WHERE id=?',(q['id'],)).fetchone()[0],'[]')
+ def test_menu_only_questions_need_options(self):
+  self.m['create_question'](self.db,'lead','owner','','Which?',['a','b'],False)
+  self.assertEqual(len(self.bodies[0]['components']),1)
+  with self.assertRaises(ValueError):self.m['create_question'](self.db,'lead','owner','','Anything?',None,False)
+ def test_approval_asks_hand_off_to_helio_confirm_without_a_question_row(self):
+  calls=[];sha='a'*40
+  def execvp(file,argv):calls.append(argv);raise SystemExit(0)
+  asks=(['--action','pr','--target','o/r#4','--revision',sha],
+        ['--lane','lead','--action','merge','--target','o/r#6','--revision',sha,'--channel','300','--reply-to','42'],
+        ['--action','restart','--target','elobot','--revision',sha,'--channel','300'])
+  with patch.dict(self.g,{'STAFF':'100','trusted_now':lambda:{'77'}}),patch('os.execvp',execvp),patch.dict(os.environ,{'HELIO_GITHUB_REPO':'o/r'}):
+   for argv in asks:
+    with patch('sys.argv',['helio-questions','ask',*argv]),self.assertRaises(SystemExit):self.m['main']()
+  base=['helio','confirm','ask','--action']
+  self.assertEqual(calls,[
+   base+['pr','--target','o/r#4','--revision',sha,'--channel','100','--note','<@99> <@77> <https://github.com/o/r/issues/4>'],
+   base+['merge','--target','o/r#6','--revision',sha,'--channel','300','--reply-to','42','--note','<https://github.com/o/r/pull/6>'],
+   base+['restart','--target','elobot','--revision',sha,'--channel','300']])
+  self.assertEqual(self.db.execute('SELECT COUNT(*) FROM questions').fetchone()[0],0)
+ def test_approval_asks_refuse_question_flags_and_other_lanes(self):
+  ask=['helio-questions','ask','--action','pr','--target','o/r#4','--revision','a'*40]
+  for extra in (['--text','x'],['--option','a'],['--audience','owner'],['--no-other'],['--lane','lane-one'],['--reply-to','42']):
+   with self.subTest(extra=extra),patch.dict(self.g,{'STAFF':'100'}),patch('sys.argv',ask+extra),patch('os.execvp') as ex:
+    with self.assertRaises(ValueError):self.m['main']()
+    ex.assert_not_called()
+  with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','x','--channel','5']),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+   self.m['main']()
+ def test_invalid_option_sets_are_refused_before_sending(self):
+  for options in (['only'],['a']*2,[str(i) for i in range(6)],['x'*81],[' ','b']):
+   with self.subTest(options=options),self.assertRaises(ValueError):
+    self.m['create_question'](self.db,'lead','owner','','How long?',options,False)
+  self.assertEqual(self.bodies,[])
+ def test_an_older_database_gains_the_click_columns(self):
+  old=self.state/'old';old.mkdir()
+  with closing(sqlite3.connect(old/'discord-questions.sqlite')) as db:
+   db.execute('CREATE TABLE questions (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, lane TEXT NOT NULL, audience TEXT NOT NULL, recipient TEXT NOT NULL, question TEXT NOT NULL, status TEXT NOT NULL, channel_id TEXT, message_id TEXT, answer_id TEXT, answer_author TEXT, answer_role TEXT, answer_scope TEXT, answer_text TEXT, error TEXT, updated INTEGER NOT NULL)');db.commit()
+  (old/'discord-questions.sqlite').chmod(0o600)
+  with patch.dict(self.g,{'STATE':old}):
+   with closing(self.m['db_connect']()) as db:
+    columns={r[1] for r in db.execute('PRAGMA table_info(questions)')}
+  self.assertTrue({'options','components','answer_source','announced_at','cleared_at','pending_by','pending_at'}<=columns)
+ def test_withdraw_cannot_overwrite_a_question_claimed_by_a_click(self):
+  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,updated) VALUES ('q','f','lead','owner','99','Q','awaiting_answer',0)");self.db.commit()
+  self.db.execute("UPDATE questions SET status='answering' WHERE id='q'");self.db.commit()
+  with self.assertRaisesRegex(ValueError,'changed'):self.m['write'](self.db,'q','cancelled','awaiting_answer',question='')
+  self.assertEqual(tuple(self.db.execute("SELECT status,question FROM questions WHERE id='q'").fetchone()),('answering','Q'))
+ def test_ack_keeps_a_clicked_answer_until_it_is_posted(self):
+  for qid,announced,kept in (('q1',None,'8 hours'),('q2',5,None)):
+   self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,answer_text,answer_source,announced_at,updated) VALUES (?,?,'lead','owner','99','Q','answered','8 hours','component',?,0)",(qid,qid,announced));self.db.commit()
+   with patch('sys.argv',['helio-questions','ack',qid]),redirect_stdout(io.StringIO()):self.assertEqual(self.m['main'](),0)
+   row=self.db.execute('SELECT status,answer_text FROM questions WHERE id=?',(qid,)).fetchone()
+   self.assertEqual((row[0],row[1]),('done',kept))
+ def test_an_answer_being_submitted_is_not_reported_as_pending(self):
+  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,updated) VALUES ('q','f','lead','owner','99','Q','answering',0)");self.db.commit()
+  out=io.StringIO()
+  with redirect_stdout(out):self.m['poll'](self.db,None,{})
+  self.assertEqual(out.getvalue(),'')
 if __name__=='__main__':unittest.main()

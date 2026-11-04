@@ -17,11 +17,14 @@ PROFILES = ("isolated", "owner")
 EXECUTABLES = ("start", "inbound", "ack", "context")
 HELPERS = ("knowledge-setup.py", "helio-sessions.py", "browser-env", "browser-env.test.ts",
            "reply.ts", "reply.test.ts", "evidence.ts", "evidence.test.ts", "thread-target.ts", "thread-target.test.ts")
-RUNBOOKS = ("discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md")
+RUNBOOKS = ("discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md", "autofix-workflow.md",
+            "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md")
 PROFILE_RUNBOOKS = ("beta-maintenance-workflow.md", "oracle-restart-workflow.md")
+# Skills passed to the lead and every lane with `omo --skill`; installed under ~/.dori/elobot/skills.
+SKILLS = ("skills/karpathy-guidelines/SKILL.md",)
 VENDOR_FILES = ("LICENSE", "scripts/src/run.ts", "scripts/src/messenger/discord.ts", "scripts/src/messenger/http.ts")
 MESSENGER = ("http.ts", "discord.ts")
-MANAGED = ("setup-prompt.md", "work-policy.md", *RUNBOOKS, "config.json", *EXECUTABLES, *HELPERS)
+MANAGED = ("setup-prompt.md", "work-policy.md", *RUNBOOKS, "config.json", *EXECUTABLES, *HELPERS, *SKILLS)
 RETIRED = ("GUIDE.md", "channel-policy.env")
 # sha256 of files shipped by the pre-reorganization kit, per profile. An installed
 # file with one of these digests was reviewed upstream, so replacing or retiring it
@@ -53,16 +56,46 @@ for _shipped in PREVIOUSLY_SHIPPED.values():
         "context": {"12c79bdb6532d8287300bc3ce4179789a4cfe055ddbcd641a05ef4a1765c63f0"},
     })
 INBOUND_FILES = (
-    "ack.ts", "archived-threads.ts", "archived-threads.test.ts", "authorization.ts",
-    "bug-reports.test.ts", "bun.lock", "catchup.test.ts", "catchup.ts",
-    "channel-policy.test.ts", "context-pending.test.ts", "context-replay.ts", "expiry.ts", "expiry.test.ts",
-    "conversations.ts", "conversations.test.ts", "conversation.ts", "conversation.test.ts",
-    "context.ts", "learning-context.test.ts", "learning-scope.ts", "learning-scope.test.ts", "delivery.test.ts", "delivery.ts", "filter.test.ts", "filter.ts",
-    "fixtures/discord.ts", "flow.test.ts", "forwarded.test.ts", "forwarded.ts", "reply-context.ts", "reply-context.test.ts", "question-answer.ts", "question-answer.test.ts",
-    "images.test.ts", "images.ts", "message-text.ts", "message-text.test.ts", "embed-images.test.ts", "inbound.ts", "lastseen.ts", "normal-flow.test.ts", "package.json", "policy-flow.test.ts",
-    "recovery-flow.test.ts", "rest.ts", "watched-channels.ts",
-    "fixtures/clock.ts", "links.test.ts", "preceding.ts", "preceding.test.ts", "turns.ts", "turns.test.ts", "turns-flow.test.ts",
-    "working.ts", "working.test.ts",
+    # entry points and package
+    "ack.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "package.json", "recovery.ts",
+    # discord
+    "discord/rest-cache.test.ts", "discord/rest.ts",
+    # intake
+    "intake/archived-threads.test.ts", "intake/archived-threads.ts", "intake/authorization.ts",
+    "intake/bug-reports.test.ts", "intake/catchup.test.ts", "intake/catchup.ts", "intake/channel-policy.test.ts",
+    "intake/filter.test.ts", "intake/filter.ts", "intake/lastseen.ts", "intake/owner-mentions.test.ts",
+    "intake/preceding.test.ts", "intake/preceding.ts", "intake/turns.test.ts", "intake/turns.ts",
+    "intake/watched-channels.ts",
+    # delivery
+    "delivery/context-render.ts", "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
+    "delivery/expiry.ts", "delivery/monitor-summary.ts", "delivery/pending-reminder.ts",
+    "delivery/recovery-schema.sql", "delivery/recovery-store.ts",
+    # messages
+    "messages/embed-images.test.ts", "messages/forwarded.test.ts", "messages/forwarded.ts",
+    "messages/image-worker.test.ts", "messages/image-worker.ts", "messages/images.test.ts", "messages/images.ts",
+    "messages/linked-files.test.ts", "messages/linked-files.ts", "messages/links.test.ts",
+    "messages/message-text.test.ts", "messages/message-text.ts", "messages/reply-context.test.ts",
+    "messages/reply-context.ts",
+    # conversations
+    "conversations/conversation-context.ts", "conversations/conversation-db.test.ts",
+    "conversations/conversation-db.ts", "conversations/conversation-upkeep.test.ts",
+    "conversations/conversation-upkeep.ts", "conversations/conversations.test.ts", "conversations/conversations.ts",
+    "conversations/question-answer.test.ts", "conversations/question-answer.ts", "conversations/receipts.test.ts",
+    "conversations/reply-guard.ts", "conversations/reply-once.test.ts", "conversations/reply-once.ts",
+    "conversations/working-store.ts", "conversations/working.test.ts", "conversations/working.ts",
+    # learning
+    "learning/context-replay.ts", "learning/learning-scope.test.ts", "learning/learning-scope.ts",
+    # interactive
+    "interactive/cli-flow.test.ts", "interactive/cli.ts", "interactive/handler.ts",
+    "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
+    # tests
+    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts",
+    "tests/learning-context.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
+    "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",
+    "tests/turns-flow.test.ts",
+    # fixtures
+    "fixtures/clock.ts", "fixtures/delivery-output.ts", "fixtures/discord-client.ts", "fixtures/discord-data.ts",
+    "fixtures/discord.ts", "fixtures/now.ts", "fixtures/working.ts",
 )
 CHECKOUT_DOCS = ("README.md", "base-fingerprints.md", "bot-ui.md", "copy-style.md", "discord-qa.md")
 PLACEHOLDER = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
@@ -110,6 +143,11 @@ def documents(profile: str, mapping: dict[str, str]) -> dict[str, bytes]:
         "setup-prompt.md": render_text([AGENT / "prompts/lead.md", overlay / "lead.md"], mapping),
         "work-policy.md": render_text([AGENT / "prompts/policy.md", overlay / "policy.md"], mapping),
         "discord-qa-workflow.md": render_text([AGENT / "runbooks/discord-qa-workflow.md"], mapping),
+        "autofix-workflow.md": render_text([AGENT / "runbooks/autofix-workflow.md"], mapping),
+        "issue-plan-workflow.md": render_text([AGENT / "runbooks/issue-plan-workflow.md"], mapping),
+        "decisions-workflow.md": render_text([AGENT / "runbooks/decisions-workflow.md"], mapping),
+        "issue-truth-workflow.md": render_text([AGENT / "runbooks/issue-truth-workflow.md"], mapping),
+        "startup-recovery-workflow.md": render_text([AGENT / "runbooks/startup-recovery-workflow.md"], mapping),
     }
     for name in PROFILE_RUNBOOKS:
         rendered[name] = render_text([overlay / "runbooks" / name], mapping)
@@ -117,5 +155,7 @@ def documents(profile: str, mapping: dict[str, str]) -> dict[str, bytes]:
 
 
 def plain(name: str) -> Path:
+    if name in SKILLS:
+        return AGENT / name
     folder = "bin" if name in EXECUTABLES else "helpers"
     return AGENT / folder / name

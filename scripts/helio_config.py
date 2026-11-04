@@ -31,6 +31,11 @@ IDS = ("DORI_DISCORD_OWNER_ID", "DORI_DISCORD_SCOPE_CATEGORY", "DORI_DISCORD_CON
        "HELIO_BUG_REPORT_BOT", "HELIO_BUG_REPORT_CHANNEL", "HELIO_TEST_CHANNEL", "HELIO_TEST_CATEGORY",
        "HELIO_STAFF_CHAT")
 PATHS = ("HELIO_PROJECT", "HELIO_BROWSER_SKILL")
+FLAGS = ("HELIO_ANSWER_FOR_OWNER", "HELIO_AUTOFIX")
+COUNTS = ("HELIO_OWNER_PRESENT_MINUTES", "HELIO_AUTOFIX_MAX_LINES", "HELIO_AUTOFIX_MAX_FILES", "HELIO_AUTOFIX_MAX_OPEN")
+COUNT = re.compile(r"[1-9][0-9]{0,4}")
+# Repository-relative globs: no spaces, absolute paths or parent references.
+GLOB = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.*?/\[\]-]+")
 # Exported into ~/.dori/elobot/env, in this order. Everything the lead, workers,
 # wrappers and prompt templates need; never the beta secrets.
 RUNTIME = ("DORI_DISCORD_TOKEN", "DORI_DISCORD_OWNER_ID", "DORI_DISCORD_SCOPE_CATEGORY", "DORI_DISCORD_ALLOWED",
@@ -39,7 +44,7 @@ RUNTIME = ("DORI_DISCORD_TOKEN", "DORI_DISCORD_OWNER_ID", "DORI_DISCORD_SCOPE_CA
            "HELIO_PROJECT", "HELIO_GITHUB_REPO", "HELIO_TEST_CHANNEL", "HELIO_TEST_CATEGORY",
            "HELIO_NEVER_LEARN_CATEGORY", "HELIO_BUG_REPORT_BOT", "HELIO_BUG_REPORT_CHANNEL", "HELIO_STAFF_CHAT",
            "HELIO_LEAD_MODEL", "HELIO_LEAD_THINKING", "HELIO_WORKER_MODEL", "HELIO_MODEL_ALLOW",
-           "HELIO_BROWSER_SKILL")
+           "HELIO_BROWSER_SKILL", *FLAGS, *COUNTS, "HELIO_AUTOFIX_DENY")
 BETA = (("BOT_BETA_TOKEN", "BOT_BETA_TOKEN"), ("COC_API_EMAIL", "COC_API_EMAIL"),
         ("COC_API_PASSWORD", "COC_API_PASSWORD"), ("MONGO_DB_URL", "HELIO_BETA_MONGO_URL"),
         ("HELPER_API_BASE_URL", "HELPER_API_BASE_URL"), ("HELPER_API_KEY", "HELPER_API_KEY"))
@@ -102,6 +107,14 @@ def problems(values: dict[str, str], require_secrets: bool = True) -> list[str]:
         items = [x for x in merged.get(key, "").split(",") if x]
         if any(not ID.fullmatch(x) for x in items):
             found.append(f"{key} must be comma-separated Discord IDs without spaces")
+    for key in FLAGS:
+        if merged.get(key) not in ("on", "off"):
+            found.append(f"{key} must be on or off")
+    for key in COUNTS:
+        if not COUNT.fullmatch(merged.get(key, "")):
+            found.append(f"{key} must be a positive whole number")
+    if not all(GLOB.fullmatch(item) for item in merged.get("HELIO_AUTOFIX_DENY", "").split(",")):
+        found.append("HELIO_AUTOFIX_DENY must be comma-separated repository paths or globs without spaces")
     allowed = set(merged["DORI_DISCORD_ALLOWED"].split(","))
     for key in ("DORI_DISCORD_TRUSTED_CHANNELS", "DORI_DISCORD_NORMAL_CHANNELS"):
         missing = [x for x in merged[key].split(",") if x and x not in allowed]
@@ -222,7 +235,7 @@ def init(home: Path, migrate: bool) -> None:
         lines.append(raw)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic(path, ("\n".join(lines) + "\n").encode(), 0o600)
-    print(f"Created {path}" + (" from the installed files" if migrate else "") + ". Review it, then run: helio update --preview")
+    print(f"Created {path}" + (" from the installed files" if migrate else "") + ". Review it, then run: helio update")
     missing = [k for k in SECRETS if not ({**defaults(), **values}).get(k)]
     if missing:
         print("Still empty: " + ", ".join(missing))

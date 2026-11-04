@@ -12,8 +12,13 @@ RUNBOOKS = (
     "discord-qa-workflow.md",
     "beta-maintenance-workflow.md",
     "oracle-restart-workflow.md",
+    "autofix-workflow.md",
+    "issue-plan-workflow.md",
+    "decisions-workflow.md",
+    "issue-truth-workflow.md",
+    "startup-recovery-workflow.md",
 )
-NEW_RUNBOOKS = ("beta-maintenance-workflow.md",)
+NEW_RUNBOOKS = ("beta-maintenance-workflow.md", "autofix-workflow.md", "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md")
 
 
 def validate(base: Path) -> None:

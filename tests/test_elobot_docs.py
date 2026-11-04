@@ -77,7 +77,12 @@ class OriginalDocumentationMigrationTests(unittest.TestCase):
                 (base / name).chmod(0o640)
             new_runbook = b"beta maintenance runbook"
             with redirect_stdout(StringIO()):
-                DOCS["organize"](base, True, {"beta-maintenance-workflow.md": new_runbook})
+                DOCS["organize"](base, True, {"beta-maintenance-workflow.md": new_runbook,
+                                             "autofix-workflow.md": b"automatic fix runbook",
+                                             "issue-plan-workflow.md": b"issue plan runbook",
+                                             "decisions-workflow.md": b"decision runbook",
+                                             "issue-truth-workflow.md": b"issue truth runbook",
+                                             "startup-recovery-workflow.md": b"startup recovery runbook"})
             for name in ("discord-qa-workflow.md", "oracle-restart-workflow.md"):
                 self.assertEqual((base / name).read_text(), "local instructions for " + name)
                 self.assertEqual(os.readlink(base / name), f"docs/{name}")
@@ -85,3 +90,5 @@ class OriginalDocumentationMigrationTests(unittest.TestCase):
             self.assertEqual((base / "beta-maintenance-workflow.md").read_bytes(), new_runbook)
             self.assertEqual(os.readlink(base / "beta-maintenance-workflow.md"),
                              "docs/beta-maintenance-workflow.md")
+            self.assertEqual((base / "docs/decisions-workflow.md").read_bytes(), b"decision runbook")
+            self.assertEqual((base / "docs/issue-truth-workflow.md").read_bytes(), b"issue truth runbook")

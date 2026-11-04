@@ -1,0 +1,176 @@
+import type { Conversations, ConversationEntry } from "./conversations.ts";
+import type { Delivery } from "../delivery/delivery.ts";
+import { DiscordRestError, type Rest } from "../discord/rest.ts";
+import { finishWorking } from "./working.ts";
+import { RecoveryRequiredError } from "../delivery/recovery-store.ts";
+
+const gone = (error: unknown) => error instanceof DiscordRestError && error.status === 404;
+
+export interface NewerMessage {
+  readonly message_id: string;
+  readonly author_id: string;
+  readonly author: string;
+  readonly role: string;
+  readonly addition_to?: string;
+  readonly content: string;
+  readonly embed_text?: string;
+  readonly attachments: number;
+}
+
+type Payload = Partial<NewerMessage> & { channel_id?: string; attachments?: unknown[]; embed_text?: string; for_owner?: boolean };
+const clip = (text: string | undefined, max: number) => text && text.length > max ? `${text.slice(0, max)}…` : text;
+
+export function newerPending(delivery: Delivery, channel: string, target: string, known: ReadonlySet<string>): NewerMessage[] {
+  const out: NewerMessage[] = [];
+  for (const item of delivery.pending("inbound")) {
+    if (BigInt(item.id) <= BigInt(target) || known.has(item.id)) continue;
+    const payload = JSON.parse(item.payload) as Payload;
+    if (payload.channel_id !== channel || delivery.status("inbound", item.id).disposition !== "pending") continue;
+    out.push({
+      message_id: item.id, author_id: payload.author_id ?? "", author: payload.author ?? "", role: payload.role ?? "",
+      ...(payload.addition_to ? { addition_to: payload.addition_to } : {}),
+      content: clip(payload.content, 1500) ?? "",
+      ...(payload.embed_text ? { embed_text: clip(payload.embed_text, 1000) } : {}),
+      attachments: Array.isArray(payload.attachments) ? payload.attachments.length : 0,
+    });
+  }
+  return out;
+}
+
+export type ReplyCheck =
+  | { readonly action: "send"; readonly leftover: readonly string[] }
+  | { readonly action: "hold"; readonly newer: readonly NewerMessage[]; readonly edited?: string }
+  | { readonly action: "withhold"; readonly reason: string }
+  | { readonly action: "skip"; readonly reason: string; readonly gone?: true };
+
+/**
+ * Before a reply goes out: skip it if the original was deleted, and hold it (at most twice within two
+ * minutes) when the original was edited or newer messages in the channel are unaccounted for.
+ * `known` lists message IDs the reply covers or has reviewed; listing the target acknowledges an edit.
+ */
+export async function checkBeforeReply(options: {
+  readonly delivery: Delivery; readonly store: Conversations; readonly rest: Rest;
+  readonly channel: string; readonly target: string; readonly known: ReadonlySet<string>; readonly now: number;
+  readonly warn: (message: string) => void; readonly owner?: string;
+}): Promise<ReplyCheck> {
+  const { delivery, store, rest, channel, target, known, now, warn, owner } = options;
+  const staged = delivery.pending("inbound").find((item) => item.id === target);
+  const payload = staged ? JSON.parse(staged.payload) as Payload : undefined;
+  if (staged) {
+    try { delivery.recovery.requireReviewed(target, staged.payload); }
+    catch (error) {
+      if (!(error instanceof RecoveryRequiredError)) throw error;
+      return { action: "withhold", reason: error.message };
+    }
+    const priorReply = delivery.recovery.priorReply(target);
+    if (priorReply) {
+      return { action: "skip", reason: `this recovered message already has reply ${priorReply}; continue durable work separately` };
+    }
+  }
+  let edited: string | undefined;
+  try {
+    const current = await rest<{ content: string }>(`/channels/${channel}/messages/${target}`);
+    if (payload && !known.has(target) && typeof payload.content === "string" && current.content !== payload.content) {
+      edited = clip(current.content, 1500);
+    }
+  } catch (error) {
+    if (gone(error)) return { action: "skip", reason: "the original message was deleted", gone: true };
+    if (!(error instanceof Error)) throw error;
+    warn(`could not re-read message_id=${target}; reply retained pending: ${error.message}`);
+    return { action: "withhold", reason: "Current source message is unavailable; inspect before retrying." };
+  }
+  // Answering for the owner: once the owner has spoken in the channel since, the answer is theirs.
+  if (payload?.for_owner === true && owner) {
+    try {
+      const later = await rest<{ author?: { id?: string } }[]>(`/channels/${channel}/messages?after=${target}&limit=50`);
+      if (later.some((message) => message.author?.id === owner)) return { action: "skip", reason: "the owner already answered" };
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      warn(`could not check whether the owner answered message_id=${target}: ${error.message}`);
+      return { action: "withhold", reason: "Cannot verify whether the owner already answered; retained pending." };
+    }
+  }
+  const newer = newerPending(delivery, channel, target, known);
+  if (!newer.length && edited === undefined) return { action: "send", leftover: [] };
+  if (store.holdReply(channel, payload?.author_id ?? "", target, now)) {
+    return { action: "hold", newer, ...(edited !== undefined ? { edited } : {}) };
+  }
+  return { action: "send", leftover: newer.map((message) => message.message_id) };
+}
+
+const HELD_HINT = "REPLY_HELD_HINT Nothing was sent. Fold in the same person's additions, mention others only if directly related, " +
+  "then resend with --covers <IDs this reply answers> and --seen <IDs reviewed and left as their own turns>; " +
+  "add the original message ID to --seen to accept its edit.";
+
+/**
+ * The full reply step. Exit codes: 0 sent, 3 held for newer messages or an edit, 4 skipped (original deleted,
+ * or the owner already answered a message addressed to them).
+ * After sending, covered messages are marked handled, and the working windows of everyone answered close,
+ * removing Helio's 👀.
+ */
+export async function guardedReply(o: {
+  readonly delivery: Delivery; readonly store: Conversations; readonly rest: Rest;
+  readonly channel: string; readonly target: string;
+  readonly covers: readonly string[]; readonly seen: readonly string[];
+  readonly send: (mentionUsers: readonly string[]) => Promise<string>;
+  readonly cleanup: (messageId: string) => Promise<void>;
+  readonly replyEntry?: Omit<ConversationEntry, "message_id" | "sent_at">;
+  readonly now: () => number; readonly warn: (message: string) => void; readonly owner?: string;
+}): Promise<{ readonly code: 0 | 3 | 4; readonly lines: readonly string[] }> {
+  const known = new Set([...o.covers, ...o.seen]);
+  const check = await checkBeforeReply({ ...o, known, now: o.now() });
+  if (check.action === "withhold") {
+    return { code: 3, lines: [`REPLY_WITHHELD message_id=${o.target}: ${check.reason}; nothing was sent.`] };
+  }
+  if (check.action === "skip") {
+    await finishWorking({ store: o.store, rest: o.rest, now: o.now(), warn: o.warn }, [o.target]);
+    const closed = check.gone ? o.store.closeFollowupsFor(o.channel, o.target) : [];
+    if (check.gone) {
+      for (const row of o.store.list().filter((row) => row.channel_id === o.channel && row.anchor_message_id === o.target)) {
+        o.store.resolveIfCurrent(row, "other", o.now());
+      }
+    }
+    if (closed.length) {
+      return { code: 4, lines: closed.map((followup) => `REPLY_FOLLOWUP_CLOSED issue=${followup.issue} user=${followup.user_id}: ` +
+        "the request message is gone, so nothing was sent and the follow-up is closed. Tell the owner once; nothing else to record.") };
+    }
+    return { code: 4, lines: [`REPLY_SKIPPED message_id=${o.target}: ${check.reason}; nothing was sent. Run: ack done inbound ${o.target}`] };
+  }
+  if (check.action === "hold") {
+    const held = { message_id: o.target, ...(check.edited !== undefined ? { edited_content: check.edited } : {}), newer: check.newer };
+    return { code: 3, lines: [`REPLY_HELD ${JSON.stringify(held)}`, HELD_HINT] };
+  }
+  const pending = new Map(o.delivery.pending("inbound").map((item) => [item.id, JSON.parse(item.payload) as Payload]));
+  const covered = [...new Set(o.covers)].filter((id) => id !== o.target && pending.get(id)?.channel_id === o.channel &&
+    o.delivery.status("inbound", id).disposition === "pending");
+  const notCovered = o.covers.filter((id) => id !== o.target && !covered.includes(id));
+  const targetAuthor = pending.get(o.target)?.author_id ?? o.store.working(o.target)?.user_id;
+  const authors = new Set(covered.map((id) => pending.get(id)?.author_id).filter((id): id is string => !!id));
+  const mentions = [...authors].filter((id) => id !== targetAuthor);
+  if (targetAuthor) authors.add(targetAuthor);
+  const claimed = [o.target, ...covered].some((id) => o.store.working(id)?.claimed_at != null);
+
+  const replyId = await o.send(mentions);
+  const lines = [`SENT ${replyId}`];
+  if (o.replyEntry) {
+    for (const author of authors) {
+      const conversation = o.store.get(o.channel, author);
+      const answered = new Set([o.target, ...covered]);
+      if (!conversation || (!answered.has(conversation.anchor_message_id) &&
+          !o.store.transcript(o.channel, author).some((entry) => answered.has(entry.message_id)))) continue;
+      o.store.append(o.channel, author, {
+        ...o.replyEntry, message_id: replyId, sent_at: new Date(o.now()).toISOString(),
+      }, o.now());
+    }
+  }
+  for (const id of covered) {
+    try { o.delivery.acknowledge("inbound", id); await o.cleanup(id); }
+    catch (error) { o.warn(`could not mark covered message_id=${id} handled: ${String(error)}`); }
+  }
+  await finishWorking({ store: o.store, rest: o.rest, now: o.now(), warn: o.warn }, [o.target, ...covered]);
+  if (covered.length) lines.push(`REPLY_COVERED ${covered.join(",")}`);
+  if (notCovered.length) lines.push(`REPLY_NOTE not marked handled (not pending in this channel): ${notCovered.join(",")}`);
+  if (check.leftover.length) lines.push(`REPLY_NOTE newer messages left as their own turns: ${check.leftover.join(",")}`);
+  if (!claimed) lines.push("REPLY_NOTE no claim was recorded for this turn; run ack working first when you pick a turn up");
+  return { code: 0, lines };
+}

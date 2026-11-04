@@ -59,6 +59,10 @@ class InstallerTests(unittest.TestCase):
         config = json.loads((elobot / "config.json").read_text())
         self.assertIn(f"DORI_CONFIG={elobot / 'config.json'}", config["agentCommand"])
         self.assertEqual(config["hooks"]["threadReply"][1], str(elobot / "thread-target.ts"))
+        skill = elobot / "skills/karpathy-guidelines"
+        self.assertIn(str(skill), config["agentCommand"])
+        self.assertEqual((skill / "SKILL.md").read_bytes(),
+                         (ROOT / "agent/skills/karpathy-guidelines/SKILL.md").read_bytes())
         self.assertTrue((elobot / "vendor/dori-mode/scripts/src/messenger/discord.ts").is_file())
         self.assertEqual(
             (elobot / "vendor/dori-mode/LICENSE").read_bytes(),

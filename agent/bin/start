@@ -29,8 +29,12 @@ if [ ! -r "$here/work-policy.md" ] || [ ! -s "$here/work-policy.md" ]; then
   echo "missing, unreadable, or empty $here/work-policy.md" >&2
   exit 2
 fi
+if [ ! -s "$here/skills/karpathy-guidelines/SKILL.md" ]; then
+  echo "missing $here/skills/karpathy-guidelines/SKILL.md; run: helio update" >&2
+  exit 2
+fi
 cd "$HELIO_PROJECT"
-python3 "$here/knowledge-setup.py"
+knowledge_status="$(python3 "$here/knowledge-setup.py" --check-docs)"
 
 if [[ "$mode" == resume ]]; then
   session_ref="$(python3 "$here/helio-sessions.py" latest)"
@@ -41,6 +45,7 @@ else
 fi
 
 mkdir -p "$DORI_STATE_DIR"
+recovery_status="$(bun "$here/../discord-inbound/recovery.ts" begin)"
 python3 - "$here/deploy-state.json" <<'PY' || true
 import json, sys
 from pathlib import Path
@@ -59,8 +64,15 @@ bun -e '
 
 # OmO's positional prompt starts the interactive lead's first turn automatically.
 if [[ "$mode" == resume ]]; then
-  startup='Resume Helio mode. This resumed session gets its persistent monitors restored automatically. Step 1, in one Python eval cell with a plain for loop (tool.monitor is synchronous in Python; never wrap it in asyncio): arm only the persistent monitors from the setup instructions (Discord inbound, learning context, Discord questions, issue follow-ups, lane watcher, dead panes, host guard, lane freshness) that the status line does not already show as watching, never duplicating one. Step 2, in a single eval cell: read all pending queues at once (`~/.dori/elobot/ack pending inbound`, `~/.dori/elobot/ack pending context`, `helio question list`, `helio followups list`). Step 3, right away: send the readiness greeting by DM with the installed version from `~/.dori/elobot/deploy-state.json`, any errors, and how many items are pending. Then work through the pending items under the current rules.'
+  startup='Resume Helio mode. This resumed session gets its persistent monitors restored automatically. Step 1, in one Python eval cell with a plain for loop (tool.monitor is synchronous in Python; never wrap it in asyncio): arm only the persistent monitors from the setup instructions (Discord inbound, learning context, Discord questions, issue follow-ups, lane watcher, dead panes, host guard, lane freshness) that the status line does not already show as watching, never duplicating one. Step 2, in a single eval cell: read all pending queues at once (`~/.dori/elobot/ack pending inbound`, `~/.dori/elobot/ack pending context`, `helio question list`, `helio followups list`). Step 3, right away: send the readiness greeting by DM in the exact format under Greeting in the setup instructions. Then work through the pending items under the current rules.'
 else
-  startup='Start Helio mode. This is a brand-new session, so none of its monitors exist yet; there is nothing to list or check first. Step 1, in one Python eval cell: arm all eight persistent monitors from the setup instructions (Discord inbound, learning context, Discord questions, issue follow-ups, lane watcher, dead panes, host guard, lane freshness) right away with a plain for loop that calls tool.monitor once per monitor; tool.monitor is synchronous in Python, so never wrap it in asyncio. If that cell errors partway, do not run it again: arm only the monitors the status line does not show as watching. Step 2, in a single eval cell: read all pending queues at once (`~/.dori/elobot/ack pending inbound`, `~/.dori/elobot/ack pending context`, `helio question list`, `helio followups list`). Step 3, right away: send the readiness greeting by DM with the installed version from `~/.dori/elobot/deploy-state.json`, any errors, and how many items are pending. Then work through the pending items under the current rules.'
+  startup='Start Helio mode. This is a brand-new session, so none of its monitors exist yet; there is nothing to list or check first. Step 1, in one Python eval cell: arm all eight persistent monitors from the setup instructions (Discord inbound, learning context, Discord questions, issue follow-ups, lane watcher, dead panes, host guard, lane freshness) right away with a plain for loop that calls tool.monitor once per monitor; tool.monitor is synchronous in Python, so never wrap it in asyncio. If that cell errors partway, do not run it again: arm only the monitors the status line does not show as watching. Step 2, in a single eval cell: read all pending queues at once (`~/.dori/elobot/ack pending inbound`, `~/.dori/elobot/ack pending context`, `helio question list`, `helio followups list`). Step 3, right away: send the readiness greeting by DM in the exact format under Greeting in the setup instructions. Then work through the pending items under the current rules.'
 fi
-exec omo "${session_args[@]}" --no-ask-user --model "$HELIO_LEAD_MODEL" --thinking "$HELIO_LEAD_THINKING" --models "$HELIO_MODEL_ALLOW" --skill "$HELIO_BROWSER_SKILL" --append-system-prompt "$here/setup-prompt.md" --append-system-prompt "$here/work-policy.md" "$startup"
+startup+=$'\nBefore the greeting, read `helio decide list --active` (follow every next_offset), `helio followups oracle`, and `helio release status`; include one concise Oracle evidence line without claiming current connectivity.'
+startup+=$'\nRecovery is mandatory: run `helio recovery scan`, read every report page and read ~/.dori/elobot/docs/startup-recovery-workflow.md before old deliveries. Reconcile current GitHub/task outcomes before reviewing a recovered message; no old approval prompts or re-opened conversations merely because a delivery is pending. Report ingestion, recovery and dependency readiness separately in the greeting; this overrides the old fixed greeting example.'
+startup+=$'\n'"$recovery_status"
+doc_drift="$(grep '^KNOWLEDGE_DOC_DRIFT' <<<"$knowledge_status" || true)"
+if [[ -n "$doc_drift" ]]; then
+  startup+=$'\n'"Include this line in the readiness greeting: $doc_drift"
+fi
+exec omo "${session_args[@]}" --no-ask-user --model "$HELIO_LEAD_MODEL" --thinking "$HELIO_LEAD_THINKING" --models "$HELIO_MODEL_ALLOW" --skill "$HELIO_BROWSER_SKILL" --skill "$here/skills/karpathy-guidelines" --append-system-prompt "$here/setup-prompt.md" --append-system-prompt "$here/work-policy.md" "$startup"

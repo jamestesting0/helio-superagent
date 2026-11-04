@@ -39,6 +39,7 @@ def plan(home: Path, project: Path, profile: str) -> list[tuple[Path, bytes, int
         (base / "config.json", (json.dumps(config, indent=2) + "\n").encode(), 0o644),
         *((base / name, PAYLOAD["plain"](name).read_bytes(), 0o700) for name in PAYLOAD["EXECUTABLES"]),
         *((base / name, PAYLOAD["plain"](name).read_bytes(), 0o644) for name in PAYLOAD["HELPERS"]),
+        *((base / name, PAYLOAD["plain"](name).read_bytes(), 0o644) for name in PAYLOAD["SKILLS"]),
         *((base / "vendor/dori-mode" / name, (ROOT / "vendor/dori-mode" / name).read_bytes(), 0o644)
           for name in PAYLOAD["VENDOR_FILES"]),
         *((home / ".dori/discord-inbound" / name, (ROOT / "discord-inbound" / name).read_bytes(), 0o644)
