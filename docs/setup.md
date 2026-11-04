@@ -241,7 +241,7 @@ sudo /opt/helio-beta-service/python/bin/pip install --target /opt/helio-beta-ser
 cd ~/PythonProjects/helio-superagent/scripts
 sudo install -m 644 helio-beta.py helio_beta_backup.py helio_beta_broker.py helio_beta_service.py \
   helio_beta_vault.py helio_isolated_launcher.py helio_release_service.py helio_approval.py \
-  helio_isolated_admin.py helio_deploy_plan.py helio_owner_policy.py /opt/helio-beta-service/scripts/
+  helio_isolated_admin.py helio_deploy_plan.py helio_owner_policy.py helio_state_backup.py /opt/helio-beta-service/scripts/
 ```
 
 The services need a Python 3.12 outside `/home` (they run with `ProtectHome`).

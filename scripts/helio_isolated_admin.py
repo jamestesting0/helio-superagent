@@ -8,7 +8,7 @@ while Helio runs. Deploy copies the owner's kit checkout into the isolated home,
 owner's environment and permission files, applies the managed update in an offline sandbox, and
 reports what the change needs (nothing, monitor self-restart, lead restart or full start).
 """
-import datetime, fcntl, hashlib, json, os, pwd, runpy, stat, subprocess, sys, tarfile, time
+import datetime, fcntl, hashlib, json, os, pwd, runpy, stat, subprocess, sys, tarfile, tempfile, time
 from pathlib import Path
 
 HOME = '/var/lib/helio-agent/home'
@@ -64,12 +64,20 @@ def backup():
     def keep(info):
         parts = Path(info.name).parts
         return None if {'node_modules', '.git'} & set(parts) or parts[:3] == ('.dori', 'elobot', 'state') else info
-    with tarfile.open(target, 'w:gz') as tar:
-        for rel in ('helio-agent', '.dori/elobot', '.dori/discord-inbound', '.local/bin/helio'):
-            if not os.path.realpath(Path(HOME, rel)).startswith(HOME + '/') or os.path.islink(Path(HOME, rel)):
-                continue
-            if os.path.lexists(Path(HOME, rel)):
-                tar.add(Path(HOME, rel), arcname=rel, filter=keep)
+    with tempfile.TemporaryDirectory(prefix='helio-state-', dir=HOME) as temporary:
+        os.chown(temporary, account.pw_uid, account.pw_gid)
+        saved = Path(temporary) / 'state'
+        result = run([*AS_AGENT, '/usr/bin/python3', str(HERE / 'helio_state_backup.py'),
+                      '--state', str(Path(HOME, '.dori/elobot/state')), '--destination', str(saved)])
+        if result.returncode:
+            raise RuntimeError('state snapshot failed: ' + result.stderr.strip()[-300:])
+        with tarfile.open(target, 'w:gz') as tar:
+            for rel in ('helio-agent', '.dori/elobot', '.dori/discord-inbound', '.local/bin/helio'):
+                if not os.path.realpath(Path(HOME, rel)).startswith(HOME + '/') or os.path.islink(Path(HOME, rel)):
+                    continue
+                if os.path.lexists(Path(HOME, rel)):
+                    tar.add(Path(HOME, rel), arcname=rel, filter=keep)
+            tar.add(saved, arcname='.dori/elobot/state')
     for old in sorted(BACKUPS.glob('deploy-*.tar.gz'))[:-3]:
         old.unlink()
     return target
