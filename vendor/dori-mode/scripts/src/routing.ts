@@ -6,7 +6,8 @@ export type LaunchVerdict = { readonly ok: boolean; readonly reasons: readonly s
 
 export const canLaunch = (s: HostSample, t: GuardThresholds): LaunchVerdict => {
   const reasons: string[] = [];
-  if (s.memFreePct < t.memFreeMinPct) reasons.push(`memory free ${s.memFreePct}% < ${t.memFreeMinPct}%`);
+  if (s.memFreePct === null) reasons.push("memory free unknown");
+  else if (s.memFreePct < t.memFreeMinPct) reasons.push(`memory free ${s.memFreePct}% < ${t.memFreeMinPct}%`);
   if (s.diskFreeGb < t.diskFreeMinGb) reasons.push(`disk free ${s.diskFreeGb.toFixed(0)} GB < ${t.diskFreeMinGb} GB`);
   if (t.panesMax > 0 && s.panes >= t.panesMax) reasons.push(`panes ${s.panes} >= ${t.panesMax}`);
   return { ok: reasons.length === 0, reasons };

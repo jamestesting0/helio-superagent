@@ -1,10 +1,11 @@
-import { mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
+import { lockRegistry } from "./registry-lock.ts";
 
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
 
 export type LaneStatus = "working" | "paused" | "done-claimed" | "verified-done" | "not-done" | "closed";
-export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean };
+export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly acknowledgedAt?: string };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
 
@@ -76,7 +77,7 @@ export class Registry {
     if (!LANE_KEY.test(lane.key)) throw new Error(`invalid lane key: ${lane.key}`);
     mkdirSync(this.dir, { recursive: true });
     const lock = `${this.path(lane.key)}.lock`;
-    try { mkdirSync(lock); } catch { throw new Error(`lane ${lane.key} is locked; retry after the other operation finishes`); }
+    const unlock = lockRegistry(lock);
     try {
       const current = await this.read(lane.key);
       if (current && (current.revision ?? 0) !== (lane.revision ?? 0)) throw new Error(`lane ${lane.key} changed concurrently; reread and retry`);
@@ -85,13 +86,21 @@ export class Registry {
       await Bun.write(tmp, JSON.stringify({ ...lane, revision }, null, 1));
       renameSync(tmp, this.path(lane.key));
       Object.assign(lane, { revision });
-    } finally { rmSync(lock, { recursive: true, force: true }); }
+    } finally { unlock(); }
   }
 
-  async list(): Promise<Lane[]> {
+  async list(onError?: (key: string, error: unknown) => void): Promise<Lane[]> {
     mkdirSync(this.dir, { recursive: true });
     const lanes: Lane[] = [];
-    for (const f of readdirSync(this.dir)) if (f.endsWith(".json")) lanes.push((await Bun.file(join(this.dir, f)).json()) as Lane);
+    for (const f of readdirSync(this.dir)) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        lanes.push((await Bun.file(join(this.dir, f)).json()) as Lane);
+      } catch (error) {
+        if (!onError) throw error;
+        onError(f.slice(0, -5), error);
+      }
+    }
     return lanes;
   }
 

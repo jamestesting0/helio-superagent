@@ -65,11 +65,16 @@ Arm these as persistent monitors in your own session:
 |---|---|---|
 | inbound messages | your messenger's watch command | new owner messages |
 | done flow | `dori watch` | `^LANE_` |
-| dead panes | `dori dead-panes --loop 3` | `^(DEAD_PANE\|UNRECOGNISED_PANE)` |
-| host guard | `dori guard --loop 1` | `^HOST_GUARD` |
-| freshness | `dori freshness --loop 5` | `^(NUDGED\|POSTED\|NO-REPORT\|PENDING-REPORT\|STALE-REPORT)` |
+| dead panes | `dori dead-panes --loop 3` | `^(DEAD_PANE\|UNRECOGNISED_PANE\|DEAD_PANES_ERROR)` |
+| host guard | `dori guard --loop 1` | `^(HOST_GUARD\|GUARD_ERROR)` |
+| freshness | `dori freshness --loop 5` | `^(NUDGED\|POSTED\|NO-REPORT\|PENDING-REPORT\|STALE-REPORT\|WORKING-WHILE-PAUSED\|FRESHNESS_ERROR)` |
 | Slack inbound (Slack only) | `dori inbound slack --loop 1` | `^INBOUND` |
 | presence (optional) | `dori presence slack` or `dori presence discord` | `^PRESENCE_READY` |
+
+The `^LANE_` filter includes `LANE_WATCH_ERROR`. Monitor lines are compact pointers:
+read claims with `dori show <key>`, then acknowledge receipt with `dori claim-ack <key>`.
+`LANE_CLAIMS_PENDING count=N` repeats each tick until acknowledged; acknowledgement
+starts the full close window. Errors from one lane never suppress another claim.
 
 ## 6. First look around
 

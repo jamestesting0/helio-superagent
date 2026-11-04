@@ -20,7 +20,7 @@ export const scrubForThread = (line: string, home: string): string =>
     .replace(/`/g, "'")
     .trim();
 
-export type SweepAct = { readonly kind: "nudged" | "posted" | "no-report" | "pending-report" | "stale-report" | "working-while-paused"; readonly lane: string; readonly detail: string };
+export type SweepAct = { readonly kind: "nudged" | "posted" | "no-report" | "pending-report" | "stale-report" | "working-while-paused" | "freshness_error"; readonly lane: string; readonly detail: string };
 
 const lastHeard = (lane: Lane): number => lane.lastReplyAt ?? Date.parse(lane.openedAt);
 
@@ -64,7 +64,12 @@ export const freshnessTick = async (deps: FlowDeps, home: string): Promise<Sweep
         continue;
       }
       const text = `Progress (from the lane's last report): ${scrubForThread(report ?? "", home)}`;
-      await deps.run(fill(hook, { thread: lane.thread, text, key: lane.key }));
+      const reply = await deps.run(fill(hook, { thread: lane.thread, text, key: lane.key }));
+      if (reply.code !== 0) {
+        await deps.registry.write(current);
+        acts.push({ kind: "freshness_error", lane: lane.key, detail: `thread hook exit ${reply.code}: ${reply.err}` });
+        continue;
+      }
       await deps.registry.write({ ...current, lastAutoReplyAt: now, lastPostedReport: report ?? undefined, lastFreshnessNote: undefined });
       acts.push({ kind: "posted", lane: lane.key, detail: text });
     }

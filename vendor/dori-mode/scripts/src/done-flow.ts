@@ -5,6 +5,7 @@ import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
 import { sendVerified, statusLookup } from "./panes.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
+import { monitorLine } from "./monitor.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -23,10 +24,16 @@ export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string): P
   const at = iso(deps.clock);
   await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim: { at, evidence, emitted: false } }));
   if (lane.pane) {
-    const closesAt = new Date(deps.clock.now() + windowMs(deps)).toISOString().slice(11, 16);
-    await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] done claim recorded for ${lane.key}: this lane closes automatically at ${closesAt}Z (${deps.config.closeAfterMin} minutes) unless the lead objects with reasons. Stay idle until then; an objection arrives here as [LEAD] not done.`);
+    await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] done claim recorded for ${lane.key}: the ${deps.config.closeAfterMin}-minute close window starts when the lead acknowledges it. Stay idle; an objection arrives here as [LEAD] not done.`);
   }
-  return `LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${evidence}`;
+  return monitorLine(`LANE_DONE_CLAIMED ${lane.key} read="dori show ${lane.key}" ack="dori claim-ack ${lane.key}" preview=${JSON.stringify(evidence.slice(0, 200))}`);
+};
+
+export const acknowledgeClaim = async (deps: FlowDeps, lane: Lane): Promise<string> => {
+  if (statusOf(lane) !== "done-claimed" || !lane.claim) return `REFUSED ${lane.key}: no pending claim`;
+  const acknowledgedAt = lane.claim.acknowledgedAt ?? iso(deps.clock);
+  await deps.registry.write({ ...lane, claim: { ...lane.claim, acknowledgedAt } });
+  return `LANE_CLAIM_ACK ${lane.key} closesAfter=${new Date(Date.parse(acknowledgedAt) + windowMs(deps)).toISOString()}`;
 };
 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
@@ -126,17 +133,27 @@ const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<str
 
 export const watchTick = async (deps: FlowDeps): Promise<string[]> => {
   const out: string[] = [];
-  for (const listed of await deps.registry.list()) {
+  const pending: Lane[] = [];
+  const errorLine = (key: string, error: unknown) => out.push(monitorLine(`LANE_WATCH_ERROR ${key} ${error instanceof Error ? error.message : String(error)}`));
+  for (const listed of await deps.registry.list(errorLine)) {
     if (statusOf(listed) !== "done-claimed" || !listed.claim) continue;
-    let lane = listed;
     const claim = listed.claim;
-    if (!claim.emitted) {
-      out.push(`LANE_DONE_CLAIMED ${lane.key} ${lane.pane ?? "-"} ${claim.evidence}`);
-      lane = { ...lane, claim: { ...claim, emitted: true } };
-      await deps.registry.write(lane);
+    if (!claim.acknowledgedAt) {
+      pending.push(listed);
+      continue;
     }
-    if (deps.clock.now() - Date.parse(claim.at) < windowMs(deps)) continue;
-    out.push(await settle(deps, lane, claim.evidence));
+    if (deps.clock.now() - Date.parse(claim.acknowledgedAt) < windowMs(deps)) continue;
+    try {
+      const result = await settle(deps, listed, claim.evidence);
+      out.push(monitorLine(`${result.split(" ").slice(0, 2).join(" ")} read="dori show ${listed.key}"`));
+    } catch (error) {
+      // Each lane is a separate delivery boundary; a broken lane must not erase other receipts.
+      errorLine(listed.key, error);
+    }
+  }
+  const oldest = pending.sort((a, b) => (a.claim?.at ?? "").localeCompare(b.claim?.at ?? ""))[0];
+  if (oldest) {
+    out.push(`LANE_CLAIMS_PENDING count=${pending.length} oldest=${oldest.key} read="dori show ${oldest.key}" ack="dori claim-ack ${oldest.key}"`);
   }
   return out;
 };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 
-import { claimDone, closeLane, objectDone, watchTick } from "../src/done-flow.ts";
+import { acknowledgeClaim, claimDone, closeLane, objectDone, watchTick } from "../src/done-flow.ts";
 import { sendVerified, UnsafeTextError } from "../src/panes.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import { depsFor, fakeClock, newWorld, sent, withState, type World, WT } from "./fakes.ts";
@@ -31,9 +31,10 @@ test("an objection inside the window keeps the lane open and the lane hears why"
   expect(sent(world).some((t) => t.startsWith("[LEAD] not done: changelog entry missing"))).toBe(true);
 });
 
-test("five quiet minutes after a claim the lane is closed, its thread marked done and its worktree retained", async () => {
+test("five quiet minutes after acknowledgement the lane is closed, its thread marked done and its worktree retained", async () => {
   await claimDone(at(T0), lane, "merged acme/app#1 abc123");
-  expect(await watchTick(at(T0 + 4 * MIN))).toEqual(["LANE_DONE_CLAIMED demo-lane w:p1 merged acme/app#1 abc123"]);
+  await acknowledgeClaim(at(T0), (await at(T0).registry.read(lane.key)) ?? lane);
+  expect(await watchTick(at(T0 + 4 * MIN))).toEqual([]);
   expect(closedVia()).toHaveLength(0);
   const lines = await watchTick(at(T0 + 5 * MIN + 1));
   expect(lines[0]).toStartWith("LANE_CLOSED demo-lane");
@@ -48,6 +49,7 @@ test("five quiet minutes after a claim the lane is closed, its thread marked don
 test("commits that reached no remote block the close and name the worktree", async () => {
   world.aheadCount = "2";
   await claimDone(at(T0), lane, "merged acme/app#1");
+  await acknowledgeClaim(at(T0), (await at(T0).registry.read(lane.key)) ?? lane);
   await watchTick(at(T0 + 6 * MIN));
   const after = await at(T0).registry.read("demo-lane");
   expect(after?.objection?.reasons).toEqual([`unpushed work in ${WT}`]);
@@ -57,6 +59,7 @@ test("commits that reached no remote block the close and name the worktree", asy
 test("uncommitted tracked changes also block the close", async () => {
   world.dirty = " M src/app.ts";
   await claimDone(at(T0), lane, "merged acme/app#1");
+  await acknowledgeClaim(at(T0), (await at(T0).registry.read(lane.key)) ?? lane);
   await watchTick(at(T0 + 6 * MIN));
   expect((await at(T0).registry.read("demo-lane"))?.objection?.reasons).toEqual([`unpushed work in ${WT}`]);
   expect(closedVia()).toHaveLength(0);
@@ -65,6 +68,7 @@ test("uncommitted tracked changes also block the close", async () => {
 test("a Done signal that does not read back live becomes the objection", async () => {
   world.issueState = "OPEN";
   await claimDone(at(T0), lane, "merged acme/app#1");
+  await acknowledgeClaim(at(T0), (await at(T0).registry.read(lane.key)) ?? lane);
   await watchTick(at(T0 + 6 * MIN));
   const after = await at(T0).registry.read("demo-lane");
   expect(after && statusOf(after)).toBe("not-done");
@@ -72,13 +76,15 @@ test("a Done signal that does not read back live becomes the objection", async (
   expect(closedVia()).toHaveLength(0);
 });
 
-test("a watcher restarted inside the window keeps the original deadline and announces the claim once", async () => {
+test("a watcher restart repeats unseen claims and acknowledgement starts a full close window", async () => {
   await claimDone(at(T0), lane, "merged acme/app#1");
   const first = await watchTick(at(T0 + 2 * MIN));
   const afterRestart = await watchTick(at(T0 + 3 * MIN));
-  const settled = await watchTick(at(T0 + 6 * MIN));
+  await acknowledgeClaim(at(T0 + 6 * MIN), (await at(T0).registry.read(lane.key)) ?? lane);
+  expect(await watchTick(at(T0 + 10 * MIN))).toEqual([]);
+  const settled = await watchTick(at(T0 + 11 * MIN));
   expect(first).toHaveLength(1);
-  expect(afterRestart).toEqual([]);
+  expect(afterRestart).toEqual(first);
   expect(settled[0]).toStartWith("LANE_CLOSED demo-lane");
   expect(closedVia()).toHaveLength(1);
 });

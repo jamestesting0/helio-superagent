@@ -94,6 +94,20 @@ test("Telegram's retry_after in the error body is honored", async () => {
   expect(waited).toEqual([7000]);
 });
 
+test("a Discord post with an uncertain server result is not posted twice", async () => {
+  const { http, seen } = fakeHttp(() => ok({ message: "server error after acceptance" }, 503));
+  await expect(new Discord(http, sleeps().clock, "bot").send("9", "one reply")).rejects.toBeInstanceOf(MessengerError);
+  expect(seen).toHaveLength(1);
+});
+
+test("Discord rate limiting respects a server wait longer than the fallback backoff cap", async () => {
+  const { http, seen } = fakeHttp((_, n) => n === 1 ? ok({ retry_after: 90 }, 429) : ok({ id: "10" }));
+  const { clock, waited } = sleeps();
+  expect(await new Discord(http, clock, "bot").send("9", "one reply")).toBe("10");
+  expect(waited).toEqual([90_000]);
+  expect(seen).toHaveLength(2);
+});
+
 test("a rich Telegram table escapes HTML and lines columns up inside one pre block", () => {
   expect(htmlTable(["name", "n"], [["a<b", "10"], ["c", "2"]])).toBe("<pre>name  n \n----  --\na&lt;b   10\nc     2 </pre>");
 });

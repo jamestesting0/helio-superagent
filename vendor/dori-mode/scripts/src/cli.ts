@@ -3,7 +3,8 @@ import { parseArgs } from "node:util";
 
 import { loadConfig } from "./config.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
-import { claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
+import { acknowledgeClaim, claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
+import { every, monitorLine } from "./monitor.ts";
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
@@ -29,6 +30,8 @@ const USAGE = `dori <command> [options]
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
   sync   [--write]                     registry vs live panes; read-only unless --write
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for $HERDR_PANE_ID
+  show <key>                          full lane evidence, claim, history and receipt (read-only)
+  claim-ack <key>                     acknowledge receipt and start the 5-minute close window
   object-done <key> --reason TEXT [--reason TEXT ...]
   close  <key> [--note TEXT]           close now (Done signals must read back live)
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
@@ -81,14 +84,6 @@ const lane = async (k: string | undefined) => {
   return found;
 };
 
-const every = async (minutes: number, tick: () => Promise<void>): Promise<void> => {
-  for (;;) {
-    await tick().catch((e: unknown) => console.log(`WARN ${e instanceof Error ? e.message : String(e)}`.slice(0, 300)));
-    if (minutes <= 0) return;
-    await Bun.sleep(minutes * 60_000);
-  }
-};
-
 try {
   switch (command) {
     case "launch": {
@@ -113,6 +108,15 @@ try {
     case "claim-done":
       console.log(await claimDone(deps, await lane(key), need("evidence")));
       break;
+    case "show": {
+      const found = await deps.registry.read(key ?? die("show needs a lane key"));
+      if (!found) die(`no registered lane "${key}"`);
+      console.log(JSON.stringify(found, null, 2));
+      break;
+    }
+    case "claim-ack":
+      console.log(await acknowledgeClaim(deps, await lane(key ?? die("claim-ack needs a lane key"))));
+      break;
     case "object-done": {
       const reasons = (flags.values.reason as string[] | undefined)?.map((r) => r.trim()).filter(Boolean) ?? [];
       if (!reasons.length) die("--reason is required");
@@ -134,28 +138,29 @@ try {
     case "watch":
       console.log("LANE_WATCH_READY");
       for (;;) {
-        for (const line of await watchTick(deps).catch((e: unknown) => [`LANE_WATCH_WARN ${String(e).slice(0, 200)}`])) console.log(line);
+        for (const line of await watchTick(deps).catch((e: unknown) => [monitorLine(`LANE_WATCH_ERROR ${String(e)}`)])) console.log(line);
         await Bun.sleep(30_000);
       }
     case "freshness":
       await every(loopMin, async () => {
-        for (const a of await freshnessTick(deps, process.env.HOME ?? "")) console.log(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`);
-      });
+        for (const a of await freshnessTick(deps, process.env.HOME ?? "")) console.log(monitorLine(`${a.kind.toUpperCase()} ${a.lane} ${a.detail}`));
+      }, "FRESHNESS_ERROR");
       break;
     case "dead-panes": {
       const seen = new Set<string>();
       const paneState = newDeadPaneState();
       await every(loopMin, async () => {
-        for (const line of await deadPaneTick(run, config, seen, new Date().toISOString().slice(0, 13), paneState)) console.log(line);
-      });
+        const lanePanes = new Set((await deps.registry.list()).filter((lane) => statusOf(lane) !== "closed" && lane.pane).map((lane) => lane.pane!));
+        for (const line of await deadPaneTick(run, config, seen, new Date().toISOString().slice(0, 13), paneState, lanePanes)) console.log(monitorLine(line));
+      }, "DEAD_PANES_ERROR");
       break;
     }
     case "guard": {
       const state = { alerting: false };
       console.log("HOST_GUARD_READY");
       await every(loopMin, async () => {
-        for (const line of guardTick(await sampleHost(run), config.guard, state)) console.log(line);
-      });
+        for (const line of guardTick(await sampleHost(run), config.guard, state)) console.log(monitorLine(line));
+      }, "GUARD_ERROR");
       break;
     }
     case "heavy": {

@@ -12,7 +12,7 @@ bun test             # behavior tests with fake herdr/git/gh; nothing real is to
 bunx tsc --noEmit    # typecheck
 ```
 
-Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` signals (npm for `published`). The `command`, `file` and `url` signals need nothing extra. The full list of signal kinds is in `sessions.md`. The host guard reads `sysctl`, `memory_pressure` and `df` on macOS; on Linux it reads `/proc/loadavg` and `df`, and memory and swap read as unknown.
+Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` signals (npm for `published`). The `command`, `file` and `url` signals need nothing extra. The full list of signal kinds is in `sessions.md`. The host guard reads `sysctl`, `memory_pressure` and `df` on macOS; on Linux it reads `/proc/loadavg`, `/proc/meminfo` and `df`. Failed or malformed memory readings are unknown and hold new launches.
 
 ## Configuration
 
@@ -69,8 +69,11 @@ Prints `key | thread | pane | session | status` for every open lane and every un
 ### `dori claim-done [<key>] --evidence TEXT` / `dori object-done <key> --reason TEXT ...`
 The two halves of the done flow. Both message the lane's pane and check that Enter registered.
 
+### `dori show <key>` / `dori claim-ack <key>`
+`show` prints the complete stored lane, including evidence, claim, history and closure receipt, without writing. It also works on closed lanes. `claim-ack` records receipt of the current claim and starts its full `closeAfterMin` window; repeating acknowledgement preserves the first deadline. A new claim requires a fresh acknowledgement. Legacy `emitted` flags do not acknowledge receipt.
+
 ### `dori close <key> [--note TEXT]`
-Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, closes the tab, and removes the lane's worktrees with a plain `git worktree remove`, which refuses a dirty worktree.
+Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, closes the tab, and retains the lane's worktrees for manual review. A failed launch can be retired only when its pane has no live agent and no work is unpushed; retirement does not announce completion.
 
 ### `dori pause <key> [--note TEXT]` / `dori resume <key> [--note TEXT]`
 `pause` is for when the owner said wait. It works on a `working` or `not-done` lane. It sends `/goal pause` to the lane's pane, then reads the screen back until the goal command's own line appears on a line of its own: `Goal paused`, or `cannot update goal: no goal exists`, since a lane with no goal has nothing to continue. Only then does it mark the lane `paused` (recorded in its history) and send Escape if a turn is running. The goal is paused first, so stopping the turn cannot hand off to a goal continuation. If the line does not appear, or the send fails, the lane is left as it was and the command prints `PAUSE_UNVERIFIED` and exits 3.
@@ -82,13 +85,13 @@ A paused lane is skipped by `freshness`: no nudge, no post. Only `dori resume` e
 Both print `PAUSED` / `RESUMED` and exit 0 on success. A lane in any other state is refused (`NOT_PAUSED` / `NOT_RESUMED`, exit 2), and a second `pause` is a no-op. `claim-done` and `object-done` on a paused lane move it out of `paused` in the registry while its goal stays paused.
 
 ### `dori watch`
-Runs forever. Every 30 seconds it prints each new claim once (`LANE_DONE_CLAIMED`). Claims older than `closeAfterMin` are settled: unpushed or uncommitted work and failing signals turn into objections (`LANE_NOT_DONE`); otherwise the lane is closed (`LANE_CLOSED`). The deadline lives in the registry, so a restart picks up where it left off.
+Runs forever. Every 30 seconds it prints `LANE_CLAIMS_PENDING count=N oldest=<key>` with read and acknowledgement commands until every claim is acknowledged. Only claims acknowledged at least `closeAfterMin` ago are settled: unpushed or uncommitted work and failing signals become objections (`LANE_NOT_DONE`); otherwise the lane closes (`LANE_CLOSED`). Notifications are single lines of at most 1,000 characters; full evidence stays in `dori show`. Each lane failure prints `LANE_WATCH_ERROR` without hiding other lanes. Corrupt registry files are isolated the same way. The acknowledgement deadline survives restarts.
 
 ### `dori freshness [--loop MIN]`
 For working lanes that have gone quiet: a nudge in the pane after `nudgeAfterMin`, then the lane's last `[REPORT]` line posted to its thread after `postAfterMin`, with home paths and pane ids scrubbed. Each happens once per silence. The line is posted only once it is still the last `[REPORT]` line on the next tick (`PENDING-REPORT` the first time) and differs from the line posted last time (`STALE-REPORT` otherwise). A held-back outcome is printed once per change, not on every tick. A nudge reports its delivery as `delivered` (the agent status moved to working) or `unconfirmed`.
 
 ### `dori dead-panes [--loop MIN]`
-Prints `DEAD_PANE <id>` once per hour for a pane with no running agent status whose last lines match `deadPanePatterns` on two ticks in a row with the same text. A pane herdr reports as idle, working, blocked or done is never dead. A pane that is neither is unrecognised; three unrecognised ticks in a row print `UNRECOGNISED_PANE <id> ...` once (list non-agent panes in `ignorePanes`).
+Prints `DEAD_PANE <id>` once per hour for a pane with no running agent status whose last lines match `deadPanePatterns` on two ticks in a row with the same text. A pane herdr reports as idle, working, blocked or done is never dead. A pane that is neither is unrecognised; three unrecognised ticks in a row print `UNRECOGNISED_PANE <id> ...` once. Only the panes of open lanes in the registry are judged, so shells and other non-lane panes are never reported; `ignorePanes` can still exclude a lane pane.
 
 ### `dori guard [--loop MIN]`
 Prints `HOST_GUARD ALERT <reasons>` when load, free memory, free disk or the pane count crosses its threshold, and `HOST_GUARD CLEAR` when it recovers. It also prints `COMPUTE_READY` / `COMPUTE_BUSY` as load crosses `loadOk`. Only changes are printed.

@@ -64,6 +64,17 @@ test("a reworded stop message is not dead: with no alive status it is unrecognis
   expect(await deadPaneTick(deps.run, deps.config, seen, "2026-01-01T12", st)).toEqual([]);
 });
 
+test("with the open lanes' panes given, shells and other non-lane panes are never judged", async () => {
+  world.panes = [{ pane_id: "w:p1", workspace_id: "w" }, { pane_id: "w:p7", workspace_id: "w" }];
+  world.screen = "the agent process went away\n$ ";
+  const deps = depsFor(world, fakeClock(T0), state.dir);
+  const st = newDeadPaneState();
+  const lanes = new Set(["w:p7"]);
+  const ticks = [];
+  for (let i = 0; i < 3; i++) ticks.push(await deadPaneTick(deps.run, deps.config, new Set(), "2026-01-01T12", st, lanes));
+  expect(ticks).toEqual([[], [], ["UNRECOGNISED_PANE w:p7 dead-panes: no alive status and no dead marker for 3 ticks"]]);
+});
+
 test("a pane whose agent status says it is alive is never reported dead, whatever the screen shows", async () => {
   world.panes = [{ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "working" }];
   world.screen = "grep output: has stopped\n❯ ";

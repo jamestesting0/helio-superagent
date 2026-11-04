@@ -1,5 +1,5 @@
 import type { Clock } from "../run.ts";
-import { guardText, type Http, MessengerError, withBackoff } from "./http.ts";
+import { DEFAULT_RETRY, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
 
 
 /** Suppress Discord previews for GitHub issue and PR links, without double-wrapping existing autolinks. */
@@ -32,7 +32,9 @@ export class Discord {
   ) {}
 
   async call<T = unknown>(method: "GET" | "POST" | "PATCH", path: string, body?: Record<string, unknown>): Promise<T> {
-    const res = await withBackoff(this.http, this.clock, { method, url: `${this.base}${path}`, headers: { Authorization: `Bot ${this.botToken}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }, undefined, retryAfter);
+    // A server error after a write can mean the message exists; only retry read-only requests automatically.
+    const policy = method === "GET" ? DEFAULT_RETRY : { ...DEFAULT_RETRY, retryServerErrors: false };
+    const res = await withBackoff(this.http, this.clock, { method, url: `${this.base}${path}`, timeoutMs: 30_000, headers: { Authorization: `Bot ${this.botToken}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }, policy, retryAfter);
     if (res.status >= 300) throw new MessengerError(`discord ${method} ${path}: ${res.status} ${res.body.slice(0, 160)}`, res.status);
     return (res.body ? JSON.parse(res.body) : {}) as T;
   }

@@ -12,10 +12,10 @@ The key is in your brief's lane footer. If you leave it out, the lane registered
 
 ## What happens next
 
-1. The Dori gets a `LANE_DONE_CLAIMED` event, and you get a `[LEAD]` line saying when the lane closes.
+1. The Dori gets a compact `LANE_CLAIMS_PENDING` count on each tick until it reads `dori show <key>` and acknowledges receipt with `dori claim-ack <key>`. You get a `[LEAD]` line saying the close window waits for acknowledgement.
 2. Stay idle and start no new work.
-3. If the Dori does not object within 5 minutes, the watcher closes the lane. Before closing, it reads back every `Done =` signal live. It refuses to close if any of your worktrees still has uncommitted tracked changes, or commits that are on no remote.
-4. Closing marks your thread done (when a thread hook is configured), closes your tab, and removes your worktrees.
+3. If the Dori does not object within 5 minutes after acknowledgement, the watcher closes the lane. Before closing, it reads back every `Done =` signal live. It refuses to close if any of your worktrees still has uncommitted tracked changes, or commits that are on no remote. Unacknowledged claims never close on a timer.
+4. Closing marks your thread done (when a thread hook is configured), closes your tab, and retains your worktrees for manual review.
 
 ## If the Dori objects, or a check fails
 
@@ -25,4 +25,4 @@ You get `[LEAD] not done: <reasons>; keep working, claim again when fixed` in yo
 - a `Done =` signal does not read back live;
 - there is unpushed work (the reason names the path).
 
-Fix every reason, then claim again. A new claim starts a fresh 5-minute window.
+Fix every reason, then claim again. Each new claim needs a new acknowledgement before its fresh 5-minute window starts.
