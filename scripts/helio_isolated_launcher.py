@@ -137,8 +137,10 @@ try:
              '--ro-bind','/usr','/usr','--symlink','usr/bin','/bin','--symlink','usr/lib','/lib','--symlink','usr/lib64','/lib64',
              '--dir','/etc','--ro-bind','/etc/ssl','/etc/ssl','--ro-bind','/etc/fonts','/etc/fonts','--ro-bind','/etc/machine-id','/etc/machine-id','--ro-bind','/etc/hosts','/etc/hosts','--ro-bind','/etc/nsswitch.conf','/etc/nsswitch.conf','--ro-bind','/etc/passwd','/etc/passwd','--ro-bind','/etc/group','/etc/group','--ro-bind',str(dns),'/etc/resolv.conf',
              '--dir','/home','--bind',HOME,'/home/james','--dir','/mnt','--dir','/run','--dir','/run/user','--dir','/run/user/'+uid,'--chmod','0700','/run/user/'+uid,
-             '--ro-bind','/mnt/wslg/runtime-dir/wayland-0','/run/user/'+uid+'/wayland-0','--dir','/run/helio-beta-service','--ro-bind','/run/helio-beta-service/maintenance.sock','/run/helio-beta-service/maintenance.sock',
-             '--dir','/run/helio-release-service','--ro-bind','/run/helio-release-service/release.sock','/run/helio-release-service/release.sock',
+             '--ro-bind','/mnt/wslg/runtime-dir/wayland-0','/run/user/'+uid+'/wayland-0',
+             # Bind stable directories so broker socket replacements remain visible.
+             '--ro-bind','/run/helio-beta-service','/run/helio-beta-service',
+             '--ro-bind','/run/helio-release-service','/run/helio-release-service',
              '--ro-bind',str(policy/'trusted-users'),'/home/james/.dori/elobot/trusted-users',
              '--ro-bind',str(policy/'release-approvers'),'/home/james/.dori/elobot/release-approvers',
              '--ro-bind',str(policy/'report-channels'),'/home/james/.dori/elobot/report-channels',

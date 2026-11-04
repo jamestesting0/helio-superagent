@@ -10,8 +10,10 @@ Group=helio-release
 SupplementaryGroups=helio-agent
 RuntimeDirectory=helio-release-service
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 Environment=PYTHONNOUSERSITE=1
 ExecStart=/opt/helio-beta-service/python/bin/python3.12 -P /opt/helio-beta-service/scripts/helio_release_service.py --config /etc/helio-release-service/auth.json --ssh-config /etc/helio-release-service/ssh_config --db /var/lib/helio-release-service/actions.sqlite --socket /run/helio-release-service/release.sock --uid 999 --gid 999
+ExecStopPost=/usr/bin/rm -f /run/helio-release-service/release.sock
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
