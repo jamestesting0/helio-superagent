@@ -12,7 +12,7 @@ function fixture(audience="owner",recipient="99") {
  const dir=mkdtempSync(join(tmpdir(),"question-answer-")),path=join(dir,"discord-questions.sqlite");
  const db=new Database(path);chmodSync(path,0o600);
  db.exec(`CREATE TABLE questions(id TEXT PRIMARY KEY,recipient TEXT,audience TEXT,status TEXT,answer_id TEXT,channel_id TEXT,message_id TEXT,answer_author TEXT,answer_role TEXT,answer_scope TEXT,answer_text TEXT,updated INTEGER)`);
- db.query("INSERT INTO questions (id,recipient,audience,status,channel_id,message_id) VALUES (?,?,?,?,?,?)").run("q1",recipient,audience,"awaiting_answer","200","300");
+ db.query("INSERT INTO questions (id,recipient,audience,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?)").run("q1",recipient,audience,"awaiting_answer","200","300",Date.now());
  return {dir,db};
 }
 const answer={message_id:"400",channel_id:"200",author_id:"99",role:"OWNER_REQUEST",scope:"may-request-work",content:"choose one",reply_to:"300"};
@@ -91,7 +91,7 @@ def fake(method,path,body=None):
  if path=="/channels/100":return {"id":"100","type":0,"guild_id":"900"}
  raise AssertionError(path)
 g["request"]=fake;db=m["db_connect"]()
-db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES ('q1','fp','lane-one','thread','77','Question?','awaiting_answer','200','300',0)");db.commit()
+db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES ('q1','fp','lane-one','thread','77','Question?','awaiting_answer','200','300',1793707200000)");db.commit()
 m["reconcile_pending"](db);print(json.dumps(m["event"](db.execute("SELECT * FROM questions").fetchone())));db.close()`;
   const child=Bun.spawn(["python3","-c",code,helper],{env,stdout:"pipe",stderr:"pipe"});
   const [stdout,stderr,exit]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);

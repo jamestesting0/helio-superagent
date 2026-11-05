@@ -87,10 +87,11 @@ INBOUND_FILES = (
     # learning
     "learning/context-replay.ts", "learning/learning-scope.test.ts", "learning/learning-scope.ts",
     # interactive
-    "interactive/cli-flow.test.ts", "interactive/cli.ts", "interactive/handler.ts",
+    "interactive/cli-flow.test.ts", "interactive/cli.ts", "interactive/handler.ts", "interactive/question-store.ts", "interactive/questions.ts", "interactive/transport.ts",
+    "interactive/questions.test.ts", "interactive/recovery.test.ts",
     "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
     # tests
-    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts",
+    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/ignored-threads.test.ts",
     "tests/learning-context.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",
     "tests/turns-flow.test.ts",

@@ -1,11 +1,13 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, lstatSync } from "node:fs";
 
-export const CONFIRM_TTL_MS = 15 * 60_000;
+export const QUESTION_TTL_MS = 72 * 3_600_000;
+export const CONFIRM_TTL_MS = 12 * 3_600_000;
 // Plans and PR prompts are not production actions: they stay clickable while people get to them.
 export const PLAN_TTL_MS = 72 * 3_600_000;
-export const LAPSE_MS = 15 * 60_000;
-export const DRAFT_TTL_MS = 15 * 60_000;
+export const LAPSE_MS = 12 * 3_600_000;
+const PR_LAPSE_MS = 15 * 60_000;
+const USE_WINDOW = `CASE WHEN action='pr' THEN ${PR_LAPSE_MS} ELSE ${LAPSE_MS} END`;
 export const PENDING_STALE_MS = 30_000;
 
 export type PromptKind = "confirm" | "plan";
@@ -26,12 +28,6 @@ export interface Prompt {
 }
 /** What a claim needs to be settled later from Discord's own record of the reply. */
 export interface Claim { readonly app: string; readonly token: string; readonly accept: boolean; readonly expected: string }
-export interface Draft {
-  readonly id: string; readonly question_id: string; readonly user_id: string;
-  readonly option_index: number | null; readonly label: string; readonly created_at: number;
-  readonly app_id: string | null; readonly token: string | null;
-}
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS prompts (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('confirm','plan')), action TEXT NOT NULL,
@@ -41,9 +37,6 @@ CREATE TABLE IF NOT EXISTS prompts (
   expires_at INTEGER NOT NULL, notice_at INTEGER, used_at INTEGER, cleared_at INTEGER, error TEXT,
   pending_app TEXT, pending_token TEXT, pending_accept INTEGER, pending_expected TEXT);
 CREATE INDEX IF NOT EXISTS prompts_status ON prompts(status, expires_at);
-CREATE TABLE IF NOT EXISTS drafts (
-  id TEXT PRIMARY KEY, question_id TEXT NOT NULL, user_id TEXT NOT NULL, option_index INTEGER,
-  label TEXT NOT NULL, created_at INTEGER NOT NULL, app_id TEXT, token TEXT, UNIQUE (question_id, user_id));
 CREATE TABLE IF NOT EXISTS feedback (
   id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, user_id TEXT NOT NULL, text TEXT NOT NULL,
   message_id TEXT, created_at INTEGER NOT NULL);`;
@@ -82,7 +75,6 @@ export class PromptStore {
       this.db.transaction(() => {
         for (const [table, columns] of [
           ["prompts", [["pending_app", "TEXT"], ["pending_token", "TEXT"], ["pending_accept", "INTEGER"], ["pending_expected", "TEXT"]]],
-          ["drafts", [["app_id", "TEXT"], ["token", "TEXT"]]],
         ] as const) {
           const present = new Set(this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((row) => row.name));
           for (const [name, kind] of columns) if (!present.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${kind}`);
@@ -155,9 +147,9 @@ export class PromptStore {
 
   /** The next expiry or lapse; claims to settle are left to the periodic sweep. */
   nextDeadline(): number | undefined {
-    return this.db.query<{ at: number | null }, [number]>(`SELECT MIN(at) AS at FROM (
+    return this.db.query<{ at: number | null }, []>(`SELECT MIN(at) AS at FROM (
       SELECT expires_at AS at FROM prompts WHERE status='open'
-      UNION ALL SELECT decided_at + ? FROM prompts WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL)`).get(LAPSE_MS)?.at ?? undefined;
+      UNION ALL SELECT decided_at + ${USE_WINDOW} FROM prompts WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL)`).get()?.at ?? undefined;
   }
 
   expireDue(now: number): Prompt[] {
@@ -165,9 +157,9 @@ export class PromptStore {
       const due = this.db.query<Prompt, [number]>("SELECT * FROM prompts WHERE status='open' AND expires_at<=?").all(now);
       this.run("UPDATE prompts SET status='expired' WHERE status='open' AND expires_at<=?", now);
       const lapsed = this.db.query<Prompt, [number]>(
-        "SELECT * FROM prompts WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at<=?").all(now - LAPSE_MS);
-      this.run("UPDATE prompts SET status='lapsed' WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at<=?",
-        now - LAPSE_MS);
+        `SELECT * FROM prompts WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at + ${USE_WINDOW}<=?`).all(now);
+      this.run(`UPDATE prompts SET status='lapsed' WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at + ${USE_WINDOW}<=?`,
+        now);
       return [...due, ...lapsed];
     }).immediate();
   }
@@ -184,8 +176,8 @@ export class PromptStore {
   noticed(id: string, now: number): void { this.run("UPDATE prompts SET notice_at=? WHERE id=?", now, id); }
 
   use(id: string, now: number): boolean {
-    return this.run("UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed' AND (kind='plan' OR decided_at>?)",
-      now, id, now - LAPSE_MS) === 1;
+    return this.run(`UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed' AND (kind='plan' OR decided_at + ${USE_WINDOW}>?)`,
+      now, id, now) === 1;
   }
 
   cancel(id: string): boolean {
@@ -202,33 +194,18 @@ export class PromptStore {
       "SELECT * FROM prompts WHERE status IN ('sending','delivery_unknown','send_failed','open','pending','confirmed') ORDER BY created_at").all();
   }
 
-  putDraft(questionId: string, user: string, optionIndex: number | null, label: string, now: number): string {
-    const id = newId();
-    this.db.transaction(() => {
-      this.run("DELETE FROM drafts WHERE question_id=? AND user_id=? AND token IS NULL", questionId, user);
-      this.run("INSERT INTO drafts (id,question_id,user_id,option_index,label,created_at) VALUES (?,?,?,?,?,?)", id, questionId, user, optionIndex, label, now);
-    }).immediate();
-    return id;
-  }
-  draft(id: string): Draft | undefined {
-    return this.db.query<Draft, [string]>("SELECT * FROM drafts WHERE id=?").get(id) ?? undefined;
-  }
-  /** Saved before the submit reply is sent, so a restart can still read Discord's record of it. */
-  claimDraft(id: string, app: string, token: string): void { this.run("UPDATE drafts SET app_id=?,token=? WHERE id=?", app, token, id); }
-  releaseDraft(id: string): void { this.run("UPDATE drafts SET app_id=NULL,token=NULL WHERE id=?", id); }
-  draftFor(questionId: string, user: string): Draft | undefined {
-    return this.db.query<Draft, [string, string]>("SELECT * FROM drafts WHERE question_id=? AND user_id=?").get(questionId, user) ?? undefined;
-  }
-  deleteDraft(id: string): void { this.run("DELETE FROM drafts WHERE id=?", id); }
-  expireDrafts(now: number, keep: ReadonlySet<string>): number {
-    return this.run("DELETE FROM drafts WHERE created_at<=? AND question_id NOT IN (SELECT value FROM json_each(?))",
-      now - DRAFT_TTL_MS, JSON.stringify([...keep]));
+  openPlan(channel: string, message: string, now: number): Prompt | undefined {
+    return this.db.query<Prompt, [string, string, number]>(
+      "SELECT * FROM prompts WHERE kind='plan' AND channel_id=? AND message_id=? AND status='open' AND expires_at>?").get(channel, message, now) ?? undefined;
   }
 
-  addFeedback(promptId: string, user: string, text: string, messageId: string | null, now: number): string {
-    const id = newId();
-    this.run("INSERT INTO feedback VALUES (?,?,?,?,?,?)", id, promptId, user, text, messageId, now);
-    return id;
+  addFeedback(reply: { readonly promptId: string; readonly user: string; readonly text: string; readonly messageId: string; readonly now: number }): string | undefined {
+    return this.db.transaction(() => {
+      if (this.db.query("SELECT id FROM feedback WHERE prompt_id=? AND message_id=?").get(reply.promptId, reply.messageId)) return;
+      const id = newId();
+      this.run("INSERT INTO feedback VALUES (?,?,?,?,?,?)", id, reply.promptId, reply.user, reply.text, reply.messageId, reply.now);
+      return id;
+    }).immediate();
   }
   feedback(promptId: string): { id: string; user_id: string; text: string; message_id: string | null; created_at: number }[] {
     return this.db.query<{ id: string; user_id: string; text: string; message_id: string | null; created_at: number }, [string]>(
@@ -237,6 +214,7 @@ export class PromptStore {
 }
 
 export interface Question {
+  readonly lane: string; readonly updated: number;
   readonly id: string; readonly audience: string; readonly recipient: string; readonly status: string;
   readonly channel_id: string | null; readonly message_id: string | null; readonly options: string | null;
   readonly components: string | null; readonly answer_author: string | null; readonly answer_text: string | null;
@@ -247,73 +225,4 @@ export interface ComponentAnswer {
   readonly id: string; readonly author: string; readonly role: string; readonly scope: string; readonly text: string;
 }
 
-const COLUMNS = ["options", "components", "answer_source", "announced_at", "cleared_at", "pending_by", "pending_at"];
-
-/**
- * Component answers in the Python-owned question database. A database from before the
- * component migration has no option columns, so it never offers clicks.
- */
-export class QuestionStore {
-  private constructor(private readonly db: Database) {}
-
-  static open(path: string, busyMs: number): QuestionStore | undefined {
-    try {
-      const st = lstatSync(path);
-      if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o077) !== 0) throw new Error("unsafe question database");
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-      throw error;
-    }
-    const db = openPrivate(path, busyMs, false);
-    const names = new Set(db.query<{ name: string }, []>("PRAGMA table_info(questions)").all().map((row) => row.name));
-    if (!COLUMNS.every((name) => names.has(name))) { db.close(); return undefined; }
-    return new QuestionStore(db);
-  }
-  close(): void { this.db.close(); }
-
-  get(id: string): Question | undefined {
-    return this.db.query<Question, [string]>("SELECT * FROM questions WHERE id=?").get(id) ?? undefined;
-  }
-
-  begin(id: string, user: string, now: number): Question | undefined {
-    return this.db.transaction(() => {
-      const changed = this.db.query(`UPDATE questions SET status='answering',pending_by=?,pending_at=?,updated=?
-        WHERE id=? AND status='awaiting_answer' AND options IS NOT NULL`).run(user, now, now, id).changes;
-      return changed === 1 ? undefined : this.get(id);
-    }).immediate();
-  }
-
-  finish(questionId: string, user: string, answer: ComponentAnswer, now: number): boolean {
-    return this.db.query(`UPDATE questions SET status='answered',answer_id=?,answer_author=?,answer_role=?,answer_scope=?,
-      answer_text=?,answer_source='component',announced_at=NULL,pending_by=NULL,pending_at=NULL,updated=?
-      WHERE id=? AND status='answering' AND pending_by=?`)
-      .run(answer.id, answer.author, answer.role, answer.scope, answer.text, now, questionId, user).changes === 1;
-  }
-
-  revert(id: string, user: string, now: number): void {
-    this.db.query("UPDATE questions SET status='awaiting_answer',pending_by=NULL,pending_at=NULL,updated=? WHERE id=? AND status='answering' AND pending_by=?")
-      .run(now, id, user);
-  }
-
-  answering(): string[] {
-    return this.db.query<{ id: string }, []>("SELECT id FROM questions WHERE status='answering'").all().map((row) => row.id);
-  }
-  stalePending(now: number): Question[] {
-    return this.db.query<Question, [number]>("SELECT * FROM questions WHERE status='answering' AND pending_at<=?").all(now - PENDING_STALE_MS);
-  }
-
-  toAnnounce(): Question[] {
-    return this.db.query<Question, []>(`SELECT * FROM questions WHERE answer_source='component' AND announced_at IS NULL
-      AND message_id IS NOT NULL AND status IN ('answered','done')`).all();
-  }
-  /** An acknowledged answer keeps its text only until its public post exists. */
-  announced(id: string, now: number): void {
-    this.db.query("UPDATE questions SET announced_at=?,answer_text=CASE WHEN status='done' THEN NULL ELSE answer_text END WHERE id=?").run(now, id);
-  }
-
-  toClear(): Question[] {
-    return this.db.query<Question, []>(`SELECT * FROM questions WHERE components IS NOT NULL AND cleared_at IS NULL
-      AND message_id IS NOT NULL AND status IN ('answered','done','cancelled')`).all();
-  }
-  cleared(id: string, now: number): void { this.db.query("UPDATE questions SET cleared_at=? WHERE id=?").run(now, id); }
-}
+export { QuestionStore } from "./question-store.ts";

@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 BASE='https://discord.com/api/v10'
+QUESTION_TTL_MS=72*3600*1000
 ID=re.compile(r'^[0-9]{1,30}$'); LANE=re.compile(r'^[a-z0-9][a-z0-9._-]{1,60}$')
 STATE=Path(os.environ.get('DORI_STATE_DIR',''))
 TOKEN=os.environ.get('DORI_DISCORD_TOKEN','')
@@ -40,14 +41,10 @@ def db_connect():
  db.commit();return db
 
 def components_for(id,options,allow_other):
- # Option values are indexes: the watcher maps them back to the stored labels.
- rows=[]
- if options:
-  rows.append({'type':1,'components':[{'type':3,'custom_id':f'h1:q:{id}:pick','placeholder':'Choose an answer','min_values':1,'max_values':1,
-   'options':[{'label':label,'value':str(i)} for i,label in enumerate(options)]}]})
- if allow_other:
-  rows.append({'type':1,'components':[{'type':2,'style':2,'label':'Other…' if options else 'Answer…','custom_id':f'h1:q:{id}:other'}]})
- return rows
+ # The button index maps to the stored label; typed answers arrive as replies.
+ return [{'type':1,'components':[
+  {'type':2,'style':2,'label':label,'custom_id':f'h1:q:{id}:o{i}'} for i,label in enumerate(options)
+ ]}] if options else []
 
 def clean_options(options,allow_other):
  options=[o.strip() for o in options or []]
@@ -85,7 +82,7 @@ def poll(db: sqlite3.Connection, lane: str | None, seen: dict[str,tuple[str,int,
   if lane and row['lane']!=lane:continue
   if row['status']=='answering':continue
   stuck=row['status']=='sending' and int(time.time()*1000)-row['updated']>30000
-  kind='ANSWERED' if row['status']=='answered' else 'DELIVERY_ERROR' if row['status'] in ('send_failed','delivery_unknown') or stuck else 'PENDING'
+  kind='EXPIRED' if row['status']=='expired' else 'ANSWERED' if row['status']=='answered' else 'DELIVERY_ERROR' if row['status'] in ('send_failed','delivery_unknown') or stuck else 'PENDING'
   version=(row['status'],row['updated'],kind)
   if seen.get(row['id'])==version:
    if row['status']=='answered':pending+=1
@@ -148,6 +145,7 @@ def reconcile_pending(db):
    continue
   row=db.execute("SELECT * FROM questions WHERE status='awaiting_answer' AND channel_id=? AND message_id=?",(message.get('channel_id'),message.get('reply_to'))).fetchone()
   if not row:continue
+  if row['updated']+QUESTION_TTL_MS<=int(time.time()*1000):continue
   author=message.get('author_id')
   if not may_answer(row,author):continue
   if not ID.fullmatch(str(message.get('message_id',''))) or not isinstance(message.get('content'),str):continue
@@ -220,7 +218,8 @@ def reconcile_pending(db):
    continue
   role='OWNER_REQUEST' if author==OWNER else 'TRUSTED_REQUEST' if author in trusted_ids else 'STAFF_QUESTION'
   scope='may-request-work' if author==OWNER else 'trusted-pr-merge-restart' if author in trusted_ids else 'may-report-issue' if origin['guild_id'] is not None and ancestors & report_channels else 'answer-only'
-  db.execute("UPDATE questions SET status='answered',answer_id=?,answer_author=?,answer_role=?,answer_scope=?,answer_text=?,updated=? WHERE id=? AND status='awaiting_answer'",(message['message_id'],author,role,scope,message['content'],int(time.time()*1000),row['id']))
+  now=int(time.time()*1000)
+  db.execute("UPDATE questions SET status='answered',answer_id=?,answer_author=?,answer_role=?,answer_scope=?,answer_text=?,answer_source='reply',updated=? WHERE id=? AND status='awaiting_answer' AND updated>?",(message['message_id'],author,role,scope,message['content'],now,row['id'],now-QUESTION_TTL_MS))
   db.commit()
 
 def format_links(text):
@@ -247,11 +246,10 @@ def send_question(db,id):
  if not changed:return event(db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone())
  pings=[x for x in dict.fromkeys([OWNER,*sorted(trusted_now())]) if ID.fullmatch(x)] if row['audience']=='staff' else []
  mention=' '.join(f'<@{x}>' for x in pings)
- # Rows from before components were always added keep the reply-only hint.
- hint=('Choose below or reply to this message.' if json.loads(row['options'] or '[]') else 'Answer below or reply to this message.') if row['components'] else 'Please reply directly to this message so I can route your answer to the right task.'
+ hint='Choose below or reply to this message.' if json.loads(row['options'] or '[]') else 'Please reply directly to this message so I can route your answer to the right task.'
  content=(mention+'\n' if mention else '')+f"Question [{id}]\n{format_links(row['question'])}\n\n{hint}"
  body={'content':content,'allowed_mentions':{'parse':[],**({'users':pings[:100]} if pings else {})},'nonce':id,'enforce_nonce':True}
- if row['components']:body['components']=json.loads(row['components'])
+ if row['components'] and json.loads(row['components']):body['components']=json.loads(row['components'])
  try:
   result=request('POST',f'/channels/{channel}/messages',body)
   mid=str(result.get('id',''))

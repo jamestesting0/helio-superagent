@@ -1,6 +1,10 @@
 import io
 import json,os,runpy,sqlite3,tempfile,unittest
 import urllib.error
+import selectors
+import subprocess
+import sys
+import time
 from datetime import datetime
 from contextlib import closing,redirect_stderr,redirect_stdout
 from pathlib import Path
@@ -32,8 +36,38 @@ class QuestionTests(unittest.TestCase):
    if accepted:
     delivery.execute("INSERT INTO acceptance VALUES ('inbound','400')")
    delivery.commit()
+ def test_lane_watcher_reports_persisted_expiry_once_and_replays_it_after_restart(self):
+  for qid,lane,status in (('expired-one','lane-one','expired'),('answered-one','lane-one','answered'),('expired-other','lane-two','expired')):
+   self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,updated) VALUES (?,?,?,?,?,?,?,?)",
+    (qid,qid,lane,'owner','99','Question?',status,int(self.now*1000)))
+  self.db.commit()
+  def line(process: subprocess.Popen[bytes]) -> str:
+   self.assertIsNotNone(process.stdout)
+   output=bytearray();deadline=time.monotonic()+8
+   with selectors.DefaultSelector() as selector:
+    selector.register(process.stdout,selectors.EVENT_READ)
+    while True:
+     self.assertTrue(selector.select(max(0,deadline-time.monotonic())),'question watcher did not emit the expected event')
+     char=os.read(process.stdout.fileno(),1)
+     self.assertTrue(char,'question watcher exited before its event')
+     if char==b'\n':return output.decode()
+     output.extend(char)
+  env={**os.environ,'DORI_STATE_DIR':str(self.state),'HOME':str(self.state),'PYTHONDONTWRITEBYTECODE':'1'}
+  for _ in range(2):
+   with subprocess.Popen([sys.executable,str(SCRIPT),'watch','--lane','lane-one'],env=env,
+     stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE) as process:
+    try:
+     self.assertTrue(line(process).startswith('QUESTION_READY '))
+     following=[]
+     while not following or not following[-1].startswith('QUESTION_PENDING '):
+      following.append(line(process))
+     expired=[json.loads(event.partition(' ')[2]) for event in following if event.startswith('QUESTION_EXPIRED ')]
+     self.assertEqual([(row['id'],row['lane'],row['status'],row['read']) for row in expired],
+      [('expired-one','lane-one','expired','helio question show expired-one')])
+    finally:
+     process.terminate();process.communicate(timeout=3)
  def test_reconciliation_reauthorizes_pending_answers_and_preserves_eligible_replies(self):
-  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','thread','77','Question?','awaiting_answer','200','300',0))
+  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','thread','77','Question?','awaiting_answer','200','300',int(self.now*1000)))
   self.db.commit()
   cases=[
    ('owner dm',{}, {},'99',True,'OWNER_REQUEST','may-request-work'),
@@ -79,8 +113,9 @@ class QuestionTests(unittest.TestCase):
     self.assertEqual(row['status'],'answered' if allowed else 'awaiting_answer')
     if allowed:
      self.assertEqual((row['answer_id'],row['answer_author'],row['answer_role'],row['answer_scope'],row['answer_text']),('400',author,role,scope,'Use option one'))
+     self.assertEqual(row['answer_source'],'reply')
  def test_reconciliation_fails_closed_on_legacy_stale_or_unverifiable_records(self):
-  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','owner','99','Question?','awaiting_answer','200','300',0))
+  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','owner','99','Question?','awaiting_answer','200','300',int(self.now*1000)))
   self.db.commit()
   cases=[
    ('legacy',{'discord_origin':None},{}),
@@ -116,11 +151,26 @@ class QuestionTests(unittest.TestCase):
     with patch.dict('os.environ',{},clear=True),patch.dict(self.g,{'request':request}):
      self.m['reconcile_pending'](self.db)
     self.assertEqual(self.db.execute("SELECT status FROM questions WHERE id='q1'").fetchone()['status'],'awaiting_answer')
+ def test_reconciliation_rejects_answers_after_question_expiry_even_when_the_reply_is_fresh(self):
+  for age,expected in ((71,'answered'),(72,'awaiting_answer'),(73,'awaiting_answer')):
+   with self.subTest(age=age):
+    self.db.execute('DELETE FROM questions')
+    self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+     ('q1','fp','lane-one','owner','99','Question?','awaiting_answer','200','300',int((self.now-age*3600)*1000)))
+    self.db.commit()
+    self.stage_answer(self.pending_answer())
+    def request(method,path,body=None):
+     if path=='/users/@me':return {'id':'88'}
+     if path=='/channels/200':return {'id':'200','type':1}
+     raise AssertionError(path)
+    with patch.dict('os.environ',{},clear=True),patch.dict(self.g,{'request':request}):
+     self.m['reconcile_pending'](self.db)
+    self.assertEqual(self.db.execute("SELECT status FROM questions WHERE id='q1'").fetchone()['status'],expected)
  def test_reconciliation_preserves_accepted_old_answers_and_exact_expiry_boundary(self):
   for sent_at,accepted in [('2026-10-31T12:00:00Z',False),('2026-10-01T12:00:00Z',True)]:
    with self.subTest(sent_at=sent_at,accepted=accepted):
     self.db.execute('DELETE FROM questions')
-    self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','owner','99','Question?','awaiting_answer','200','300',0))
+    self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','owner','99','Question?','awaiting_answer','200','300',int(self.now*1000)))
     self.db.commit()
     self.stage_answer(self.pending_answer(sent_at=sent_at),accepted)
     def request(method,path,body=None):
@@ -133,7 +183,7 @@ class QuestionTests(unittest.TestCase):
      self.m['reconcile_pending'](self.db)
     self.assertEqual(self.db.execute("SELECT status FROM questions WHERE id='q1'").fetchone()['status'],'answered')
  def test_reconciliation_refuses_revoked_or_unavailable_current_channel_policy(self):
-  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','thread','77','Question?','awaiting_answer','200','300',0))
+  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','thread','77','Question?','awaiting_answer','200','300',int(self.now*1000)))
   self.db.commit()
   cases=[
    ('allowlist revoked',{'999'},{},None),
@@ -164,7 +214,7 @@ class QuestionTests(unittest.TestCase):
      self.m['reconcile_pending'](self.db)
     self.assertEqual(self.db.execute("SELECT status FROM questions WHERE id='q1'").fetchone()['status'],'awaiting_answer')
  def test_reconciliation_warns_safely_and_retains_pending_records_when_discord_is_unavailable(self):
-  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','thread','77','private question','awaiting_answer','200','300',0))
+  self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?,?,?,?)",('q1','fp','lane-one','thread','77','private question','awaiting_answer','200','300',int(self.now*1000)))
   self.db.commit()
   secret='private failure detail with credentials'
   cases=[
@@ -342,21 +392,22 @@ class QuestionChoiceTests(unittest.TestCase):
    self.bodies.append(body);return {'id':'500'}
   patcher=patch.dict(self.g,{'STATE':self.state,'OWNER':'99','TOKEN':'fake','ALLOWED':{'100'},'request':request});patcher.start();self.addCleanup(patcher.stop)
   self.db=self.m['db_connect']();self.addCleanup(self.db.close)
- def test_options_render_a_menu_of_indexes_and_an_other_button(self):
-  q=self.m['create_question'](self.db,'lead','owner','','How long?',['8 hours','12 hours'],True)
+ def test_yes_no_options_render_exactly_two_buttons_from_cli(self):
+  with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','How long?','--option','Yes','--option','No']),redirect_stdout(io.StringIO()):
+   self.assertEqual(self.m['main'](),0)
+  q=self.db.execute('SELECT * FROM questions').fetchone()
   body=self.bodies[0]
   self.assertTrue(body['content'].endswith('How long?\n\nChoose below or reply to this message.'))
-  menu,other=body['components']
-  self.assertEqual(menu['components'][0]['custom_id'],f"h1:q:{q['id']}:pick")
-  self.assertEqual([(o['label'],o['value']) for o in menu['components'][0]['options']],[('8 hours','0'),('12 hours','1')])
-  self.assertEqual(other['components'][0]['custom_id'],f"h1:q:{q['id']}:other")
+  self.assertEqual(body['components'],[{'type':1,'components':[
+   {'type':2,'style':2,'label':'Yes','custom_id':f"h1:q:{q['id']}:o0"},
+   {'type':2,'style':2,'label':'No','custom_id':f"h1:q:{q['id']}:o1"}]}])
   row=self.db.execute('SELECT options,components FROM questions WHERE id=?',(q['id'],)).fetchone()
-  self.assertEqual(json.loads(row[0]),['8 hours','12 hours']);self.assertEqual(json.loads(row[1]),body['components'])
- def test_open_questions_get_an_answer_button(self):
+  self.assertEqual(json.loads(row[0]),['Yes','No']);self.assertEqual(json.loads(row[1]),body['components'])
+ def test_open_questions_have_no_components_and_request_a_reply(self):
   q=self.m['create_question'](self.db,'lead','owner','','Anything else?')
   body=self.bodies[0]
-  self.assertTrue(body['content'].endswith('Anything else?\n\nAnswer below or reply to this message.'))
-  self.assertEqual(body['components'],[{'type':1,'components':[{'type':2,'style':2,'label':'Answer…','custom_id':f"h1:q:{q['id']}:other"}]}])
+  self.assertTrue(body['content'].endswith('Please reply directly to this message so I can route your answer to the right task.'))
+  self.assertEqual(body.get('components',[]),[])
   self.assertEqual(self.db.execute('SELECT options FROM questions WHERE id=?',(q['id'],)).fetchone()[0],'[]')
  def test_menu_only_questions_need_options(self):
   self.m['create_question'](self.db,'lead','owner','','Which?',['a','b'],False)

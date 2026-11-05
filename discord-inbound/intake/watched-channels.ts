@@ -1,5 +1,5 @@
 import { discoverArchivedThreads } from "./archived-threads.ts";
-import type { FilterConfig } from "./filter.ts";
+import { insideAllowed, type FilterConfig } from "./filter.ts";
 import { expandChannels, MESSAGE_CHANNEL_TYPES, THREAD_PARENT_TYPES, type ApiChannel, type Rest } from "../discord/rest.ts";
 
 interface Watched {
@@ -12,7 +12,22 @@ export async function watchedChannels(
 ): Promise<Watched[]> {
   const parentsByGuild = new Map<string, Map<string, number>>();
   const skip = (id: string, err: unknown) => warn(`channel ${id} skipped for catch-up: ${String(err)}`);
-  const authorizedParents = await expandChannels(rest, cfg.allowed, new Set([...THREAD_PARENT_TYPES, 10, 11, 12]), skip);
+  const ignored = cfg.ignoredChannels ?? new Set<string>();
+  const expanded = await expandChannels(rest, [...cfg.allowed].filter((id) => !ignored.has(id)),
+    new Set([...THREAD_PARENT_TYPES, 10, 11, 12]), skip);
+  const parents = new Map(expanded.map((channel) => [channel.id, channel.parent_id ?? undefined]));
+  const parentOf = async (id: string) => parents.has(id) ? parents.get(id) :
+    (await rest<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined;
+  const authorizedParents: ApiChannel[] = [];
+  for (const channel of expanded) {
+    // Any ignored ancestor (parent channel or its category) excludes the channel before its history is read.
+    try {
+      if (!ignored.size || !await insideAllowed(channel.id, ignored, parentOf)) authorizedParents.push(channel);
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      skip(channel.id, error);
+    }
+  }
   for (const channel of authorizedParents) {
     let parents = parentsByGuild.get(channel.guild_id);
     if (!parents) {
@@ -51,5 +66,5 @@ export async function watchedChannels(
       warn(`DM catch-up skipped for ${userId}: ${error.message}`);
     }
   }
-  return [...new Map(watched.map((channel) => [channel.id, channel])).values()];
+  return [...new Map(watched.map((channel) => [channel.id, channel])).values()].filter((channel) => !ignored.has(channel.id));
 }

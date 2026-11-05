@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -122,6 +122,33 @@ test("use consumes a confirmation once; cancel only stops an undecided prompt", 
   expect(main(["use", id])).rejects.toThrow("is used");
 });
 
+test.each(["merge", "restart"])("a clicked %s approval is usable once at eleven hours and lapses at twelve", async (action) => {
+  const decided = Date.now(), early = "1".repeat(20), late = "2".repeat(20);
+  const s = store();
+  try {
+    for (const id of [early, late]) {
+      s.create({ id, kind: "confirm", action, target: action === "merge" ? "o/r#6" : "elobot", revision: SHA,
+        content: "approval", channel_id: "100", now: decided });
+      s.sent(id, "500", decided);
+      s.begin(id, "99", decided, { app: "88", token: "tok", accept: true, expected: "shown" });
+      expect(s.finish(id, "99", "confirmed", decided, "700", true)).toBe(true);
+    }
+  } finally { s.close(); }
+  const clock = spyOn(Date, "now").mockReturnValue(decided + 11 * 3_600_000);
+  try {
+    expect(await main(["use", early])).toBe(0);
+    await expect(main(["use", early])).rejects.toThrow("is used");
+    const remaining = store();
+    try {
+      expect(remaining.nextDeadline()).toBe(decided + 12 * 3_600_000);
+      expect(remaining.expireDue(Date.now())).toEqual([]);
+      expect(remaining.use(late, decided + 12 * 3_600_000)).toBe(false);
+      remaining.expireDue(decided + 12 * 3_600_000);
+      expect(remaining.get(late)?.status).toBe("lapsed");
+    } finally { remaining.close(); }
+  } finally { clock.mockRestore(); }
+});
+
 test("a click reaches the running intake watcher and is answered outside the message queue", async () => {
   const s = store();
   const id = "0".repeat(19) + "1";
@@ -143,4 +170,31 @@ test("a click reaches the running intake watcher and is answered outside the mes
   expect(JSON.parse(confirm!.slice("INBOUND_CONFIRM ".length))).toMatchObject({ id, outcome: "confirmed", by: "99", result_message_id: "701" });
   const after = store();
   try { expect(after.get(id)?.status).toBe("confirmed"); } finally { after.close(); }
+});
+
+test("an authorized reply reaches plan feedback through the running intake watcher", async () => {
+  const s = store(), id = "0".repeat(19) + "2", now = Date.parse("2026-11-02T12:00:00Z");
+  try {
+    s.create({ id, kind: "plan", action: "plan", target: "o/r#6", revision: "2",
+      content: "📋 Plan for #6 (r2): first", channel_id: "100", now });
+    s.sent(id, "89", now);
+  } finally { s.close(); }
+  const child = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "../fixtures/discord.ts"), join(import.meta.dir, "../inbound.ts")], {
+    env: { ...process.env, DORI_TEST_REPLIES: "1", DORI_DISCORD_ALLOWED: "100", DORI_DISCORD_TRUSTED_CHANNELS: "100",
+      DORI_DISCORD_NORMAL_CHANNELS: "", DORI_DISCORD_REPORT_CHANNELS: "", DORI_DISCORD_BUG_REPORT_SOURCE: undefined },
+    stdout: "pipe", stderr: "pipe", stdin: "ignore",
+  });
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+  const feedbackLines = stdout.split("\n").filter((line) => line.startsWith("INBOUND_PLAN_FEEDBACK "));
+  expect(feedbackLines).toHaveLength(1);
+  const after = store();
+  try {
+    const feedback = after.feedback(id);
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]).toMatchObject({ message_id: "90", user_id: "99", text: "try again now" });
+    expect(JSON.parse(feedbackLines[0]!.slice("INBOUND_PLAN_FEEDBACK ".length))).toMatchObject({
+      id, target: "o/r#6", revision: "2", feedback: feedback[0]?.id, by: "99",
+    });
+  } finally { after.close(); }
 });

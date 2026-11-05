@@ -37,7 +37,7 @@ import { reactOnArrival, sweepWorking } from "./conversations/working.ts";
 import { inboundSummary, monitorLine } from "./delivery/monitor-summary.ts";
 import { pendingReminder } from "./delivery/pending-reminder.ts";
 import { PromptStore, QuestionStore } from "./interactive/store.ts";
-import { closeExpired, discordCall, expireNow, handleInteraction, sweep, type Deps } from "./interactive/handler.ts";
+import { closeExpired, discordCall, expireNow, handleInteraction, handlePlanReply, sweep, type Deps } from "./interactive/handler.ts";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -110,13 +110,13 @@ const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`, LOCK_WAIT_M
 // Typed answers wait at most 250 ms per attempt: a longer synchronous wait would stall button clicks too.
 const busyDatabase = (error: unknown) => error instanceof Error && "code" in error && String(error.code).startsWith("SQLITE_BUSY");
 function answerFor(answer: Parameters<typeof recordAnswer>[2]): string | undefined {
-  try { return recordAnswer(stateDir, cfg.ownerId, answer, 250); }
+  try { handlePlanReply(answer, clickDeps); return recordAnswer(stateDir, cfg.ownerId, answer, 250); }
   catch (error) {
     if (!busyDatabase(error)) { warn(`question answer could not be recorded: ${String(error)}`); return undefined; }
     void (async () => {
       for (let attempt = 0; attempt < 40; attempt++) {
         await Bun.sleep(250);
-        try { recordAnswer(stateDir, cfg.ownerId, answer, 250); return; }
+        try { handlePlanReply(answer, clickDeps); recordAnswer(stateDir, cfg.ownerId, answer, 250); return; }
         catch (retry) { if (!busyDatabase(retry)) { warn(`question answer could not be recorded: ${String(retry)}`); return; } }
       }
       warn("question database stayed locked; run helio question reconcile");
@@ -518,9 +518,13 @@ listener.on("channel_delete", () => channels.clear());
 listener.on("message_create", (event) => {
   // Ignored channels are not read, cached or processed at all.
   if (cfg.ignoredChannels?.has(event.channel_id)) return;
-  seen(event as unknown as ReplyMessage);
-  seen((event as { referenced_message?: ReplyMessage | null }).referenced_message);
-  enqueue(`message ${event.id} in ${event.channel_id}`, () => deliver(event, false));
+  void (async () => {
+    if (event.guild_id !== undefined && cfg.ignoredChannels?.size &&
+        await insideAllowed(event.channel_id, cfg.ignoredChannels, parentOf)) return;
+    seen(event as unknown as ReplyMessage);
+    seen((event as { referenced_message?: ReplyMessage | null }).referenced_message);
+    enqueue(`message ${event.id} in ${event.channel_id}`, () => deliver(event, false));
+  })().catch(fail);
 });
 listener.on("typing_start", (event) => {
   if (event.user_id === cfg.botId) return;

@@ -98,8 +98,8 @@ test("recordAnswer flushes buffered live messages immediately with durable quest
       id TEXT PRIMARY KEY,recipient TEXT,audience TEXT,status TEXT,answer_id TEXT,channel_id TEXT,
       message_id TEXT,answer_author TEXT,answer_role TEXT,answer_scope TEXT,answer_text TEXT,updated INTEGER
     )`);
-    db.query("INSERT INTO questions (id,recipient,audience,status,channel_id,message_id) VALUES (?,?,?,?,?,?)")
-      .run("q1", "99", "owner", "awaiting_answer", "100", "999");
+    db.query("INSERT INTO questions (id,recipient,audience,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?)")
+      .run("q1", "99", "owner", "awaiting_answer", "100", "999", Date.parse("2026-11-02T12:00:00Z"));
     const stdout = await invoke(directory, "live");
     expect(records(stdout).map((turn) => turn.turn.message_ids)).toEqual([["1002", "1003"]]);
     expect(JSON.parse(stdout.split("\n").find((line) => line.startsWith("INBOUND "))?.slice(8) ?? "{}").question_id).toBe("q1");

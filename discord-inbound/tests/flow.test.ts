@@ -470,7 +470,7 @@ test("authorized Discord reply resolves only its matching stored question", asyn
   const path=join(dir,"discord-questions.sqlite");const db=new Database(path);
   const fs=await import("node:fs");fs.chmodSync(path,0o600);
   db.exec(`CREATE TABLE questions(id TEXT PRIMARY KEY,recipient TEXT,audience TEXT,status TEXT,answer_id TEXT,channel_id TEXT,message_id TEXT,answer_author TEXT,answer_role TEXT,answer_scope TEXT,answer_text TEXT,updated INTEGER)`);
-  db.query("INSERT INTO questions (id,recipient,audience,status,channel_id,message_id) VALUES (?,?,?,?,?,?)").run("question1","99","thread","awaiting_answer","100","89");db.close();
+  db.query("INSERT INTO questions (id,recipient,audience,status,channel_id,message_id,updated) VALUES (?,?,?,?,?,?,?)").run("question1","99","thread","awaiting_answer","100","89",Date.parse("2026-11-02T12:00:00Z"));db.close();
   const out=await invoke(dir,"inbound.ts",[],{replies:true});expect({code:out.exitCode,err:out.stderr}).toEqual({code:0,err:""});
   const payload=out.stdout.split("\n").filter(x=>x.startsWith("INBOUND ")).map(x=>JSON.parse(x.slice(8))).find(x=>x.message_id==="90");
   expect(payload.question_id).toBe("question1");
