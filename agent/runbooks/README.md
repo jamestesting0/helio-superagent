@@ -70,6 +70,8 @@ This checklist uses original pre-D6 source line numbers and opening words. Each 
 
 Rendered with helio_payload.documents/values using home /home/james and project /home/james/PythonProjects/elo-bot:
 
+Historical workflow-extraction measurements (not the current prompt-budget assertion):
+
 | Profile | Setup before | Policy before | Total before | Setup after | Policy after | Total after |
 |---|---:|---:|---:|---:|---:|---:|
 | owner | 26,545 | 29,414 | 55,959 | 16,487 | 14,766 | 31,253 |

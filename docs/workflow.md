@@ -30,7 +30,9 @@ Normal WSL shell (the host `helio`):
 Inside the isolated workspace (`helio-wsl`): `helio start|resume`, `helio update [--apply]`,
 `helio doctor`, `helio browser ready|close`, `helio beta ...`, `helio question ...`,
 `helio release inspect`, `helio release-check ...`, `helio triage ...`,
-`helio conversation open|close|list`, `helio followups add|check|done|list`, `helio status`.
+`helio conversation open|close|list`, `helio followups add|check|done|list`, `helio status`,
+`helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`.
+These last three run inside the isolated workspace (or owner installation), not through the host launcher.
 
 Running without isolation: `herdr --session elobot`, then `~/.dori/elobot/start` (or `start resume`).
 
