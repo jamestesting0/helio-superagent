@@ -24,7 +24,7 @@ case "${1:-}" in
   blacklist) shift; source "$base/env"; exec bun "$HOME/.dori/discord-inbound/blacklist.ts" "$@" ;;
   housekeeping) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio_housekeeping.py" "$@" ;;
   health) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio_health.py" "$@" ;;
-  doctor) exec bsk doctor ;;
+  doctor) shift; exec python3 "$HOME/helio-agent/scripts/helio_doctor.py" "$@" ;;
   confirm) shift; source "$base/env"
     export DORI_DISCORD_TRUSTED_IDS="$(<"$base/trusted-users")" HELIO_RELEASE_CHECK="$HOME/helio-agent/scripts/release-check.py"
     exec bun "$HOME/.dori/discord-inbound/interactive/cli.ts" "$@" ;;

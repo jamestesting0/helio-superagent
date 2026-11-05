@@ -45,7 +45,9 @@ Everyday use: **[docs/workflow.md](docs/workflow.md)**. Edit, then `helio deploy
 it updates your install and the isolated one, even while Helio runs, and says
 what the change needs (nothing, monitors reload themselves, `helio restart` for
 the lead only, or a full `helio start`). `helio version` shows what is installed
-and running.
+and running. `helio doctor` explains startup and work-state warnings directly
+from the isolated installation, even when its runtime is stopped.
+`helio doctor --json` gives coding agents the same structured snapshot.
 
 ## How Helio handles requests
 
@@ -56,7 +58,7 @@ and running.
 - **Authority:** only you and trusted users can approve PRs, merges, restarts and closing issues. Merge and restart approvals are natural language but pinned to the exact revision that existed when they were given (`release-check`, root release broker).
 - **Working style:** inside clear boundaries (beta, test channels, its own branches) Helio acts without asking; production, credentials and other people's accounts always need approval.
 
-Inside the isolated workspace: `helio triage`, `helio conversation open|close|list`, `helio followups add|check|done|list`, `helio release inspect`, `helio release-check`, `helio beta ...`, `helio browser ready|close`, `helio question ...`, `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`, `helio doctor`. These inner commands do not run through the normal host launcher.
+Inside the isolated workspace: `helio triage`, `helio conversation open|close|list`, `helio followups add|check|done|list`, `helio release inspect`, `helio release-check`, `helio beta ...`, `helio browser ready|close`, `helio question ...`, `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`. `helio doctor [--json]` works both here and in the normal host shell. Browser-only diagnostics remain available as `bsk doctor --json` inside Helio.
 
 ## Configuration: one file
 

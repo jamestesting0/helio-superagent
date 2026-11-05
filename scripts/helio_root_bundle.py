@@ -16,7 +16,7 @@ BUNDLE = (
     "helio-beta.py", "helio_beta_backup.py", "helio_beta_broker.py", "helio_beta_service.py",
     "helio_beta_vault.py", "helio_isolated_launcher.py", "helio_release_service.py",
     "helio_approval.py", "helio_isolated_admin.py", "helio_deploy_plan.py",
-    "helio_owner_policy.py", "helio_state_backup.py",
+    "helio_owner_policy.py", "helio_state_backup.py", "helio_doctor.py", "helio_health.py",
 )
 TARGET = Path("/opt/helio-beta-service/scripts")
 UNITS = ("helio-release.service", "helio-beta-maintenance.service")

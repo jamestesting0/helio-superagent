@@ -70,6 +70,7 @@ else
 fi
 startup+=$'\nBefore the greeting, read `helio decide list --active` (follow every next_offset), `helio followups oracle`, and `helio release status`; include one concise Oracle evidence line without claiming current connectivity.'
 startup+=$'\nRecovery is mandatory: run `helio recovery scan`, read every report page and read ~/.dori/elobot/docs/startup-recovery-workflow.md before old deliveries. Reconcile current GitHub/task outcomes before reviewing a recovered message; no old approval prompts or re-opened conversations merely because a delivery is pending. Report ingestion, recovery and dependency readiness separately in the greeting; this overrides the old fixed greeting example.'
+startup+=$'\nBefore the greeting, run `helio doctor --json`; separate receiving new requests from unfinished work and unprobed dependencies.'
 startup+=$'\n'"$recovery_status"
 doc_drift="$(grep '^KNOWLEDGE_DOC_DRIFT' <<<"$knowledge_status" || true)"
 if [[ -n "$doc_drift" ]]; then

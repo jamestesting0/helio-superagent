@@ -24,6 +24,7 @@ Normal WSL shell (the host `helio`):
 | `helio deploy [--restart]` | `helio update`, then the isolated install; says what the change needs (nothing, monitors restart themselves, `helio restart`, or a full start). `--restart` also restarts the lead when needed |
 | `helio restart` | replace only the lead session; sandbox, lanes and beta keep running |
 | `helio version` | repo commit vs installed and running versions, and any pending restart |
+| `helio doctor [--json]` | read-only startup snapshot: live process evidence, queues, failed lanes with causes, recovery, health and timestamped Oracle observations |
 | `helio permissions` | where to edit trusted users and report channels |
 | `helio-backup list \| verify ID \| export ID` | protected beta preimages |
 
@@ -33,6 +34,19 @@ Inside the isolated workspace (`helio-wsl`): `helio start|resume`, `helio update
 `helio conversation open|close|list`, `helio followups add|check|done|list`, `helio status`,
 `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`.
 These last three run inside the isolated workspace (or owner installation), not through the host launcher.
+
+`helio doctor --json` is the first check when a greeting reports incomplete
+readiness. It works from either shell and does not start or repair anything.
+An old failed lane is a work-state warning, separate from receiving new requests.
+The report supplies inspection commands; it never acknowledges a question,
+retires a lane or grants an approval. Missing or unreadable data is unknown,
+not an empty queue. Monitor entries describe live processes, not subscription
+pause state or a guarantee of current Discord connectivity. Intake readiness
+is read from its atomic receipt and matched to its namespace PID and process
+start ticks; old receipts and copied chat notifications cannot establish readiness. Browser and beta
+are explicitly unprobed; run their inspection commands inside Helio when needed.
+The host route needs the current owner-installed root bundle
+(`scripts/helio_root_bundle.py`); routine deployment does not replace it.
 
 Running without isolation: `herdr --session elobot`, then `~/.dori/elobot/start` (or `start resume`).
 

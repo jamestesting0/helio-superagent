@@ -109,7 +109,7 @@ def ready_browser(name='helio'):
      print(f'{who} BrowserSkill is connected and ready.'); return 0
   except (OSError,subprocess.SubprocessError,ValueError,RuntimeError): pass
   time.sleep(.5)
- print(f'{name} Chrome opened but BrowserSkill did not become ready; run helio doctor for details.',file=sys.stderr)
+ print(f'{name} Chrome opened but BrowserSkill did not become ready; run bsk doctor --json for browser details.',file=sys.stderr)
  if not already_open:
   try: close_browser(name)
   except RuntimeError: print('Could not verify active browser sessions; leaving Chrome open.',file=sys.stderr)

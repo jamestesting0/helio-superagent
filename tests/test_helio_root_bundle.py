@@ -60,3 +60,8 @@ class RootBundleTests(unittest.TestCase):
                     self.assertEqual(main(), 0)
                 self.assertEqual(json.loads(output.getvalue())["changed"], [])
                 self.assertEqual(commands, [])
+                (scripts / "helio_doctor.py").write_text("updated read-only doctor")
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(), 0)
+                self.assertEqual((target / "helio_doctor.py").read_text(), "updated read-only doctor")
+                self.assertEqual(commands, [])

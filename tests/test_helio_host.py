@@ -71,6 +71,17 @@ ADMIN: Final = [
 
 
 class HelioHostTests(unittest.TestCase):
+    def test_doctor_forwards_only_read_only_json_option_without_launching(self):
+        for args in (("doctor",), ("doctor", "--json")):
+            with self.subTest(args=args):
+                self.reset_logs()
+                result = self.run_host(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.exec_args(), [*ADMIN, *args])
+                self.assertFalse(self.systemctl_log.exists())
+        result = self.run_host("doctor", "--fix")
+        self.assertEqual(result.returncode, 2)
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory(dir=ROOT)
         self.addCleanup(self.tmp.cleanup)
@@ -263,7 +274,7 @@ class HelioHostTests(unittest.TestCase):
 
     def test_unknown_commands_and_extra_launch_arguments_are_rejected(self) -> None:
         for args in (
-            ("doctor",), ("beta",), ("browser",), ("release",), ("bogus",),
+            ("doctor", "--fix"), ("beta",), ("browser",), ("release",), ("bogus",),
             ("start", "extra"), ("status", "extra"), ("permissions", "extra"),
             ("deploy", "--force"), ("restart", "now"), ("version", "extra"),
         ):

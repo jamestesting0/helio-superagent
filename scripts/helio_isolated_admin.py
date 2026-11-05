@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Root admin for the isolated runtime: deploy, restart the lead, status.
+"""Root admin for the isolated runtime: deploy, restart the lead, status and doctor.
 
-    helio_isolated_admin.py deploy [--restart] | restart | status
+    helio_isolated_admin.py deploy [--restart] | restart | status | doctor [--json]
 
 Unlike the launcher it never builds the networked sandbox or touches the firewall, so it is safe
 while Helio runs. Deploy copies the owner's kit checkout into the isolated home, refreshes the
@@ -196,6 +196,13 @@ def status() -> int:
 
 def main() -> int:
     args = sys.argv[1:]
+    if args in (['doctor'], ['doctor', '--json']):
+        result = run([*AS_AGENT, '/usr/bin/python3', '-I', str(HERE / 'helio_doctor.py'),
+                      '--home', HOME, '--runtime-home', '/home/james', *args[1:]], timeout=30)
+        print(result.stdout, end='')
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end='')
+        return result.returncode
     lock = open('/run/helio-isolated-admin.lock', 'w')
     fcntl.flock(lock, fcntl.LOCK_EX)  # one deploy or restart at a time; a second one waits
     try:

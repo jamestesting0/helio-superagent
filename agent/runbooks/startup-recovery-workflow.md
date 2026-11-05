@@ -2,6 +2,16 @@
 
 Startup first marks existing inbound deliveries as recovery work, then arms all eight monitors. Ingestion can receive new messages while recovery is reviewed. Never treat a restored delivery as a new conversation or fresh authorization.
 
+After arming, run `helio doctor --json`. Coding agents can run the same command
+from the owner shell without asking the owner to forward the greeting. Inspect
+each reported lane error and answered question using its returned command.
+Separate readiness for new requests from unfinished work: a historical failed
+lane or an unused, unprobed browser does not by itself mean intake is broken.
+Doctor is observational: it does not reconcile, acknowledge or delete state.
+Its process-bound intake receipt and Oracle observations have timestamps; neither establishes
+current gateway connectivity. Monitor process presence does not establish that
+a subscription is unpaused. Verify those separately when they matter.
+
 Run `helio recovery scan`. Read the report and every page using `helio recovery show REPORT --offset N`. It contains original message IDs/timestamps, current dispositions, earlier send receipts, lane pointers and a timestamped GitHub snapshot. `github_limited` means the recent list is incomplete: query the specific target. Unavailable dependencies remain unavailable; report them instead of guessing.
 
 For each recovered message:

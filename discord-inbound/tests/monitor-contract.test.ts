@@ -22,7 +22,7 @@ function message(id: string, changes: Record<string, unknown> = {}) {
   };
 }
 
-async function invoke(dir: string, args: readonly string[], settings: Record<string, string> = {}) {
+async function invoke(dir: string, args: readonly string[], settings: Record<string, string> = {}, expectedCode = 0) {
   const child = Bun.spawn([
     process.execPath, "--preload", join(import.meta.dir, "../fixtures/discord.ts"),
     join(import.meta.dir, "..", args.length ? "ack.ts" : "inbound.ts"), ...args,
@@ -37,9 +37,24 @@ async function invoke(dir: string, args: readonly string[], settings: Record<str
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
   ]);
-  expect(code).toBe(0);
+  expect(code).toBe(expectedCode);
   return { stdout, stderr };
 }
+
+test("intake writes its own readiness receipt and a failed next startup resets the old ready state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "intake-readiness-"));
+  try {
+    const first = await invoke(dir, []);
+    expect(first.stdout).toContain("INBOUND_READY ");
+    const ready = await Bun.file(join(dir, "intake-readiness.json")).json();
+    expect(ready).toMatchObject({ phase: "ready", pid: expect.any(Number), start_ticks: expect.stringMatching(/^\d+$/), at_ms: expect.any(Number) });
+    const failed = await invoke(dir, [], { DORI_TEST_UNKNOWN_BOT: "1" }, 1);
+    expect(failed.stdout).not.toContain("INBOUND_READY ");
+    const starting = await Bun.file(join(dir, "intake-readiness.json")).json();
+    expect(starting.phase).toBe("starting");
+    expect(starting.pid).not.toBe(ready.pid);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
 test("a forty-thousand-character turn emits bounded pointers containing every durable ID", async () => {
   const dir = await mkdtemp(join(tmpdir(), "summary-contract-"));

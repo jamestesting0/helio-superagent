@@ -16,6 +16,12 @@ if [[ "${1:-}" == update ]]; then
   exec python3 "$updater" --home "$HOME" "${update_args[@]}"
 fi
 admin=(/mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- /usr/bin/python3 /opt/helio-beta-service/scripts/helio_isolated_admin.py)
+if [[ "${1:-}" == doctor ]]; then
+  case "$#:${2:-}" in
+    1:|2:--json) exec "${admin[@]}" "$@" </dev/null ;;
+    *) printf '%s\n' 'Usage: helio doctor [--json]' >&2; exit 2 ;;
+  esac
+fi
 # Deploy: update this home, then the isolated runtime; safe while Helio runs and never restarts it unasked.
 if [[ "${1:-}" == deploy ]]; then
   case "$#:${2:-}" in
@@ -43,7 +49,7 @@ case "${1:-}" in
     printf '%s\n' "Edit HELIO_TRUSTED_USERS, HELIO_REPORT_CHANNELS or HELIO_RELEASE_APPROVERS in $HOME/.config/helio/helio.env" "(comma-separated Discord IDs), then run: helio update. Changes load on the next isolated launch."
     exit 0 ;;
   *)
-    printf '%s\n' 'From this shell: helio [start|resume|restart|deploy [--restart]|update|status|version|permissions]. Run doctor, beta, browser, release and other Helio commands inside the isolated Herdr workspace.' >&2
+    printf '%s\n' 'From this shell: helio [start|resume|restart|deploy [--restart]|update|status|version|doctor [--json]|permissions]. Run beta, browser, release and other Helio commands inside the isolated Herdr workspace.' >&2
     exit 2 ;;
 esac
 if systemctl is-active --quiet helio-isolated.scope; then

@@ -15,6 +15,7 @@
 //   DORI_STATE_DIR         where the last message seen per channel is kept
 
 import { DiscordBotClient, DiscordBotListener, DiscordIntent } from "agent-messenger/discordbot";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fetchBacklog, PAGE_SIZE, skippedThrough, type Caps, type FetchPage, type RestMessage } from "./intake/catchup.ts";
 import { countsTowardCatchUp, classify, insideAllowed, insideCategory, type FilterConfig, type Inbound, type IncomingMessage } from "./intake/filter.ts";
 import { LastSeen } from "./intake/lastseen.ts";
@@ -110,6 +111,16 @@ const fetchReply = async (channel: string, id: string, signal: AbortSignal): Pro
 };
 const stateDir = requireEnv("DORI_STATE_DIR");
 const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`, LOCK_WAIT_MS);
+// A native monitor notification can coalesce events under an older timestamp.
+// Record readiness at its source, bound to this process even across PID reuse/namespaces.
+const startTicks = readFileSync("/proc/self/stat", "utf8").split(") ").at(-1)!.split(" ")[19]!;
+const recordReadiness = (phase: "starting" | "ready") => {
+  const path = `${stateDir}/intake-readiness.json`;
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify({ pid: process.pid, start_ticks: startTicks, phase, at_ms: Date.now() }), { mode: 0o600 });
+  renameSync(temporary, path);
+};
+recordReadiness("starting");
 function blockedAuthor(id: string | undefined): boolean {
   return id !== undefined && id !== cfg.ownerId && !cfg.trustedIds?.has(id) && delivery.moderation.isBlocked(id);
 }
@@ -646,5 +657,6 @@ if (!cfg.botId || !/^\d+$/.test(cfg.botId)) {
 }
 connected.resolve();
 enqueue("ready", async () => {
+  recordReadiness("ready");
   console.log(monitorLine(`INBOUND_READY allowed=${[...cfg.allowed].join(",")} backlog=${backlogCount}`));
 });
