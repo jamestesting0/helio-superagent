@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import time
 from typing import TypedDict
 
 START = "<!-- helio-status:start -->"
@@ -104,8 +105,13 @@ class Issues:
                     id TEXT PRIMARY KEY, repo TEXT NOT NULL, issue INTEGER NOT NULL,
                     before_body TEXT NOT NULL, after_body TEXT NOT NULL, change TEXT NOT NULL,
                     written INTEGER NOT NULL DEFAULT 0, commented INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0)""")
-                if "before_meta" not in {row[1] for row in db.execute("PRAGMA table_info(operations)")}:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(operations)")}
+                if "before_meta" not in columns:
                     db.execute("ALTER TABLE operations ADD COLUMN before_meta TEXT")
+                if "completed_at" not in columns:
+                    # Retention ages finished operations from here; ones finished before this column start their clock now.
+                    db.execute("ALTER TABLE operations ADD COLUMN completed_at INTEGER")
+                    db.execute("UPDATE operations SET completed_at=? WHERE completed IN (1,2)", (int(time.time()),))
                 yield db
 
     def update(self, issue: int, change: dict) -> str:
@@ -121,10 +127,12 @@ class Issues:
             # so repeating one never posts its note twice.
             intent = any(change.get(key) for key in ("body", "note", "close", "reopen")) or change.get("labels") is not None
             operation = digest(json.dumps([self.repo, issue, change] + ([] if intent else [digest(body)]), sort_keys=True))
-            old = db.execute("SELECT after_body,completed FROM operations WHERE id=?", (operation,)).fetchone()
+            old = db.execute("SELECT after_body,completed,change FROM operations WHERE id=?", (operation,)).fetchone()
             if old:
                 if old[1] == 2:
                     raise Refused("This operation was cancelled locally; review the current issue before a new update.")
+                if old[2] == "":
+                    return operation  # finished long enough ago that retention erased its body; it stays done
                 if body != old[0] and not only_status_refreshed(body, old[0]):
                     raise Refused("Issue changed after the previous update; read and adopt its current body.")
                 return operation
@@ -169,7 +177,7 @@ class Issues:
                 raise Refused("Unknown operation.")
             if row[0] == 1:
                 raise Refused("Operation already completed; nothing to cancel. Review the issue and make a new update if needed.")
-            db.execute("UPDATE operations SET completed=2 WHERE id=?", (operation,))
+            db.execute("UPDATE operations SET completed=2,completed_at=? WHERE id=?", (int(time.time()), operation))
             db.commit()
 
     def _finish(self, db: sqlite3.Connection, issue: int, operation: str, change: dict) -> str:
@@ -208,7 +216,7 @@ class Issues:
                 text = f"**Issue updated:** {change['note']}\n<!-- helio-issue-log -->\n{marker}"
                 self.command(["gh", "api", f"repos/{self.repo}/issues/{issue}/comments", "--method", "POST", "--input", "-"], json.dumps({"body": text}))
             db.execute("UPDATE operations SET commented=1 WHERE id=?", (operation,));db.commit()
-        db.execute("UPDATE operations SET completed=1 WHERE id=?", (operation,));db.commit()
+        db.execute("UPDATE operations SET completed=1,completed_at=? WHERE id=?", (int(time.time()), operation));db.commit()
         return operation
 
     def log_milestones(self, issue: int, events: list[tuple[str, str, float]], now: float | None = None) -> list[str]:

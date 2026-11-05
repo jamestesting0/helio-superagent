@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -38,9 +39,13 @@ RULES: tuple[Rule, ...] = (
     *(Rule("discord-delivery.sqlite", table, "receipt", "Deduplication receipt kept 180 days, longer than every replay window.",
            (f"DELETE FROM {table} WHERE {SNOWFLAKE_MS} < :now_ms - {RECEIPT_DAYS * DAY_MS} AND {_settled_delivery(table)}",))
       for table in ("handling", "acceptance", "expiry")),
-    Rule("discord-delivery.sqlite", "inbound_recovery", "derived", "Reviewed recovery evidence is kept 30 days.",
-         (f"DELETE FROM inbound_recovery WHERE reviewed_at IS NOT NULL AND reviewed_at < :raw_iso AND NOT EXISTS "
-          "(SELECT 1 FROM delivery d WHERE d.stream='inbound' AND d.id=inbound_recovery.id AND d.payload IS NOT NULL)",)),
+    Rule("discord-delivery.sqlite", "inbound_recovery", "derived",
+         "Reviewed recovery evidence loses its reason and evidence text at 30 days; the outcome is kept 180 days.",
+         tuple(f"{statement} AND reviewed_at IS NOT NULL AND NOT EXISTS "
+               "(SELECT 1 FROM delivery d WHERE d.stream='inbound' AND d.id=inbound_recovery.id AND d.payload IS NOT NULL)"
+               for statement in ("UPDATE inbound_recovery SET reason=NULL,evidence=NULL WHERE reviewed_at < :raw_iso "
+                                 "AND (reason IS NOT NULL OR evidence IS NOT NULL)",
+                                 "DELETE FROM inbound_recovery WHERE reviewed_at < :derived_iso"))),
     Rule("discord-delivery.sqlite", "recovery_reports", "derived", "Recovery scan reports are kept 30 days.",
          ("DELETE FROM recovery_reports WHERE created_at < :raw_iso",)),
     Rule("discord-delivery.sqlite", "inbound_gaps", "derived", "Acknowledged intake gaps are kept 180 days; open ones stay.",
@@ -57,7 +62,7 @@ RULES: tuple[Rule, ...] = (
     *(Rule("discord-delivery.sqlite", table, "raw_chat", "Legacy quarantined payloads are erased after 30 days.",
            ("DELETE FROM {t} WHERE quarantined_at < datetime(:now_s, 'unixepoch', '-30 days')".format(t=table),))
       for table in ("context_quarantine", "inbound_quarantine")),
-    Rule("discord-conversations.sqlite", "conversations", "owned", "Conversation upkeep archives resolved rows at 7 days and deletes them 30 days later."),
+    Rule("discord-conversations.sqlite", "conversations", "owned", "Conversation upkeep archives resolved rows at 7 days and deletes them 30 days after resolving."),
     Rule("discord-conversations.sqlite", "transcript", "owned", "Deleted when its conversation resolves; open conversations are unresolved work."),
     Rule("discord-conversations.sqlite", "working", "owned", "Claims are pruned 72 hours after they close."),
     Rule("discord-conversations.sqlite", "conversation_notices", "owned", "Notice IDs are pruned after 37 days."),
@@ -81,8 +86,10 @@ RULES: tuple[Rule, ...] = (
     Rule("issue-sync.sqlite", "tracked", "derived", "Issues not checked for 180 days are dropped.",
          (f"DELETE FROM tracked WHERE checked_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
     Rule("issue-updates.sqlite", "operations", "derived",
-         "A finished update keeps its published body for replay checks; the private preimage is erased.",
-         ("UPDATE operations SET before_body='' WHERE completed IN (1,2) AND before_body != ''",)),
+         "A finished update loses its private preimage at once, its published body and change at 30 days, and its record at 180.",
+         ("UPDATE operations SET before_body='' WHERE completed IN (1,2) AND before_body != ''",
+          f"UPDATE operations SET after_body='',change='' WHERE completed IN (1,2) AND change != '' AND completed_at < :now_s - {RAW_DAYS * DAY_S}",
+          f"DELETE FROM operations WHERE completed IN (1,2) AND completed_at < :now_s - {DERIVED_DAYS * DAY_S}")),
     Rule("issue-updates.sqlite", "milestones", "receipt", "Milestone keys only; they prevent duplicate progress comments."),
     Rule("issue-updates.sqlite", "meta", "singleton", "The milestone baseline."),
     Rule("decisions.sqlite", "decisions", "derived", "Ended guidance is kept 180 days; active guidance stays.",
@@ -91,8 +98,8 @@ RULES: tuple[Rule, ...] = (
          ("DELETE FROM decision_events WHERE decision_id NOT IN (SELECT id FROM decisions)",)),
     Rule("decisions.sqlite", "decision_digest", "derived", "Acknowledged weekly digests are kept 180 days.",
          (f"DELETE FROM decision_digest WHERE handled=1 AND created_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
-    Rule("reply-sends.sqlite", "reply_sends", "owned", "Sent receipts are pruned after 7 days; unfinished sends are kept 180 days.",
-         (f"DELETE FROM reply_sends WHERE state='sending' AND started_at < :now_ms - {RECEIPT_DAYS * DAY_MS}",)),
+    Rule("reply-sends.sqlite", "reply_sends", "receipt", "Target and text-hash receipts are kept 180 days.",
+         (f"DELETE FROM reply_sends WHERE started_at < :now_ms - {RECEIPT_DAYS * DAY_MS}",)),
     Rule("work-authorizations.sqlite", "authorizations", "receipt", "Work authorizations are kept 180 days.",
          ("DELETE FROM authorizations WHERE recorded_at < :receipt_iso",)),
 )
@@ -100,11 +107,11 @@ RULES: tuple[Rule, ...] = (
 
 def params(now: float) -> dict[str, object]:
     iso = lambda days: datetime.datetime.fromtimestamp(now - days * DAY_S, datetime.timezone.utc).isoformat()
-    return {"now_s": int(now), "now_ms": int(now * 1000), "raw_iso": iso(RAW_DAYS), "receipt_iso": iso(RECEIPT_DAYS)}
+    return {"now_s": int(now), "now_ms": int(now * 1000), "raw_iso": iso(RAW_DAYS), "derived_iso": iso(DERIVED_DAYS), "receipt_iso": iso(RECEIPT_DAYS)}
 
 
 def tables(path: Path) -> set[str]:
-    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
         return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
 
 

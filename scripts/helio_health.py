@@ -54,18 +54,23 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
     worktrees = [path for path in (state / "worktrees").glob("*") if path.is_dir()]
     last_file = state / "housekeeping-last.json"
     last = json.loads(last_file.read_text()) if last_file.exists() else None
+    kept = ((last or {}).get("worktrees") or {}).get("kept") or []
+    kept = [{"key": row, "reason": "not recorded; run housekeeping"} if isinstance(row, str) else row for row in kept]
     return {
         "at": int(now),
         "oldest_pending_s": int(now - oldest_ms / 1000) if oldest_ms else None,
         "gaps": (_query(delivery, "SELECT count(*) FROM inbound_gaps WHERE acknowledged_at IS NULL") or [(0,)])[0][0],
         "lanes": lanes,
         "queued": len(json.loads(queue.read_text())) if queue.exists() else 0,
-        "worktrees": {"count": len(worktrees), "bytes": sum(_size(path) for path in worktrees)},
+        "worktrees": {"count": len(worktrees), "bytes": sum(_size(path) for path in worktrees),
+                      "kept": kept},
         "blacklist": {"users": (_query(delivery, "SELECT count(*) FROM blocked_users") or [(0,)])[0][0],
                       "awaiting_review": (_query(delivery, "SELECT count(*) FROM blocked_users WHERE source='auto' AND review_question IS NULL") or [(0,)])[0][0]},
-        "storage": {name: _size(path) for name, path in {
-            "databases": state, "sessions": home / ".omo/agent/sessions", "session_archive": home / ".omo/agent/sessions-archive",
-            "backups": home / ".dori/elobot/backups", "attachments": state / "attachments"}.items() if path.exists()},
+        # One figure per data class; worktrees are counted above, so no bucket overlaps another.
+        "storage": {"databases": sum(_size(path) for path in state.glob("*.sqlite*")),
+                    **{name: _size(path) for name, path in {
+                        "sessions": home / ".omo/agent/sessions", "session_archive": home / ".omo/agent/sessions-archive",
+                        "backups": home / ".dori/elobot/backups", "attachments": state / "attachments"}.items() if path.exists()}},
         "wal": {path.name: path.stat().st_size for path in sorted(state.glob("*.sqlite-wal"))},
         "housekeeping": {key: last.get(key) for key in ("at", "mode", "backup", "backup_error")} if last else None,
     }
@@ -82,7 +87,8 @@ def problems(health: dict, now: float) -> list[str]:
             found.append(f"{health['lanes'][status]} lane(s) {status}")
     trees = health["worktrees"]
     if trees["count"] > WORKTREES_WARN or trees["bytes"] > WORKTREES_WARN_BYTES:
-        found.append(f"{trees['count']} worktrees retaining {trees['bytes'] / 1024 ** 3:.1f} GiB")
+        blocking = ", ".join(f"{row['key']} ({row['reason']})" for row in trees["kept"][:5]) + (f", +{len(trees['kept']) - 5} more" if len(trees["kept"]) > 5 else "")
+        found.append(f"{trees['count']} worktrees retaining {trees['bytes'] / 1024 ** 3:.1f} GiB" + (f"; blocking cleanup: {blocking}" if blocking else ""))
     found += [f"{name} is {size / 1024 ** 2:.0f} MiB" for name, size in health["wal"].items() if size > WAL_WARN_BYTES]
     if health["blacklist"]["awaiting_review"]:
         found.append(f"{health['blacklist']['awaiting_review']} automatic blacklist entr(ies) awaiting owner review")

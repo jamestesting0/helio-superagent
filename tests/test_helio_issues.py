@@ -105,6 +105,17 @@ class IssueTests(unittest.TestCase):
         self.assertEqual(len(self.comments), 1)
         self.assertIn("PR #6 merged", self.body)
 
+    def test_repeating_an_update_whose_body_retention_erased_stays_done(self):
+        import sqlite3
+        note = {"body": "Keep the wording", "adopt": M["digest"](self.body), "note": "Owner keeps the wording"}
+        first = self.gh.update(4, note)
+        self.gh.update(4, {"projection": "PR #6 merged"})
+        with sqlite3.connect(Path(self.temp.name) / "issue-updates.sqlite") as db:
+            db.execute("UPDATE operations SET after_body='',change='' WHERE id=?", (first,))
+        patches = self.patches
+        self.assertEqual(self.gh.update(4, note), first)
+        self.assertEqual((len(self.comments), self.patches), (1, patches))
+
     def test_a_repeated_finished_sync_still_finishes_a_later_interrupted_note(self):
         sync = {"projection": "PR #6 open"}
         self.gh.update(4, sync)

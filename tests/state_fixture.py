@@ -18,9 +18,9 @@ import { sendOnce } from "./conversations/reply-once.ts";
 const state = process.env.DORI_STATE_DIR;
 new Delivery(`${state}/discord-delivery.sqlite`).close();
 new Conversations(`${state}/discord-conversations.sqlite`).dispose();
-new PromptStore(`${state}/discord-prompts.sqlite`, 300);
+new PromptStore(`${state}/discord-prompts.sqlite`, 300).close();
 await sendOnce({ path: `${state}/reply-sends.sqlite`, target: "1", text: "x", now: () => Date.now(),
-  send: async () => ({ id: "2" }), recent: async () => [] }).catch(() => undefined);
+  sleep: async () => {}, send: async () => "2", findSent: async () => undefined });
 """
 
 
@@ -57,7 +57,7 @@ def build_state(state: Path) -> None:
 def tables(state: Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     for path in sorted(state.glob("*.sqlite")):
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db:
             names = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
         found[path.name] = sorted(names)
     return found

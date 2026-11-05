@@ -80,7 +80,7 @@ class RetentionRules(Fixture):
                 db.execute("INSERT OR REPLACE INTO delivery VALUES (?,?,?)", (stream, ident if payload else snowflake(old - 1), payload))
             db.execute("INSERT INTO acceptance(stream,id) VALUES ('inbound',?)", (snowflake(old),))
             db.execute("INSERT INTO handling(stream,id,disposition,reason) VALUES ('inbound',?,'done',NULL)", (snowflake(old - 1),))
-            db.execute("INSERT INTO strikes VALUES ('9','u','c',?)", (int((NOW - 2 * DAY) * 1000),))
+            db.execute("INSERT INTO strikes (message_id,user_id,channel_id,at) VALUES ('9','u','c',?)", (int((NOW - 2 * DAY) * 1000),))
             db.execute("CREATE TABLE context_quarantine (id TEXT PRIMARY KEY, payload TEXT NOT NULL, quarantined_at TEXT NOT NULL)")
             db.execute("INSERT INTO context_quarantine VALUES ('1','private','2026-01-01 00:00:00')")
         with self.db("discord-questions.sqlite") as db, db:
@@ -123,6 +123,49 @@ class RetentionRules(Fixture):
         self.assertEqual(questions, {"q-open"})
         self.assertEqual(prompts, {"p-unused"})
 
+
+    def test_derived_history_loses_its_body_at_30_days_and_its_metadata_at_180(self):
+        iso = lambda days: time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(NOW - days * DAY))
+        with self.db("issue-updates.sqlite") as db, db:
+            for ident, completed, age in [("op-month", 1, 40), ("op-old", 2, 200), ("op-open", 0, None)]:
+                db.execute("INSERT INTO operations(id,repo,issue,before_body,after_body,change,completed,completed_at) VALUES (?,?,?,?,?,?,?,?)",
+                           (ident, "o/r", 1, "", "published body", '{"note":"x"}', completed, None if age is None else int(NOW - age * DAY)))
+        with self.db("discord-delivery.sqlite") as db, db:
+            for ident, age in [("rec-month", 40), ("rec-old", 200)]:
+                db.execute("INSERT INTO inbound_recovery VALUES (?,?,?,?,'settled','quoted text','evidence text')", (ident, "h", iso(age), iso(age)))
+        with self.db("reply-sends.sqlite") as db, db:
+            for target, age in [("t-month", 40), ("t-old", 200)]:
+                db.execute("INSERT INTO reply_sends VALUES (?,?,'sent','r',?)", (target, "hash", int((NOW - age * DAY) * 1000)))
+        self.housekeeping(approve=True)
+        with self.db("issue-updates.sqlite") as db:
+            ops = {row[0]: row[1:] for row in db.execute("SELECT id,after_body,change FROM operations WHERE id LIKE 'op-%'")}
+        with self.db("discord-delivery.sqlite") as db:
+            recovery = {row[0]: row[1:] for row in db.execute("SELECT id,outcome,reason,evidence FROM inbound_recovery")}
+        with self.db("reply-sends.sqlite") as db:
+            sends = {row[0] for row in db.execute("SELECT target FROM reply_sends WHERE target LIKE 't-%'")}
+        self.assertEqual(ops, {"op-month": ("", ""), "op-open": ("published body", '{"note":"x"}')})
+        self.assertEqual(recovery, {"rec-month": ("settled", None, None)})
+        self.assertEqual(sends, {"t-month"})
+
+
+    def test_a_rule_whose_column_is_not_migrated_yet_is_reported_and_the_rest_still_apply(self):
+        self.seed()
+        with self.db("issue-updates.sqlite") as db, db:
+            db.execute("ALTER TABLE operations DROP COLUMN completed_at")
+        result = self.housekeeping(approve=True)
+        self.assertEqual(list(result["skipped"]), ["issue-updates.sqlite:operations"])
+        self.assertIn("rules_skipped=1", HK["summary"](result))
+        self.assertTrue(HK["notable"](result))
+        self.assertEqual(self.counts()[4], {"q-open"})
+
+    def test_worktree_keep_reasons_are_kept_in_the_report(self):
+        rows = [{"key": "a", "path": "/w/a", "action": "kept", "reason": "lane is working"},
+                {"key": "b", "path": "/w/b", "action": "removed", "reason": "PR acme/app#2 merged 4 days ago", "evidence": "https://github.com/acme/app/pull/2"}]
+        self.dori.write_text("#!/bin/sh\necho '" + json.dumps(rows) + "'\n")
+        result = self.housekeeping(approve=True)
+        self.assertEqual(result["worktrees"]["kept"], [{"key": "a", "reason": "lane is working"}])
+        self.assertEqual(result["worktrees"]["removed"], [{"key": "b", "reason": "PR acme/app#2 merged 4 days ago", "evidence": "https://github.com/acme/app/pull/2"}])
+        self.assertIn("worktrees_removed=1 worktrees_kept=1 ", HK["summary"](result))
 
 class Preview(Fixture):
     def seed_everything(self):
@@ -180,6 +223,18 @@ class Sessions(Fixture):
         self.assertTrue(all(path.exists() for path in (lane, lead, recent)))
         index = [json.loads(line) for line in (archived.parent.parent / "index.jsonl").read_text().splitlines()]
         self.assertEqual([entry["session"] for entry in index], ["old"])
+
+    def test_archive_age_counts_from_last_activity_and_the_index_forgets_deleted_archives(self):
+        ancient, month = self.session("ancient", 200), self.session("month", 40)
+        archive = self.home / ".omo/agent/sessions-archive"
+        packed = lambda path: archive / "--proj--" / f"{path.name}.gz"
+        indexed = lambda: [json.loads(line)["session"] for line in (archive / "index.jsonl").read_text().splitlines()]
+        self.housekeeping(approve=True)
+        self.assertEqual([packed(ancient).exists(), packed(month).exists()], [False, True])
+        self.assertFalse((archive / "--proj--" / f"{ancient.stem}-artifacts").exists())
+        self.assertEqual(indexed(), ["month"])
+        HK["run"](self.state, self.home, NOW + 141 * DAY, [str(self.dori)], approve=True)
+        self.assertEqual([packed(month).exists(), indexed()], [False, []])
 
     def test_a_session_opened_while_housekeeping_runs_is_never_archived(self):
         old = self.session("old", 40)
@@ -251,14 +306,19 @@ class Sessions(Fixture):
 
 
 class Logs(Fixture):
-    def test_an_oversized_helio_log_rotates_keeping_two_generations(self):
+    def test_an_oversized_log_rotates_keeping_two_generations_while_its_writer_keeps_appending(self):
         logs = self.home / ".local/share/helio-chrome"
         logs.mkdir(parents=True)
-        (logs / "helio-browser.log").write_bytes(b"x" * (HK["LOG_MAX_BYTES"] + 1))
+        log = logs / "helio-browser.log"
         (logs / "helio-browser.log.1").write_text("older")
         (logs / "helio-browser.log.2").write_text("oldest")
+        # Chrome keeps the descriptor helio-browser.py opened in append mode for its whole life.
+        writer = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        self.addCleanup(os.close, writer)
+        os.write(writer, b"x" * (HK["LOG_MAX_BYTES"] + 1))
         self.assertEqual(self.housekeeping(approve=True)["logs_rotated"], ["helio-browser.log"])
-        self.assertFalse((logs / "helio-browser.log").exists())
+        os.write(writer, b"after rotation\n")
+        self.assertEqual(log.read_bytes(), b"after rotation\n")
         self.assertEqual((logs / "helio-browser.log.2").read_text(), "older")
         self.assertEqual((logs / "helio-browser.log.1").stat().st_size, HK["LOG_MAX_BYTES"] + 1)
 
@@ -292,9 +352,11 @@ class Backups(Fixture):
             (root / f"daily-{time.strftime('%Y%m%d', day)}.tar.gz").write_text("x")
         self.housekeeping(approve=True)
         kept = sorted(path.name for path in root.glob("daily-*.tar.gz"))
-        sundays = [name for name in kept if time.strptime(name[6:14], "%Y%m%d").tm_wday == 6]
-        self.assertEqual(len(kept), len(set(kept[-7:]) | set(sundays)))
-        self.assertEqual(len(sundays), 4)
+        self.assertEqual(kept, [
+            "daily-20261220.tar.gz", "daily-20261227.tar.gz", "daily-20270103.tar.gz", "daily-20270109.tar.gz",
+            "daily-20270110.tar.gz", "daily-20270111.tar.gz", "daily-20270112.tar.gz", "daily-20270113.tar.gz",
+            "daily-20270114.tar.gz", "daily-20270115.tar.gz",
+        ])
 
 
 class Scheduling(Fixture):
