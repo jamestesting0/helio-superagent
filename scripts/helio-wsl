@@ -34,5 +34,5 @@ case "${1:-}" in
   status) exec python3 "$HOME/helio-agent/scripts/helio-status.py" ;;
   permissions) printf '%s\n' "In the normal WSL shell, edit HELIO_TRUSTED_USERS, HELIO_REPORT_CHANNELS or HELIO_RELEASE_APPROVERS in ~/.config/helio/helio.env" "(comma-separated Discord IDs), run: helio update, then exit and relaunch the isolated workspace." ;;
   "") printf '%s\n' 'In Herdr, run: helio start (new) or helio resume (previous)'; exec herdr --session elobot ;;
-  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|triage|autofix|plan|work|pr|decide|issue|followups|conversation|recovery|confirm|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
+  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|triage|autofix|plan|work|pr|decide|issue|followups|conversation|recovery|blacklist|housekeeping|health|confirm|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
 esac

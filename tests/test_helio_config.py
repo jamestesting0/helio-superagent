@@ -60,6 +60,8 @@ class HelioConfigTests(unittest.TestCase):
         rendered = lambda env: payload["render_config"](payload["values"](self.home, str(self.home / "repo"), env))
         defaults = rendered({})
         self.assertEqual((defaults["maxWorkers"], defaults["hibernateAfterMin"]), (4, 30))
+        self.assertEqual(CONFIG["problems"]({**SECRETS, "HELIO_HIBERNATE_AFTER_MIN": "0"}), [])
+        self.assertEqual(rendered({"HELIO_HIBERNATE_AFTER_MIN": "0"})["hibernateAfterMin"], 0)
         custom = rendered({"HELIO_MAX_WORKERS": "2", "HELIO_HIBERNATE_AFTER_MIN": "45"})
         self.assertEqual((custom["maxWorkers"], custom["hibernateAfterMin"]), (2, 45))
         issues = " ".join(CONFIG["problems"]({**SECRETS, "HELIO_MAX_WORKERS": "0", "HELIO_HIBERNATE_AFTER_MIN": "soon"}))

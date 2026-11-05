@@ -17,6 +17,9 @@ KIT_RULES = (
     ("isolation/*", FULL),
     ("scripts/helio-followups.py", MONITORS),
     ("scripts/helio-questions.py", MONITORS),
+    *(("scripts/" + helper, MONITORS) for helper in (
+        "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py",
+        "helio_observations.py", "helio_decision_upkeep.py", "helio_issue_sync.py")),
     ("vendor/dori-mode/*", LEAD),
     ("omo/*", LEAD),
 )

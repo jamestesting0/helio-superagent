@@ -113,8 +113,10 @@ def problems(values: dict[str, str], require_secrets: bool = True) -> list[str]:
         if merged.get(key) not in ("on", "off"):
             found.append(f"{key} must be on or off")
     for key in COUNTS:
+        if key == "HELIO_HIBERNATE_AFTER_MIN" and merged.get(key) == "0":
+            continue
         if not COUNT.fullmatch(merged.get(key, "")):
-            found.append(f"{key} must be a positive whole number")
+            found.append(f"{key} must be a positive whole number" + (" or 0 to disable hibernation" if key == "HELIO_HIBERNATE_AFTER_MIN" else ""))
     if not all(GLOB.fullmatch(item) for item in merged.get("HELIO_AUTOFIX_DENY", "").split(",")):
         found.append("HELIO_AUTOFIX_DENY must be comma-separated repository paths or globs without spaces")
     allowed = set(merged["DORI_DISCORD_ALLOWED"].split(","))

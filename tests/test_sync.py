@@ -19,6 +19,12 @@ class SyncTests(unittest.TestCase):
   launcher=self.home/'.local/bin/helio'; launcher.parent.mkdir(parents=True); launcher.write_bytes((ROOT/'scripts/helio-wsl').read_bytes())
   (self.dst/'env').write_text('private'); (self.dst/'trusted-users').write_text('123'); (self.dst/'report-channels').write_text('456')
  def snapshot(self): return {p.relative_to(self.home):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+ def test_update_applies_worker_cap_and_hibernation_from_helio_env(self):
+  settings=self.home/'.config/helio/helio.env'; settings.parent.mkdir(parents=True,exist_ok=True)
+  settings.write_text('HELIO_MAX_WORKERS=2\nHELIO_HIBERNATE_AFTER_MIN=45\n'); settings.chmod(0o600)
+  quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
+  config=json.loads((self.dst/'config.json').read_text())
+  self.assertEqual((config['maxWorkers'],config['hibernateAfterMin'],config['leadPane']),(2,45,'test-pane'))
  def test_install_writes_a_baseline_that_updates_cleanly(self):
   home=self.home/'fresh'; (home/'project').mkdir(parents=True)
   quiet(INSTALL['install'],home,True,home/'project')

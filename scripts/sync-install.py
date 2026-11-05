@@ -89,7 +89,7 @@ def run(home, action, update_launcher=False, profile=None):
  for name in names:
   if name in documents: data=documents[name]
   elif name=='config.json':
-   for k in ('agentCommand','defaultModel','launchKeywords'): active[k]=source_config[k]
+   for k in ('agentCommand','defaultModel','launchKeywords','maxWorkers','hibernateAfterMin'): active[k]=source_config[k]
    data=(json.dumps(active,indent=2)+'\n').encode()
   elif name=='@launcher': data=(ROOT/'scripts/helio-wsl').read_bytes()
   elif name.startswith('@inbound/'): data=(ROOT/'discord-inbound'/name[9:]).read_bytes()

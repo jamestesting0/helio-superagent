@@ -22,6 +22,14 @@ INSTALLER = ROOT / "scripts/install.py"
 
 
 class PayloadTests(unittest.TestCase):
+    def test_rendered_startup_profiles_fit_the_runtime_prompt_budget(self):
+        payload = runpy.run_path(str(ROOT / "scripts/helio_payload.py"))
+        values = payload["values"](Path("/home/helio-agent"), "/home/helio-agent/PythonProjects/elo-bot")
+        for profile in ("owner", "isolated"):
+            with self.subTest(profile=profile):
+                documents = payload["documents"](profile, values)
+                self.assertLess(sum(len(documents[name].decode()) for name in ("setup-prompt.md", "work-policy.md")), 32000)
+
     def test_every_intake_source_file_is_installed(self):
         # A file the payload omits is never deployed, and intake crashes importing it.
         source = ROOT / "discord-inbound"
