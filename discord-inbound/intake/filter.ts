@@ -19,6 +19,8 @@ export interface FilterConfig {
   readonly scopeCategory?: string;
   readonly ignoredChannels?: ReadonlySet<string>;
   readonly inConversation?: (channelId: string, userId: string) => boolean;
+  /** An open conversation or one resolved within the 7-day reopen window. */
+  readonly recentlyTalked?: (channelId: string, userId: string) => boolean;
   readonly workingAnchor?: (channelId: string, userId: string, messageId: string) => string | undefined;
   /** Admit server messages that mention the owner (not Helio), so Helio can answer for the owner. */
   readonly answerForOwner?: boolean;
@@ -106,8 +108,11 @@ export async function classify(
     msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`)
   );
   const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
+  // A reply to Helio's own message from someone it was talking with is addressed to Helio without a ping.
+  const repliesToHelio = cfg.botId !== undefined && msg.message_reference?.type !== 1 && msg.referenced_message?.author.id === cfg.botId;
   const conversationFollowup = channelPolicy === "normal" && !isBugReport && !mentioned &&
-    (additionTo !== undefined || cfg.inConversation?.(msg.channel_id, msg.author.id) === true);
+    (additionTo !== undefined || cfg.inConversation?.(msg.channel_id, msg.author.id) === true ||
+      (repliesToHelio && cfg.recentlyTalked?.(msg.channel_id, msg.author.id) === true));
   const forOwner = msg.guild_id !== undefined && !isOwner && !isBugReport && forTheOwner(msg, cfg, mentioned === true);
   // Open conversations and working windows admit only their owner's follow-ups in this exact channel.
   if (channelPolicy === "normal" && !isBugReport && !mentioned && !conversationFollowup && !forOwner) {

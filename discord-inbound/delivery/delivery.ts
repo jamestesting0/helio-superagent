@@ -2,10 +2,27 @@ import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { RecoveryStore } from "./recovery-store.ts";
+import { Moderation, type Blocked, type BlockRequest } from "./moderation.ts";
 
 export type Stream = "inbound" | "context";
 type Disposition = "done" | "irrelevant";
 export const REQUEST_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+export const BLOCKED_REASON = "Sender is blacklisted";
+
+export interface Gap {
+  readonly id: number;
+  readonly stream: Stream;
+  readonly channel_id: string;
+  readonly after_id: string;
+  readonly before_id: string;
+  readonly reason: string;
+  readonly recorded_at: string;
+}
+
+export interface BlockResult {
+  readonly blocked?: Blocked;
+  readonly dismissed: readonly string[];
+}
 
 export function requestTimestamp(sentAt: unknown): number | undefined {
   const match = typeof sentAt === "string" ?
@@ -19,6 +36,7 @@ export function requestTimestamp(sentAt: unknown): number | undefined {
 export class Delivery {
   private readonly db: Database;
   readonly recovery: RecoveryStore;
+  readonly moderation: Moderation;
 
   constructor(path: string, busyMs = 5000) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -61,6 +79,52 @@ export class Delivery {
       PRIMARY KEY (stream, id)
     )`);
     this.recovery = new RecoveryStore(this.db);
+    this.moderation = new Moderation(this.db);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS inbound_gaps (
+      id INTEGER PRIMARY KEY, stream TEXT NOT NULL, channel_id TEXT NOT NULL, after_id TEXT NOT NULL, before_id TEXT NOT NULL,
+      reason TEXT NOT NULL, recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, acknowledged_at TEXT,
+      UNIQUE (stream, channel_id, after_id, before_id))`);
+  }
+
+  /** Messages between the two IDs were never read; returns the new gap's id, or undefined if already recorded. */
+  recordGap(gap: { readonly stream: Stream; readonly channel: string; readonly after: string; readonly before: string; readonly reason: string }): number | undefined {
+    const result = this.db.query("INSERT OR IGNORE INTO inbound_gaps (stream, channel_id, after_id, before_id, reason) VALUES (?, ?, ?, ?, ?)")
+      .run(gap.stream, gap.channel, gap.after, gap.before, gap.reason);
+    return result.changes === 1 ? Number(result.lastInsertRowid) : undefined;
+  }
+
+  gaps(): Gap[] {
+    return this.db.query<Gap, []>("SELECT id, stream, channel_id, after_id, before_id, reason, recorded_at FROM inbound_gaps WHERE acknowledged_at IS NULL ORDER BY id").all();
+  }
+
+  acknowledgeGap(id: number): boolean {
+    return this.db.query("UPDATE inbound_gaps SET acknowledged_at = CURRENT_TIMESTAMP WHERE id = ? AND acknowledged_at IS NULL").run(id).changes === 1;
+  }
+
+  /** Blocks a user and dismisses their unaccepted pending messages in one transaction. */
+  block(userId: string, request: BlockRequest, protectedIds: ReadonlySet<string>): BlockResult {
+    return this.db.transaction(() => {
+      const blocked = this.moderation.insertBlock(userId, request, protectedIds, Date.now());
+      return { blocked, dismissed: this.dismissFrom(userId) };
+    }).immediate();
+  }
+
+  private dismissFrom(userId: string): string[] {
+    const rows = this.db.query<{ id: string; payload: string }, []>(`SELECT d.id, d.payload FROM delivery d
+      LEFT JOIN acceptance a ON a.stream = d.stream AND a.id = d.id
+      WHERE d.stream = 'inbound' AND d.payload IS NOT NULL AND a.id IS NULL`).all();
+    const dismissed: string[] = [];
+    for (const row of rows) {
+      let author: unknown;
+      try { author = (JSON.parse(row.payload) as { author_id?: unknown }).author_id; }
+      catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+      if (author !== userId) continue;
+      this.db.query("INSERT OR IGNORE INTO handling (stream, id, disposition, reason) VALUES ('inbound', ?, 'irrelevant', ?)")
+        .run(row.id, BLOCKED_REASON);
+      this.db.query("UPDATE delivery SET payload = NULL WHERE stream = 'inbound' AND id = ?").run(row.id);
+      dismissed.push(row.id);
+    }
+    return dismissed;
   }
 
   stage(stream: Stream, id: string, payload: string): boolean {
@@ -154,9 +218,9 @@ export class Delivery {
     this.finish(stream, id, "done", null);
   }
 
-  irrelevant(id: string, reason: string): void {
+  irrelevant(id: string, reason: string): BlockResult {
     if (!reason.trim() || reason.length > 500) throw new TypeError("An irrelevant disposition needs a reason of 1-500 characters");
-    this.finish("inbound", id, "irrelevant", reason.trim());
+    return this.finish("inbound", id, "irrelevant", reason.trim());
   }
 
   status(stream: Stream, id: string) {
@@ -178,11 +242,11 @@ export class Delivery {
     };
   }
 
-  private finish(stream: Stream, id: string, disposition: Disposition, reason: string | null): void {
+  private finish(stream: Stream, id: string, disposition: Disposition, reason: string | null): BlockResult {
     if (stream === "inbound") {
       for (const warning of this.expire(undefined, id).warnings) console.warn(`DELIVERY_WARN ${warning}`);
     }
-    this.db.transaction(() => {
+    return this.db.transaction((): BlockResult => {
       const row = this.db.query<{ payload: string | null }, [string, string]>(
         "SELECT payload FROM delivery WHERE stream = ? AND id = ?",
       ).get(stream, id);
@@ -192,7 +256,7 @@ export class Delivery {
         if (previous !== disposition && !(previous === "legacy-done" && disposition === "done")) {
           throw new RangeError(`Delivery ${id} already has disposition ${previous}`);
         }
-        return;
+        return { dismissed: [] };
       }
       if (stream === "inbound") this.requireKnownTimestamp(id);
       if (disposition === "irrelevant") {
@@ -209,7 +273,23 @@ export class Delivery {
       this.db.query("INSERT INTO handling (stream, id, disposition, reason) VALUES (?, ?, ?, ?)")
         .run(stream, id, disposition, reason);
       this.db.query("UPDATE delivery SET payload = NULL WHERE stream = ? AND id = ?").run(stream, id);
+      return disposition === "irrelevant" ? this.strikeFor(id, JSON.parse(row.payload)) : { dismissed: [] };
     }).immediate();
+  }
+
+  /** Only an explicit ping by an ordinary user in an untrusted chat counts toward the automatic blacklist. */
+  private strikeFor(id: string, payload: Record<string, unknown>): BlockResult {
+    const { role, channel_policy, pinged, author_id, channel_id } = payload;
+    const at = requestTimestamp(payload.sent_at);
+    if (role !== "STAFF_QUESTION" || channel_policy !== "normal" || pinged !== true || at === undefined ||
+        typeof author_id !== "string" || typeof channel_id !== "string" ||
+        !this.moderation.strike(id, author_id, channel_id, at)) return { dismissed: [] };
+    const { strikes, windowMs } = this.moderation.settings;
+    const blocked = this.moderation.insertBlock(author_id, {
+      source: "auto", reason: `${strikes} irrelevant pings within ${windowMs / 3_600_000} hours`, by: "helio",
+      evidenceMessageId: id, evidenceChannelId: channel_id,
+    }, new Set(), Date.now());
+    return { blocked, dismissed: this.dismissFrom(author_id) };
   }
 
   close(): void {

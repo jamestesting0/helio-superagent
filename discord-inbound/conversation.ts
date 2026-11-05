@@ -6,14 +6,15 @@ import { Delivery } from "./delivery/delivery.ts";
 import { object } from "./delivery/monitor-summary.ts";
 
 const [requestedAction, ...args] = process.argv.slice(2);
-const COMMANDS = ["list", "show", "open", "close", "note", "hold", "resume", "reopen"] as const;
+const COMMANDS = ["list", "show", "open", "close", "note", "set", "hold", "resume", "reopen"] as const;
+const SET_FLAGS = new Map([["--request", "request"], ["--decided", "decided"], ["--waiting-on", "waiting_on"], ["--result", "result"]] as const);
 const action = COMMANDS.find((value) => value === requestedAction);
 let store: Conversations | undefined;
 try {
   const state = process.env.DORI_STATE_DIR;
   if (!state?.trim()) throw new TypeError("Requires DORI_STATE_DIR");
   if (!action) {
-    throw new TypeError("Usage: conversation open|close|list|show|note|hold|resume|reopen; note <channel> <user> --text-file PATH");
+    throw new TypeError("Usage: conversation open|close|list|show|note|set|hold|resume|reopen; note <channel> <user> --text-file PATH; set <channel> <user> [--request T] [--decided T] [--waiting-on T] [--result T] (\"-\" clears)");
   }
   const flagsAt = args.findIndex((arg) => arg.startsWith("--"));
   const positional = flagsAt < 0 ? args : args.slice(0, flagsAt);
@@ -23,7 +24,9 @@ try {
     const flag = flags[i], value = flags[i + 1];
     if (!flag || !value || options.has(flag) ||
         !(flag === "--offset" && (action === "list" || action === "show") ||
-          flag === "--text-file" && action === "note" || flag === "--issue" && action === "close")) {
+          flag === "--text-file" && action === "note" || flag === "--issue" && action === "close" ||
+          SET_FLAGS.has(flag as never) && action === "set" ||
+          flag === "--topic" && ["show", "note", "set", "hold", "resume", "close"].includes(action ?? ""))) {
       throw new TypeError("Invalid conversation options");
     }
     options.set(flag, value);
@@ -41,10 +44,12 @@ try {
     throw new TypeError("Open requires a digit anchor message ID and a topic of 1-200 characters");
   }
   if (action === "close" && (!outcome || words.length)) throw new TypeError("Invalid conversation outcome");
-  if (["show", "note", "resume", "reopen"].includes(action ?? "") && positional.length !== 2) {
+  if (["show", "note", "set", "resume", "reopen"].includes(action ?? "") && positional.length !== 2) {
     throw new TypeError("This command takes only channel and user IDs");
   }
   if (action === "hold" && !argument) throw new TypeError("Hold requires a reason");
+  const topicAnchor = options.get("--topic");
+  if (topicAnchor !== undefined && !/^\d{1,30}$/.test(topicAnchor)) throw new TypeError("--topic takes the conversation's anchor message ID");
   const issue = options.get("--issue");
   if (issue && (issue.length > 500 || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*$/.test(issue))) {
     throw new TypeError("Issue must be a canonical GitHub issue URL");
@@ -69,31 +74,38 @@ try {
   } else if (channel && user) {
     switch (action) {
       case "show": {
-        const row = store.get(channel, user) ?? store.latest(channel, user);
+        const row = topicAnchor ? store.byAnchor(channel, user, topicAnchor) : store.get(channel, user) ?? store.latest(channel, user);
         if (!row) throw new RangeError("No conversation in this channel");
         console.log(`CONVERSATION_SHOW ${detailPage({
           ...row, state: store.state(row), idle_ms: Math.max(0, now - row.last_activity),
-          transcript: store.transcript(channel, user),
-        }, `helio conversation show ${channel} ${user}`, offset)}`);
+          transcript: store.transcriptOf(row),
+        }, `helio conversation show ${channel} ${user} --topic ${row.anchor_message_id}`, offset)}`);
         break;
       }
       case "note": {
         const path = options.get("--text-file");
         if (!path) throw new TypeError("Note requires --text-file PATH");
-        store.note(channel, user, (await Bun.file(path).text()).trim());
+        store.note(channel, user, (await Bun.file(path).text()).trim(), topicAnchor);
         console.log(`CONVERSATION_NOTED channel=${channel} user=${user}`);
         break;
       }
+      case "set": {
+        // "-" clears a field; the lead records its restatement, decisions, open question and results here.
+        const fields = Object.fromEntries([...SET_FLAGS].flatMap(([flag, name]) => options.has(flag) ? [[name, options.get(flag) === "-" ? "" : options.get(flag)]] : []));
+        store.setState(channel, user, fields, topicAnchor);
+        console.log(`CONVERSATION_SET channel=${channel} user=${user} fields=${Object.keys(fields).join(",")}`);
+        break;
+      }
       case "hold":
-        store.hold(channel, user, [argument, ...words].join(" "));
+        store.hold(channel, user, [argument, ...words].join(" "), topicAnchor);
         console.log(`CONVERSATION_HELD channel=${channel} user=${user}`);
         break;
       case "resume":
-        store.resume(channel, user);
+        store.resume(channel, user, topicAnchor);
         console.log(`CONVERSATION_RESUMED channel=${channel} user=${user}`);
         break;
       case "close":
-        if (outcome) console.log(`CONVERSATION_CLOSED ${JSON.stringify(store.close(channel, user, outcome, now, issue))}`);
+        if (outcome) console.log(`CONVERSATION_CLOSED ${JSON.stringify(store.close(channel, user, outcome, now, issue, topicAnchor))}`);
         break;
       case "open": case "reopen": {
         const previous = store.recentlyResolved(channel, user, now);

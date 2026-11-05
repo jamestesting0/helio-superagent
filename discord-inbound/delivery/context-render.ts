@@ -69,6 +69,8 @@ export function contextSections(messages: readonly Record<string, unknown>[]) {
   return {
     turn,
     conversation: [{
+      request: conversation.request, decided: conversation.decided, waiting_on: conversation.waiting_on, result: conversation.result,
+      relation: conversation.relation,
       topic: conversation.topic, summary: conversation.summary ?? conversation.topic, state: conversation.state,
       hold_reason: conversation.hold_reason, recently_resolved: conversation.recently_resolved,
       anchor_message_id: conversation.anchor_message_id, opened_at: conversation.opened_at,

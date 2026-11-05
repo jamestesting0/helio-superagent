@@ -57,19 +57,20 @@ for _shipped in PREVIOUSLY_SHIPPED.values():
     })
 INBOUND_FILES = (
     # entry points and package
-    "ack.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "package.json", "recovery.ts",
+    "ack.ts", "blacklist.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "package.json", "recovery.ts",
     # discord
     "discord/rest-cache.test.ts", "discord/rest.ts",
     # intake
     "intake/archived-threads.test.ts", "intake/archived-threads.ts", "intake/authorization.ts",
-    "intake/bug-reports.test.ts", "intake/catchup.test.ts", "intake/catchup.ts", "intake/channel-policy.test.ts",
+    "intake/bug-reports.test.ts", "intake/catchup-gaps.test.ts", "intake/catchup.test.ts", "intake/catchup.ts", "intake/channel-policy.test.ts",
     "intake/filter.test.ts", "intake/filter.ts", "intake/lastseen.ts", "intake/owner-mentions.test.ts",
     "intake/preceding.test.ts", "intake/preceding.ts", "intake/turns.test.ts", "intake/turns.ts",
     "intake/watched-channels.ts",
     # delivery
     "delivery/context-render.ts", "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
     "delivery/expiry.ts", "delivery/monitor-summary.ts", "delivery/pending-reminder.ts",
-    "delivery/recovery-schema.sql", "delivery/recovery-store.ts",
+    "delivery/recovery-schema.sql", "delivery/recovery-store.ts", "delivery/moderation.ts", "delivery/moderation.test.ts",
+    "delivery/moderation-effects.ts", "delivery/owner-proof.ts", "delivery/owner-proof.test.ts",
     # messages
     "messages/embed-images.test.ts", "messages/forwarded.test.ts", "messages/forwarded.ts",
     "messages/image-worker.test.ts", "messages/image-worker.ts", "messages/images.test.ts", "messages/images.ts",
@@ -80,7 +81,7 @@ INBOUND_FILES = (
     "conversations/conversation-context.ts", "conversations/conversation-db.test.ts",
     "conversations/conversation-db.ts", "conversations/conversation-upkeep.test.ts",
     "conversations/conversation-upkeep.ts", "conversations/conversations.test.ts", "conversations/conversations.ts",
-    "conversations/issue-review.ts",
+    "conversations/issue-review.ts", "conversations/understanding.test.ts",
     "conversations/question-answer.test.ts", "conversations/question-answer.ts", "conversations/receipts.test.ts",
     "conversations/reply-guard.ts", "conversations/reply-once.test.ts", "conversations/reply-once.ts",
     "conversations/working-store.ts", "conversations/working.test.ts", "conversations/working.ts",
@@ -91,7 +92,8 @@ INBOUND_FILES = (
     "interactive/questions.test.ts", "interactive/recovery.test.ts",
     "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
     # tests
-    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/ignored-threads.test.ts",
+    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/ignored-threads.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
+    "tests/stage-first.test.ts",
     "tests/learning-context.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",
     "tests/turns-flow.test.ts",

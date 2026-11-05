@@ -25,7 +25,7 @@ export async function sweepConversations(options: {
       const latest = store.get(row.channel_id, row.user_id);
       if (!latest || latest.opened_at !== row.opened_at || latest.last_activity !== row.last_activity ||
           store.state(latest) !== "waiting_on_requester") continue;
-      const last = store.transcript(row.channel_id, row.user_id).findLast((entry) => entry.author_id === row.user_id);
+      const last = store.transcriptOf(row).findLast((entry) => entry.author_id === row.user_id);
       const target = last?.message_id ?? row.anchor_message_id;
       // A deleted last requester message follows the same silent resolution path as a deleted anchor.
       if (target !== row.anchor_message_id) await rest(`/channels/${row.channel_id}/messages/${target}`);
@@ -43,7 +43,7 @@ export async function sweepConversations(options: {
       emit(monitorLine(`${closing ? "INBOUND_CONVERSATION_TIMEOUT" : "INBOUND_CONVERSATION_NUDGE"} ${JSON.stringify({
         channel_id: row.channel_id, user_id: row.user_id, anchor_message_id: row.anchor_message_id,
         topic: row.topic, opened_at: row.opened_at, sent: reply.id,
-        read: `helio conversation show ${row.channel_id} ${row.user_id}`,
+        read: `helio conversation show ${row.channel_id} ${row.user_id} --topic ${row.anchor_message_id}`,
       })}`));
     } catch (error) {
       if (error instanceof DiscordRestError && error.status === 404) {
@@ -58,7 +58,7 @@ export async function sweepConversations(options: {
     emit(monitorLine(`INBOUND_CONVERSATION_WAITING ${JSON.stringify({
       channel_id: row.channel_id, user_id: row.user_id, topic: row.topic,
       state: "waiting_on_helio", idle_ms: now - row.last_activity,
-      read: `helio conversation show ${row.channel_id} ${row.user_id}`,
+      read: `helio conversation show ${row.channel_id} ${row.user_id} --topic ${row.anchor_message_id}`,
     })}`));
   }
   store.retain(now);

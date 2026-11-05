@@ -85,5 +85,23 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
       SELECT channel_id,user_id,opened_at,? FROM conversations WHERE status='open'`).run(now);
     db.exec("PRAGMA user_version=1");
   }).immediate();
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 2) return;
+    // What Helio understood, kept apart from the transcript so it survives the context window.
+    for (const column of ["request", "decided", "waiting_on", "result"]) {
+      db.exec(`ALTER TABLE conversations ADD COLUMN ${column} TEXT NOT NULL DEFAULT '' CHECK(length(${column})<=300)`);
+    }
+    db.exec("UPDATE conversations SET request=substr(summary,1,300) WHERE summary!=''");
+    db.exec("PRAGMA user_version=2");
+  }).immediate();
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 3) return;
+    // Separate topics from one person in one channel are separate conversations.
+    db.exec(`DROP INDEX IF EXISTS conversations_open;
+      CREATE INDEX IF NOT EXISTS conversations_active ON conversations(channel_id,user_id,status);
+      PRAGMA user_version=3`);
+  }).immediate();
   return db;
 }

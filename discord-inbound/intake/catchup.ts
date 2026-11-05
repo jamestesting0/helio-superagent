@@ -17,11 +17,17 @@ export interface Caps {
   maxPerChannel: number;
   /** Keep at least this many newest messages even when they are older than maxAgeMs. */
   minKeep?: number;
+  /** Which messages count toward maxPerChannel; others are kept without using the cap. Default: all. */
+  counts?: (msg: RestMessage) => boolean;
+  /** Stop after this many pages even below the cap. */
+  maxPages?: number;
 }
 
 export interface Backlog {
   messages: RestMessage[];
   truncated: boolean;
+  /** Why messages were left out: the age horizon, the cap, or the page ceiling. */
+  reason?: "age" | "cap" | "pages";
 }
 
 /**
@@ -48,20 +54,24 @@ export async function fetchBacklog(
 ): Promise<Backlog> {
   const oldestAllowed = now - caps.maxAgeMs;
   const kept: RestMessage[] = [];
+  const cut = (reason: Backlog["reason"]): Backlog => ({ messages: kept.reverse(), truncated: true, reason });
+  let counted = 0;
+  let pages = 0;
   let before: string | undefined;
 
   for (;;) {
     const page = await fetchPage(channelId, before);
+    pages++;
     for (const msg of page) {
       if (after !== undefined && !newerId(msg.id, after)) return { messages: kept.reverse(), truncated: false };
-      if (Date.parse(msg.timestamp) < oldestAllowed && kept.length >= (caps.minKeep ?? 0)) {
-        return { messages: kept.reverse(), truncated: true };
-      }
-      if (kept.length === caps.maxPerChannel) return { messages: kept.reverse(), truncated: true };
+      if (Date.parse(msg.timestamp) < oldestAllowed && kept.length >= (caps.minKeep ?? 0)) return cut("age");
+      if (counted === caps.maxPerChannel) return cut("cap");
       kept.push(msg);
+      if (caps.counts?.(msg) ?? true) counted++;
     }
     if (page.length < PAGE_SIZE) return { messages: kept.reverse(), truncated: false };
-    if (kept.length === caps.maxPerChannel) return { messages: kept.reverse(), truncated: true };
+    if (counted === caps.maxPerChannel) return cut("cap");
+    if (caps.maxPages !== undefined && pages >= caps.maxPages) return cut("pages");
     before = page[page.length - 1].id;
   }
 }

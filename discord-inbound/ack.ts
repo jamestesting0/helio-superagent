@@ -1,4 +1,5 @@
 import { Delivery } from "./delivery/delivery.ts";
+import { redactBlocked } from "./delivery/moderation.ts";
 import { cleanupAttachments } from "./messages/images.ts";
 import { filterConfig, reauthorize, validateChannelPolicy } from "./intake/authorization.ts";
 import { cachedReads, discordRest } from "./discord/rest.ts";
@@ -10,10 +11,27 @@ import { finishWorking, showWorking } from "./conversations/working.ts";
 import { contextSummary, inboundSummary, object } from "./delivery/monitor-summary.ts";
 import { contextSections, detailPage, renderTurn, SECTION_NAMES } from "./delivery/context-render.ts";
 import { TurnAssembler } from "./intake/turns.ts";
+import { settleBlock } from "./delivery/moderation-effects.ts";
 
 const args = process.argv.slice(2);
 const [action, stream, id] = args;
 const state = process.env.DORI_STATE_DIR;
+if (state && (action === "gaps" || action === "gap")) {
+  const gapId = Number(stream);
+  if ((action === "gaps" && args.length !== 1) || (action === "gap" && (args.length !== 2 || !Number.isSafeInteger(gapId)))) {
+    console.error("Usage: ack gaps OR ack gap <id>");
+    process.exit(2);
+  }
+  const store = new Delivery(`${state}/discord-delivery.sqlite`);
+  try {
+    if (action === "gaps") {
+      for (const gap of store.gaps()) console.log(`GAP ${JSON.stringify(gap)}`);
+      console.log(`GAP_COUNT ${store.gaps().length}`);
+    } else if (store.acknowledgeGap(gapId)) console.log(`GAP_ACKNOWLEDGED ${gapId}`);
+    else { console.error(`No open gap ${gapId}`); process.exitCode = 1; }
+  } finally { store.close(); }
+  process.exit();
+}
 const flagsAt = args.findIndex((arg) => arg.startsWith("--"));
 const positional = flagsAt < 0 ? args : args.slice(0, flagsAt);
 const flags = flagsAt < 0 ? [] : args.slice(flagsAt);
@@ -69,7 +87,8 @@ try {
     if (!policy) policy = (async () => {
       if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
       const cfg = filterConfig(process.env, (channel, user) => store.isOpen(channel, user),
-        (channel, user, messageId) => store.workingAnchor(channel, user, messageId));
+        (channel, user, messageId) => store.workingAnchor(channel, user, messageId), undefined,
+        (channel, user) => store.talkedRecently(channel, user, Date.now()));
       cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
       const warnings: string[] = [];
       await validateChannelPolicy(cfg, rest, (message) => warnings.push(message));
@@ -80,6 +99,8 @@ try {
   }
   async function authorized(item: { readonly id: string; readonly payload: string }): Promise<string> {
     if (stream === "context") {
+      const author = object(JSON.parse(item.payload)).author_id;
+      if (typeof author === "string" && queue.moderation.isBlocked(author)) throw new RangeError("Sender is blacklisted; context withheld");
       if (!await contextReplayAllowed(item.payload, process.env, rest)) {
         throw new RangeError("Context withheld by current privacy policy");
       }
@@ -87,8 +108,10 @@ try {
     }
     const cfg = await currentPolicy();
     if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
-    const current = await reauthorize(item.payload, cfg, rest);
-    if (!current) throw new RangeError(`Delivery ${item.id} is no longer authorized; keep it pending`);
+    const authorizedNow = await reauthorize(item.payload, cfg, rest);
+    if (!authorizedNow) throw new RangeError(`Delivery ${item.id} is no longer authorized; keep it pending`);
+    if (queue.moderation.isBlocked(authorizedNow.author_id)) throw new RangeError("Sender is blacklisted; withheld, record kept");
+    const current = redactBlocked(authorizedNow, (id) => queue.moderation.isBlocked(id)) as typeof authorizedNow;
     const review = queue.recovery.status(item.id);
     const payload = JSON.stringify({ ...current, ...(review ? {
       backlog: true, recovered: true,
@@ -125,7 +148,8 @@ try {
       const last = messages.at(-1);
       if (stream === "inbound" && last && typeof last.channel_id === "string" && typeof last.author_id === "string" && typeof last.message_id === "string") {
         const lastId = last.message_id;
-        const conversation = conversationSnapshot(store, last.channel_id, last.author_id, Date.now());
+        const routing = { ...(typeof last.reply_to === "string" ? { reply_to: last.reply_to } : {}), pinged: last.pinged === true };
+        const conversation = conversationSnapshot(store, last.channel_id, last.author_id, Date.now(), routing);
         if (conversation || store.latest(last.channel_id, last.author_id)) {
           const saved = last.conversation ? object(last.conversation) : {};
           last.conversation = {
@@ -203,10 +227,19 @@ try {
   } else if (action === "irrelevant" && id && reason) {
     const item = queue.pending("inbound").find((item) => item.id === id);
     if (item) await authorized(item);
-    queue.irrelevant(id, reason);
+    const result = queue.irrelevant(id, reason);
     await cleanupAttachments(id, `${state}/attachments/${stream}`);
     await finishWorking({ store, rest, now: Date.now(), warn }, [id]);
     console.log(`ACK_IRRELEVANT stream=${stream} message_id=${id}`);
+    if (result.blocked) {
+      const blocked = result.blocked;
+      await settleBlock({ delivery: queue, conversations: store, rest, stateDir, warn }, blocked.user_id, result);
+      console.log(`AUTO_BLACKLISTED ${JSON.stringify({
+        user_id: blocked.user_id, reason: blocked.reason, evidence_message_id: blocked.evidence_message_id,
+        evidence_channel_id: blocked.evidence_channel_id, dismissed: result.dismissed.length,
+        next: "ask the owner with helio question ask --audience owner --option Undo --option Keep, then helio blacklist asked USER_ID --question ID",
+      })}`);
+    }
   } else if (action === "done" && id) {
     queue.acknowledge(stream, id);
     await cleanupAttachments(id, `${state}/attachments/${stream}`);

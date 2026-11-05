@@ -74,7 +74,8 @@ async function refresh(): Promise<void> {
     if (typeof payload !== "object" || payload === null || !("channel_id" in payload) ||
         !("human_verified" in payload) || payload.human_verified !== true ||
         !learningAllowed(payload.channel_id, allowed, excluded) ||
-        ("bot" in payload && payload.bot === true) || "webhook_id" in payload) {
+        ("bot" in payload && payload.bot === true) || "webhook_id" in payload ||
+        ("author_id" in payload && typeof payload.author_id === "string" && delivery.moderation.isBlocked(payload.author_id))) {
       withheld++;
       continue;
     }
@@ -91,9 +92,15 @@ async function refresh(): Promise<void> {
       const caps = after === undefined ? FIRST_READ : LATER_READ;
       const { messages, truncated } = await fetchBacklog(fetchPage, channel.id, after, Date.now(), caps);
       // Only a later read can miss messages; the first read's limits are the intended sample.
-      if (truncated && after !== undefined) console.log(monitorLine(`CONTEXT_TRUNCATED channel=${channel.name ?? channel.id} kept=${messages.length}`));
+      if (truncated && after !== undefined) {
+        console.log(monitorLine(`CONTEXT_TRUNCATED channel=${channel.name ?? channel.id} kept=${messages.length}`));
+        const before = messages[0]?.id;
+        const id = before ? delivery.recordGap({ stream: "context", channel: channel.id, after, before, reason: "cap" }) : undefined;
+        if (id !== undefined) console.log(monitorLine(`CONTEXT_GAP ${JSON.stringify({ id, channel_id: channel.id, after, before, read: "ack gaps", ack: `ack gap ${id}` })}`));
+      }
       for (const msg of messages) {
-        if (msg.author.bot || ("webhook_id" in msg && msg.webhook_id !== undefined)) continue;
+        if (msg.author.bot || ("webhook_id" in msg && msg.webhook_id !== undefined) ||
+            delivery.moderation.isBlocked(msg.author.id)) continue;
         if (delivery.contains("context", msg.id)) continue;
         const body = await prepareMessageBody(msg, `${stateDir}/attachments/context`);
         const payload = JSON.stringify({

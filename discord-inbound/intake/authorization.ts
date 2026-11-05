@@ -7,6 +7,7 @@ import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "../discord/rest
 export function filterConfig(
   values: Readonly<Record<string, string | undefined>>, inConversation?: FilterConfig["inConversation"],
   workingAnchor?: FilterConfig["workingAnchor"], lastOwnerPost?: FilterConfig["lastOwnerPost"],
+  recentlyTalked?: FilterConfig["recentlyTalked"],
 ): FilterConfig {
   const required = (name: string) => {
     const value = values[name]?.trim();
@@ -53,6 +54,7 @@ export function filterConfig(
     ...(inConversation ? { inConversation } : {}),
     ...(workingAnchor ? { workingAnchor } : {}),
     ...(lastOwnerPost ? { lastOwnerPost } : {}),
+    ...(recentlyTalked ? { recentlyTalked } : {}),
     answerForOwner: answerForOwner === "on",
     ownerPresentMs: Number(presentMinutes) * 60_000,
     ...(scopeCategory ? { scopeCategory } : {}),

@@ -36,6 +36,7 @@ export function describeMessage(msg: ReplyMessage, budget: number) {
       message_id: msg.id, author_id: msg.author.id,
       author: (msg.author.global_name || msg.author.username || "").slice(0, 100),
       bot: msg.author.bot === true, sent_at: msg.timestamp,
+      ...(msg.message_reference?.message_id && msg.message_reference.type !== 1 ? { reply_to: msg.message_reference.message_id } : {}),
       content, attachment_count: msg.attachments?.length ?? 0,
       ...(embeds.length ? { embed_text: embeds } : {}),
       ...(components.length ? { component_text: components } : {}),

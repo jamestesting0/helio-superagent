@@ -209,3 +209,22 @@ test("a clean refresh forgets read positions of channels that are no longer lear
     expect(Object.keys(JSON.parse(await Bun.file(join(dir, "discord-context.json")).text()))).toEqual([trusted]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a blacklisted author is never learned from, fresh or already pending", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helio-learning-blocked-"));
+  const path = join(dir, "discord-delivery.sqlite");
+  const queue = new Delivery(path);
+  try {
+    queue.block("99", { source: "owner", reason: "spam", by: "1" }, new Set(["1"]));
+    queue.stage("context", "803", JSON.stringify({ channel_id: trusted, author_id: "99", human_verified: true, content: "blocked-author-content" }));
+  } finally { queue.close(); }
+  try {
+    const result = await invoke(dir, {});
+    expect({ code: result.exitCode, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(result.stdout).not.toContain("blocked-author-content");
+    expect(result.stdout.split("\n").filter(line => line.startsWith("CONTEXT "))).toEqual([]);
+    const reopened = new Delivery(path);
+    try { expect(reopened.pending("context").map(item => item.id)).toEqual(["803"]); }
+    finally { reopened.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

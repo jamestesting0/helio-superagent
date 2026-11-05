@@ -58,7 +58,7 @@ describe("fetchBacklog", () => {
   test("a channel with only stale messages is reported cut off once, then starts clean", async () => {
     const { fetchPage } = channel([message(1, 100), message(2, 80)]);
     const first = await fetchBacklog(fetchPage, "c1", undefined, NOW, CAPS);
-    expect(first).toEqual({ messages: [], truncated: true });
+    expect(first).toEqual({ messages: [], truncated: true, reason: "age" });
     const cursor = await skippedThrough(fetchPage, "c1", first);
     expect(cursor).toBe("2");
     const next = await fetchBacklog(fetchPage, "c1", cursor, NOW, CAPS);

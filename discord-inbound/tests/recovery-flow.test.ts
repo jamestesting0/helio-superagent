@@ -69,7 +69,9 @@ test.each([
     expect(records(failed.stdout)).toEqual([]);
     expect(await Bun.file(join(dir, "discord-inbound.json")).json()).toEqual({ "100": "1", "200": "1" });
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
-    try { expect(queue.pending("inbound")).toEqual([]); }
+    // A preparation failure keeps the authorized message staged but unprepared, hidden until restart prepares it.
+    try { expect(queue.pending("inbound").map((item) => [item.id, JSON.parse(item.payload).preparation_complete]))
+      .toEqual(settings.prepareFailure ? [["10", false]] : []); }
     finally { queue.close(); }
     const retry = await invoke(dir);
     expect({ exitCode: retry.exitCode, stderr: retry.stderr }).toEqual({ exitCode: 0, stderr: "" });

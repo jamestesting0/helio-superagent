@@ -26,7 +26,14 @@ export interface Conversation {
   readonly resolved_at: number | null;
   readonly archived_at: number | null;
   readonly issue: string | null;
+  readonly request: string;
+  readonly decided: string;
+  readonly waiting_on: string;
+  readonly result: string;
 }
+
+export const UNDERSTANDING_FIELDS = ["request", "decided", "waiting_on", "result"] as const;
+export type Understanding = Partial<Record<typeof UNDERSTANDING_FIELDS[number], string>>;
 
 export class Conversations extends WorkingStore {
   constructor(path: string, now = Date.now(), busyMs = 5000) { super(conversationDatabase(path, now, busyMs)); }
@@ -43,6 +50,7 @@ export class Conversations extends WorkingStore {
         channel_id: channel, user_id: user, opened_at, last_activity: now,
         anchor_message_id: anchor, topic, status: "open", outcome: null, closed_at: null,
         summary: "", hold_reason: null, nudged_at: null, resolved_at: null, archived_at: null, issue: null,
+        request: "", decided: "", waiting_on: "", result: "",
       };
       this.db.query(`INSERT INTO conversations
         (channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status)
@@ -51,10 +59,10 @@ export class Conversations extends WorkingStore {
     }).immediate();
   }
 
-  close(channel: string, user: string, outcome: ConversationOutcome, now: number, issue?: string): Conversation {
+  close(channel: string, user: string, outcome: ConversationOutcome, now: number, issue?: string, topic?: string): Conversation {
     if (!CONVERSATION_OUTCOMES.includes(outcome)) throw new TypeError("Invalid conversation outcome");
     return this.db.transaction((): Conversation => {
-      const row = this.requireOpen(channel, user);
+      const row = this.requireOpen(channel, user, topic);
       const summary = row.summary || row.topic;
       this.db.query(`UPDATE conversations SET status='resolved',outcome=?,closed_at=?,resolved_at=?,
         summary=?,hold_reason=NULL,issue=coalesce(?,issue) WHERE channel_id=? AND user_id=? AND opened_at=?`)
@@ -75,10 +83,35 @@ export class Conversations extends WorkingStore {
     }
   }
 
-  get(channel: string, user: string): Conversation | null {
-    return this.db.query<Conversation, [string, string]>(
-      "SELECT * FROM conversations WHERE channel_id=? AND user_id=? AND status IN ('open','on_hold')",
-    ).get(channel, user);
+  /** The person's most recently active conversation in this channel; commands act on it unless a topic is named. */
+  get(channel: string, user: string, topic?: string): Conversation | null {
+    return this.db.query<Conversation, [string, string, string | null, string | null]>(
+      `SELECT * FROM conversations WHERE channel_id=? AND user_id=? AND status IN ('open','on_hold')
+        AND (? IS NULL OR anchor_message_id=?) ORDER BY last_activity DESC, opened_at DESC LIMIT 1`,
+    ).get(channel, user, topic ?? null, topic ?? null);
+  }
+
+  /** The conversation a message replying to `replyTo` belongs to, else the most recently active one. */
+  forReply(channel: string, user: string, replyTo?: string): Conversation | null {
+    if (replyTo) {
+      const owner = this.db.query<Conversation, [string, string, string, string]>(`SELECT c.* FROM conversations c
+        WHERE c.channel_id=? AND c.user_id=? AND c.status IN ('open','on_hold') AND (c.anchor_message_id=? OR EXISTS (
+          SELECT 1 FROM transcript t WHERE t.channel_id=c.channel_id AND t.user_id=c.user_id AND t.opened_at=c.opened_at
+            AND t.message_id=?)) ORDER BY c.last_activity DESC LIMIT 1`).get(channel, user, replyTo, replyTo);
+      if (owner) return owner;
+    }
+    return this.get(channel, user);
+  }
+
+  belongs(row: Conversation, messageId: string): boolean {
+    return row.anchor_message_id === messageId || this.transcriptOf(row).some((entry) => entry.message_id === messageId);
+  }
+
+  /** Any retained conversation (open, resolved or archived) with this anchor, for reading only. */
+  byAnchor(channel: string, user: string, anchor: string): Conversation | null {
+    return this.db.query<Conversation, [string, string, string]>(
+      "SELECT * FROM conversations WHERE channel_id=? AND user_id=? AND anchor_message_id=? ORDER BY opened_at DESC LIMIT 1",
+    ).get(channel, user, anchor);
   }
 
   latest(channel: string, user: string): Conversation | null {
@@ -95,18 +128,28 @@ export class Conversations extends WorkingStore {
 
   isOpen(channel: string, user: string): boolean { return this.get(channel, user) !== null; }
 
+  talkedRecently(channel: string, user: string, now: number): boolean {
+    return this.isOpen(channel, user) || this.recentlyResolved(channel, user, now) !== null;
+  }
+
   list(): Conversation[] {
     return this.db.query<Conversation, []>(
       "SELECT * FROM conversations WHERE status IN ('open','on_hold') ORDER BY opened_at,channel_id,user_id",
     ).all();
   }
 
+  /**
+   * A new message from the requester always needs Helio. Otherwise the structured `waiting_on` decides; a conversation
+   * without structured state falls back to who spoke last.
+   */
   state(row: Conversation): ConversationState {
     switch (row.status) {
       case "on_hold": case "resolved": case "archived": return row.status;
       case "open": {
-        const last = this.transcript(row.channel_id, row.user_id).at(-1);
-        return last?.author_id === row.user_id ? "waiting_on_helio" : "waiting_on_requester";
+        const last = this.transcriptOf(row).at(-1);
+        if (last?.author_id === row.user_id) return "waiting_on_helio";
+        if (row.waiting_on) return "waiting_on_requester";
+        return row.request ? "waiting_on_helio" : "waiting_on_requester";
       }
       default: { const unreachable: never = row.status; return unreachable; }
     }
@@ -114,7 +157,7 @@ export class Conversations extends WorkingStore {
 
   append(channel: string, user: string, entry: ConversationEntry, now = Date.now()): void {
     this.db.transaction(() => {
-      const row = this.get(channel, user);
+      const row = this.forReply(channel, user, entry.reply_to);
       if (!row) return;
       const claim = this.working(entry.message_id);
       if (entry.author_id === user && (claim?.claimed_at == null || claim.closed_at !== null)) return;
@@ -136,6 +179,13 @@ export class Conversations extends WorkingStore {
     }).immediate();
   }
 
+  transcriptOf(row: Conversation): ConversationEntry[] {
+    return this.db.query<{ entry: string }, [string, string, number]>(
+      "SELECT entry FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=? ORDER BY rowid",
+    ).all(row.channel_id, row.user_id, row.opened_at).map((entry) => JSON.parse(entry.entry));
+  }
+
+  /** Every active topic's entries for this person in this channel. */
   transcript(channel: string, user: string): ConversationEntry[] {
     return this.db.query<{ entry: string }, [string, string]>(`SELECT t.entry FROM transcript t
       JOIN conversations c ON c.channel_id=t.channel_id AND c.user_id=t.user_id AND c.opened_at=t.opened_at
@@ -143,24 +193,34 @@ export class Conversations extends WorkingStore {
       .all(channel, user).map((row) => JSON.parse(row.entry));
   }
 
-  note(channel: string, user: string, text: string): void {
+  note(channel: string, user: string, text: string, topic?: string): void {
     if (!text.trim() || text.length > 600) throw new TypeError("Summary must be 1-600 characters");
-    this.requireOpen(channel, user);
-    this.db.query("UPDATE conversations SET summary=? WHERE channel_id=? AND user_id=? AND status IN ('open','on_hold')")
-      .run(text, channel, user);
+    const row = this.requireOpen(channel, user, topic);
+    this.db.query("UPDATE conversations SET summary=? WHERE channel_id=? AND user_id=? AND opened_at=?")
+      .run(text, channel, user, row.opened_at);
   }
 
-  hold(channel: string, user: string, reason: string): void {
+  /** Records what Helio understood; an empty string clears a field. */
+  setState(channel: string, user: string, fields: Understanding, topic?: string): void {
+    const entries = UNDERSTANDING_FIELDS.flatMap((name) => fields[name] === undefined ? [] : [[name, fields[name]] as const]);
+    if (!entries.length) throw new TypeError("Nothing to set");
+    for (const [name, value] of entries) if (value.length > 300) throw new TypeError(`${name} must be at most 300 characters`);
+    const row = this.requireOpen(channel, user, topic);
+    this.db.query(`UPDATE conversations SET ${entries.map(([name]) => `${name}=?`).join(",")}
+      WHERE channel_id=? AND user_id=? AND opened_at=?`).run(...entries.map(([, value]) => value), channel, user, row.opened_at);
+  }
+
+  hold(channel: string, user: string, reason: string, topic?: string): void {
     if (!reason.trim() || reason.length > 600) throw new TypeError("Hold reason must be 1-600 characters");
-    this.requireOpen(channel, user);
-    this.db.query("UPDATE conversations SET status='on_hold',hold_reason=? WHERE channel_id=? AND user_id=? AND status IN ('open','on_hold')")
-      .run(reason, channel, user);
+    const row = this.requireOpen(channel, user, topic);
+    this.db.query("UPDATE conversations SET status='on_hold',hold_reason=? WHERE channel_id=? AND user_id=? AND opened_at=?")
+      .run(reason, channel, user, row.opened_at);
   }
 
-  resume(channel: string, user: string): void {
-    this.requireOpen(channel, user);
+  resume(channel: string, user: string, topic?: string): void {
+    const row = this.requireOpen(channel, user, topic);
     this.db.query(`UPDATE conversations SET status='open',hold_reason=NULL
-      WHERE channel_id=? AND user_id=? AND status='on_hold'`).run(channel, user);
+      WHERE channel_id=? AND user_id=? AND opened_at=? AND status='on_hold'`).run(channel, user, row.opened_at);
   }
 
   reopen(channel: string, user: string, now: number): Conversation {
@@ -191,9 +251,9 @@ export class Conversations extends WorkingStore {
 
   resolveIfCurrent(row: Conversation, outcome: ConversationOutcome, now: number): void {
     this.db.transaction(() => {
-      const current = this.get(row.channel_id, row.user_id);
+      const current = this.get(row.channel_id, row.user_id, row.anchor_message_id);
       if (current?.opened_at === row.opened_at && current.last_activity === row.last_activity) {
-        this.close(row.channel_id, row.user_id, outcome, now);
+        this.close(row.channel_id, row.user_id, outcome, now, undefined, row.anchor_message_id);
       }
     }).immediate();
   }
@@ -229,7 +289,7 @@ export class Conversations extends WorkingStore {
         AND NOT EXISTS (SELECT 1 FROM working w WHERE w.channel_id=c.channel_id AND w.user_id=c.user_id
           AND w.claimed_at>=m.migrated_at)`).all();
       for (const row of rows) {
-        this.close(row.channel_id, row.user_id, "other", now);
+        this.close(row.channel_id, row.user_id, "other", now, undefined, row.anchor_message_id);
         this.db.query(`UPDATE conversation_migrations SET resolved_at=?
           WHERE channel_id=? AND user_id=? AND opened_at=?`).run(now, row.channel_id, row.user_id, row.opened_at);
       }
@@ -238,14 +298,13 @@ export class Conversations extends WorkingStore {
     }).immediate();
   }
 
-  private requireOpen(channel: string, user: string): Conversation {
-    const row = this.get(channel, user);
-    if (!row) throw new RangeError("No open conversation in this channel");
+  private requireOpen(channel: string, user: string, topic?: string): Conversation {
+    const row = this.get(channel, user, topic);
+    if (!row) throw new RangeError(topic ? `No open conversation with topic anchor ${topic} in this channel` : "No open conversation in this channel");
     return row;
   }
 
-  private requireSlot(channel: string, user: string): void {
-    if (this.isOpen(channel, user)) throw new RangeError("Conversation already open in this channel");
+  private requireSlot(_channel: string, user: string): void {
     if (this.list().filter((row) => row.user_id === user).length >= 2) throw new RangeError("User already has 2 open conversations");
   }
 }

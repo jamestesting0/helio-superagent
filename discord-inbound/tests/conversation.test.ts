@@ -31,11 +31,16 @@ test("CLI opens, lists and closes conversations with machine consumed prefixes",
     expect(JSON.parse(listed.stdout.slice("CONVERSATION ".length))).toEqual({
       ...row, summary: row.topic, state: "waiting_on_requester", age_ms: 0, idle_ms: 0,
     });
-    expect(await invoke(dir, "open", "100", "99", "11", "replace"))
-      .toEqual({ code: 2, stderr: "", stdout: "CONVERSATION_REFUSED Conversation already open in this channel\n" });
-    const closed = await invoke(dir, "close", "100", "99", "answered");
+    const second = await invoke(dir, "open", "100", "99", "11", "another", "topic");
+    expect([second.code, second.stdout.startsWith("CONVERSATION_OPEN ")]).toEqual([0, true]);
+    expect((await invoke(dir, "close", "100", "99", "answered", "--topic", "12")).stdout)
+      .toBe("CONVERSATION_REFUSED No open conversation with topic anchor 12 in this channel\n");
+    const closed = await invoke(dir, "close", "100", "99", "answered", "--topic", "10");
     expect([closed.code, closed.stderr, closed.stdout.startsWith("CONVERSATION_CLOSED ")]).toEqual([0, "", true]);
-    expect(JSON.parse(closed.stdout.slice("CONVERSATION_CLOSED ".length)).outcome).toBe("answered");
+    expect(JSON.parse(closed.stdout.slice("CONVERSATION_CLOSED ".length))).toMatchObject({ anchor_message_id: "10", outcome: "answered" });
+    const remaining = (await invoke(dir, "list")).stdout.trim().split("\n");
+    expect(remaining.map((line) => JSON.parse(line.slice("CONVERSATION ".length)).anchor_message_id)).toEqual(["11"]);
+    expect((await invoke(dir, "close", "100", "99", "answered")).code).toBe(0);
     expect((await invoke(dir, "list")).stdout).toBe("");
     expect((await invoke(dir, "close", "100", "99", "answered")).code).toBe(2);
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -204,7 +209,37 @@ test("startup sweep reports a stale conversation once after catch-up", async () 
       .map((line) => JSON.parse(line.slice("INBOUND_CONVERSATION_TIMEOUT ".length)));
     expect(notices).toEqual([{
       channel_id: "100", user_id: "55", anchor_message_id: "9", topic: "stale", opened_at: Date.parse("2026-10-29T12:00:00Z"),
-      sent: "901", read: "helio conversation show 100 55",
+      sent: "901", read: "helio conversation show 100 55 --topic 9",
     }]);
   } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a long topic's continuation command stays on that topic", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conversation-topic-page-"));
+  try {
+    expect((await invoke(dir, "open", "100", "99", "10", "first")).code).toBe(0);
+    expect((await invoke(dir, "open", "100", "99", "11", "second")).code).toBe(0);
+    const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+    try {
+      for (let i = 0; i < 3; i++) {
+        store.append("100", "99", { message_id: String(20 + i), author_id: "88", author: "Helio", bot: true,
+          sent_at: "2026-11-02T12:00:00Z", content: "x".repeat(5_000), attachment_count: 0, reply_to: "10" }, Date.now());
+      }
+    } finally { store.dispose(); }
+    const shown = await invoke(dir, "show", "100", "99", "--topic", "10");
+    expect(shown.stdout).toContain("--topic 10");
+    expect(shown.stdout).toContain('"topic\\":\\"first');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a topic that timed out or was closed can still be read by its anchor", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conversation-closed-topic-"));
+  try {
+    expect((await invoke(dir, "open", "100", "99", "9", "stale")).code).toBe(0);
+    expect((await invoke(dir, "close", "100", "99", "timed_out")).code).toBe(0);
+    const shown = await invoke(dir, "show", "100", "99", "--topic", "9");
+    expect([shown.code, shown.stdout.startsWith("CONVERSATION_SHOW ")]).toEqual([0, true]);
+    expect(shown.stdout).toContain('\\"status\\":\\"resolved');
+    expect((await invoke(dir, "show", "100", "99", "--topic", "8")).code).toBe(2);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

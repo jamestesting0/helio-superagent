@@ -23,12 +23,12 @@ async function withStore(run: (store: Conversations, db: Database) => void) {
   } finally { store.dispose(); db.close(); await rm(dir, { recursive: true, force: true }); }
 }
 
-test("open limits include holds across channels and refuse replacing an active topic", async () => {
+test("open limits include holds across channels, so a third topic is refused", async () => {
   await withStore((store) => {
     store.open("100", "99", "10", "first", NOW);
     store.open("101", "99", "11", "second", NOW);
     store.hold("101", "99", "waiting for owner");
-    expect(() => store.open("100", "99", "12", "changed", NOW + 1)).toThrow("already open");
+    expect(() => store.open("100", "99", "12", "changed", NOW + 1)).toThrow("User already has 2 open conversations");
     expect(store.get("100", "99")?.topic).toBe("first");
     expect(() => store.open("102", "99", "12", "third", NOW + 1)).toThrow("2 open");
     expect(store.open("100", "77", "13", "other person", NOW + 1).status).toBe("open");

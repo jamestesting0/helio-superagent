@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,9 +141,10 @@ test("reminders begin at five minutes, exclude accepted and working items, and s
     conversations.claimWorking("100", "99", "502", NOW);
     expect(pendingReminder(queue, conversations, NOW + 299_999)).toBeUndefined();
     expect(pendingReminder(queue, conversations, NOW + 300_000)).toBe("INBOUND_PENDING count=1 oldest=500");
+    setSystemTime(new Date(NOW + 600_000));
     queue.acknowledge("inbound", "500");
     expect(pendingReminder(queue, conversations, NOW + 600_000)).toBeUndefined();
-  } finally { queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
+  } finally { setSystemTime(); queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("inbound schedules the pending reminder separately from ten-minute reaction upkeep", async () => {
@@ -224,4 +225,42 @@ test("inbound section pages expose omitted legacy transcript entries after autho
     expect(JSON.parse(page.content)[0].transcript.map((entry: { message_id: string }) => entry.message_id))
       .toEqual(Array.from({ length: 100 }, (_, i) => String(i)));
   } finally { queue.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a blacklisted sender's retained message and quoted history are withheld from ack, while the record is kept", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "blocked-ack-"));
+  const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+  try {
+    queue.stage("inbound", "777", JSON.stringify(message("777", {
+      author_id: "501", author: "spammer", role: "STAFF_QUESTION", scope: "answer-only", content: "<@88> blocked-secret",
+      discord_origin: authorizationMetadata({ id: "777", channel_id: "100", guild_id: "300", author: { id: "501", username: "spammer" },
+        content: "<@88> blocked-secret", timestamp: new Date(NOW).toISOString() }),
+    })));
+    queue.accept("777", NOW);
+    queue.stage("inbound", "778", JSON.stringify(message("778", {
+      reply_context: { status: "complete", messages: [{ message_id: "770", author_id: "501", author: "spammer", content: "quoted-secret" }] },
+    })));
+    queue.block("501", { source: "owner", reason: "spam", by: "99" }, new Set(["99"]));
+    const shown = await invoke(dir, ["show", "inbound", "777,778"]);
+    expect(shown.stdout + shown.stderr).not.toContain("blocked-secret");
+    expect(shown.stdout + shown.stderr).not.toContain("quoted-secret");
+    expect(shown.stdout).toContain("ACK_WITHHELD 777");
+    expect(queue.status("inbound", "777").disposition).toBe("accepted");
+  } finally { queue.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("ack show keeps the conversation a reply was routed to, not the person's most recent topic", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "routed-ack-"));
+  const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+  const conversations = new Conversations(join(dir, "discord-conversations.sqlite"));
+  try {
+    conversations.open("100", "99", "400", "logs topic", NOW - 2_000);
+    conversations.open("100", "99", "450", "roles topic", NOW - 1_000);
+    queue.stage("inbound", "500", JSON.stringify(message("500", { reply_to: "400",
+      discord_origin: authorizationMetadata({ id: "500", channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
+        content: "<@88> request", timestamp: new Date(NOW).toISOString(), message_reference: { message_id: "400" } }) })));
+    const shown = await invoke(dir, ["show", "inbound", "500"]);
+    expect(shown.stdout).toContain("logs topic");
+    expect(shown.stdout).not.toContain("roles topic");
+  } finally { queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
 });

@@ -35,7 +35,7 @@ test("recovery CLI retains unavailable work, records review and resets it on the
         author: { id: "99", username: "owner" }, content: "help", timestamp: "2026-11-02T12:00:00Z" }),
     });
     queue.stage("inbound", "11", payload);
-    queue.accept("11");
+    queue.accept("11", Date.parse("2026-11-02T12:00:00Z"));
     expect(await invoke("begin")).toContain("count=1");
     expect(await invoke("scan")).toContain("github=unavailable");
     expect(queue.status("inbound", "11").disposition).toBe("accepted");
