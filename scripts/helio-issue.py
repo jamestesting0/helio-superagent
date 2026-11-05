@@ -39,10 +39,12 @@ def human_comments(info: dict, login: str, since: float = 0) -> list[dict]:
             if (item.get("author") or {}).get("login") != login and timestamp(item.get("createdAt")) > since]
 
 
-def projection(issue: int, gh) -> Projection:
+def projection(issue: int, gh, transition: str | None = None) -> Projection:
     """Derive plan and linked-PR state; never promote checkout state to live."""
     info = json.loads(gh.command(["gh", "issue", "view", str(issue), "--repo", REPO, "--json",
                                   "state,stateReason,title,url,comments,closedByPullRequestsReferences"]))
+    if transition:
+        info.update(state="OPEN" if transition == "reopened" else "CLOSED", stateReason=transition.upper())
     plan = runpy.run_path(str(HERE / "helio-plan.py"))
     login = gh.command(["gh", "api", "user", "--jq", ".login"]).strip()
     plans = [plan["parse"](item.get("body", "")) for item in info.get("comments", [])
@@ -63,6 +65,8 @@ def projection(issue: int, gh) -> Projection:
             links.extend(item["url"] for item in info.get("comments", []) if item.get("body", "").startswith(plan["MARKER"]) and (item.get("author") or {}).get("login") == login)
     pulls = {item["number"] for item in info.get("closedByPullRequestsReferences") or []}
     timeline = json.loads(gh.command(["gh", "api", "--paginate", "--slurp", f"repos/{REPO}/issues/{issue}/timeline"]))
+    reopened_at = max((timestamp(event.get("created_at")) for page in timeline for event in page
+                       if event.get("event") == "reopened"), default=0)
     for page in timeline:
         for event in page:
             source = (event.get("source") or {}).get("issue") or {}
@@ -82,7 +86,12 @@ def projection(issue: int, gh) -> Projection:
             links.append(detail["url"])
         implementation = ISSUE_LINK["parse"](detail.get("body", ""))
         closes = {item["number"] for item in detail.get("closingIssuesReferences") or []}
-        if implementation and implementation.issue == issue and implementation.complete:
+        merged_at = timestamp(detail.get("mergedAt"))
+        historical = detail["state"] == "MERGED" and (
+            transition == "reopened" or (merged_at > 0 and reopened_at > merged_at))
+        if historical:
+            parts.append(f"PR #{number}: historical completion before reopened work")
+        elif implementation and implementation.issue == issue and implementation.complete:
             if issue not in closes:
                 warnings.append(f"PR #{number} claims complete scope but has no closing relationship to #{issue}")
             if detail["state"] == "MERGED" and info.get("state") == "OPEN":
@@ -178,13 +187,13 @@ def main() -> int:
             issue, operation = gh.resume(args.operation)
             print(f"ISSUE_UPDATED issue={issue} operation={operation}")
             return 0
-        facts = projection(args.issue, gh)
+        if args.close and args.reopen:
+            raise ISSUES["Refused"]("Choose close or reopen.")
+        facts = projection(args.issue, gh, "reopened" if args.reopen else args.close)
         change = {"projection": facts["status"], "summary": facts["summary"], "links": facts["links"],
                   "body": args.body_file.read_text() if args.body_file else None,
                   "note": args.note_file.read_text().strip() if args.note_file else "", "close": args.close,
                   "adopt": args.adopt, "labels": args.labels, "reopen": args.reopen}
-        if args.close and args.reopen:
-            raise ISSUES["Refused"]("Choose close or reopen.")
         if args.labels is None and "Plan " in change["projection"] and ": Approved" in change["projection"]:
             current = gh.get(args.issue)
             change["labels"] = [item["name"] for item in current.get("labels", []) if item["name"] != "needs-owner-review"]

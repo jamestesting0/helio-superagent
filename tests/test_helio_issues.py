@@ -11,6 +11,21 @@ CLI = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio
 
 
 class IssueTests(unittest.TestCase):
+    def test_reopen_recovers_an_uncertain_write_without_duplicate_note_or_lifting_labels(self):
+        self.meta.update(state="closed", state_reason="completed", labels=["human-hold"])
+        change = {"body": "New local-only work; no commit or PR.", "adopt": M["digest"](self.body),
+                  "reopen": True, "projection": "OPEN: REOPENED", "note": "Resuming local-only work"}
+        self.fail_patch = "after"
+        with self.assertRaises(M["Refused"]):
+            self.gh.update(4, change)
+        self.gh.update(4, change)
+        self.gh.update(4, change)
+        self.assertEqual(self.patches, 1)
+        self.assertEqual(self.meta["state"], "open")
+        self.assertEqual(self.meta["labels"], ["human-hold"])
+        self.assertEqual(len(self.comments), 1)
+        self.assertIn("no commit or PR", self.body)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -180,6 +195,42 @@ class IssueTests(unittest.TestCase):
 
 
 class ProjectionTests(unittest.TestCase):
+    def test_reopened_work_preserves_old_pr_history_without_false_completion(self):
+        class Gh:
+            state = "CLOSED"
+            timeline = [[]]
+            body = CLI["ISSUE_LINK"]["marker"](8, 1, True)
+
+            def command(self, argv, stdin=None):
+                if argv[:3] == ["gh", "issue", "view"]:
+                    return json.dumps({"state": self.state, "stateReason": "COMPLETED", "title": "Facts", "comments": [],
+                                       "closedByPullRequestsReferences": [{"number": 9}]})
+                if argv[:3] == ["gh", "api", "user"]:
+                    return "helio"
+                if "/timeline" in " ".join(argv):
+                    return json.dumps(self.timeline)
+                return json.dumps({"state": "MERGED", "url": "https://github.com/o/r/pull/9",
+                                   "body": self.body, "mergedAt": "2026-11-05T09:00:00Z", "statusCheckRollup": [],
+                                   "closingIssuesReferences": [{"number": 8}]})
+
+        gh = Gh()
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp, patch.dict(CLI["projection"].__globals__, STATE=Path(temp), REPO="o/r"):
+            historical = CLI["projection"](8, gh)
+            self.assertTrue(historical["status"].startswith("CLOSED"))
+            intended = CLI["projection"](8, gh, "reopened")
+            self.assertTrue(intended["status"].startswith("OPEN"))
+            self.assertEqual(intended["warnings"], [])
+            self.assertIn("PR #9", intended["status"])
+            gh.state = "OPEN"
+            gh.timeline = [[{"event": "reopened", "created_at": "2026-11-05T10:00:00Z"}]]
+            synced = CLI["projection"](8, gh)
+            self.assertEqual(synced["warnings"], [])
+            gh.body = ""
+            self.assertEqual(CLI["projection"](8, gh)["warnings"], [])
+            gh.timeline = [[]]
+            self.assertEqual(len(CLI["projection"](8, gh)["warnings"]), 1)
+
     def test_status_does_not_change_when_only_the_observation_time_does(self):
         import datetime, sqlite3
         with tempfile.TemporaryDirectory() as temp:
