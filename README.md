@@ -1,132 +1,207 @@
 # Helio
 
-Helio is the EloBot Dori: an always-on agent you talk to on Discord. It
-answers questions about EloBot, talks bug reports and feature ideas through
-with whoever raised them before filing review-ready GitHub issues, runs coding
-work in its own omo sessions ("lanes") in herdr, tests changes on the beta bot,
-and only merges or restarts production with explicit approval.
+**A Discord-first software operator built on Dori, omo and herdr.**
 
-This repository is everything needed to rebuild and update Helio: its
-instructions, Discord intake, launchers, the forked Dori skill, the omo
-configuration and the isolated-runtime services. Secrets live only in
-`~/.config/helio/helio.env`, and the memory snapshot (`memory/`) stays on your
-machine; both are gitignored. Never commit either.
+Turn a community bug report into a clear issue, a tested change and an approved
+release, while keeping the conversation, decisions and evidence together.
 
-## Install these first
+Helio is the always-on agent for EloBot. It answers questions, investigates
+reports, coordinates coding sessions, tests against beta and follows work
+through GitHub. People can report a problem without gaining permission to
+deploy it. Owners and trusted contributors can authorize work without repeating
+the same decision at every step.
 
-> **Helio does not run without Dori, omo and herdr.** Install and check all of
-> them before anything in this repository; `install.py` and `helio start` assume
-> they are already there.
+This repository packages the operating stack around that agent: Discord
+intake, persistent work state, instructions, a maintained Dori fork, installers,
+diagnostics and isolated-runtime services.
 
-| Tool | What it is for | How | Check |
-|---|---|---|---|
-| WSL Ubuntu 22.04 with systemd | Everything runs here; the launcher calls `wsl.exe -d Ubuntu-22.04` | [setup part 1](docs/setup.md#1-windows-and-wsl) | `systemctl is-system-running` |
-| Bun, Python 3.12, `gh` | Runs the Discord intake and helpers; GitHub access | [setup part 2](docs/setup.md#2-base-tools) | `bun --version`, `gh auth status` |
-| **omo** (`bun add -g omo-ai`) | The coding agent every Helio session (lead and lanes) runs in | [setup part 3](docs/setup.md#3-oh-my-openagent-omo-and-herdr) | `omo --version` |
-| **herdr** | The terminal workspace that holds the lead and lane panes | [setup part 3](docs/setup.md#3-oh-my-openagent-omo-and-herdr) | `herdr --version` |
-| **Dori skill and `dori` CLI**, from this repo's fork in `vendor/dori-mode` (not upstream) | Lanes, watchers and Discord sends | [setup part 5](docs/setup.md#5-dori-skill-and-dori-cli) | `dori --help`; `readlink -f "$(command -v dori)"` points into `vendor/` |
-| Node 24 (via nvm) | omo's DAG pane; `helio deploy` copies it into the sandbox | `nvm install 24 && nvm alias default 24` | `node --version` |
+## What Helio adds to Dori
 
-## Quick start
+Dori supplies the always-on lead, herdr lanes and verified-completion protocol.
+Helio builds an application and community operations layer around that
+foundation:
 
-On a fresh Windows laptop, follow **[docs/setup.md](docs/setup.md)**. The short
-version, once everything above is installed:
+| Capability | What changes in practice |
+|---|---|
+| **A shared-server Discord workflow** | Owner, trusted-user, ordinary-member and evidence-only bot roles have distinct scopes. Channel/thread policy, reply context, attachments and burst handling let Helio participate without treating every message as an instruction. |
+| **Conversations that retain the work** | Separate topics and structured request, decision, waiting-on and result fields preserve context beyond a short transcript window. Claims, holds, replies and requester follow-ups have explicit lifecycles. |
+| **GitHub issues that stay current** | Helio clarifies reports, checks existing work and maintains the issue body as the current scope. Public comments record changes without becoming new instructions to the bot. |
+| **Fewer repeated approvals** | An authorized implementation request includes the verified PR. A clearly scoped merge-and-restart request can be one decision. Choices use Discord buttons; custom answers come through ordinary replies. |
+| **Bounded coding sessions** | Worker caps, host guards and a durable priority queue control concurrency. Job identity reuses a lane; idle sessions can hibernate and resume. Safe worktree cleanup and explicit abandonment keep unfinished work distinguishable from completion. |
+| **Recovery and long-run upkeep** | Durable delivery, catch-up gaps, reply receipts, startup reconciliation, retention rules, session archives and coordinated backups keep interrupted work inspectable. |
+| **Controlled application operations** | The isolated profile separates the agent from host credentials. Beta maintenance and production restart use narrowly scoped services, with conflict checks, protected preimages and approval checks. |
+| **Direct operational diagnostics** | `helio doctor --json` exposes versions, queues, monitor processes, recovery and lane failures from either shell. Intake writes its own readiness receipt, tied to its process identity. |
+
+The generic changes made to Dori are recorded in
+[`vendor/dori-mode/FORK.md`](vendor/dori-mode/FORK.md). Helio still uses Dori,
+omo and herdr; each has a distinct role in the stack.
+
+## From a Discord report to verified delivery
+
+1. **Understand the request.** Read the permitted context, clarify uncertainty
+   and distinguish a bug, feature idea or question from action approval.
+2. **Establish the facts.** Inspect the running revision and existing
+   issues/PRs, then maintain one current issue body.
+3. **Authorize the work once.** An owner/trusted implementation request covers
+   implementation, verification and its PR. Requested plan mode waits for
+   approval before building.
+4. **Implement and test.** Run the work in a tracked lane with a concrete Done
+   criterion, bounded resources and beta-only test access.
+5. **Approve the consequential step.** Merge and production restart stay
+   tied to the authorized target and revision.
+6. **Verify and report.** Read back the result, update the issue and notify
+   the requester in the permitted destination.
+
+Small confirmed bugs can use the bounded standing-autofix path through
+`helio autofix check|submit`. Size, path, rate and regression-proof gates apply;
+uncertain or larger changes and feature ideas remain reviewable issues until
+authorized.
+
+## Built to survive interruptions
+
+Helio preserves unfinished work across restarts and checks current outcomes
+before acting on recovered messages.
+
+- Messages are staged before slow enrichment. Reaction and conversation upkeep
+  run separately from the delivery queue.
+- Catch-up counts eligible messages and records unread gaps when limits cut a
+  scan short. Blacklisted senders and excluded channels/threads are filtered
+  from the relevant intake and learning paths.
+- Reply receipts suppress duplicate sends. A restart does not turn an old
+  request into fresh approval.
+- Owner-managed and automatic blacklist policies retain moderation evidence.
+  Durable ping limits bound repeated requests.
+- Retention distinguishes raw conversation content, unresolved work and
+  idempotency receipts. Session archives retain activity age; cleanup explains
+  why a worktree must be kept.
+- Housekeeping begins with a preview. An abandoned lane retains its worktree
+  and an explicit reason, without announcing that its work was completed.
+
+The regression suites exercise these failure boundaries: interrupted updates,
+store reopen/replay, concurrent admission, failed wakes, retained open file
+descriptors, missing installation payloads and stale readiness evidence.
+
+## Clear boundaries for consequential work
+
+The isolated runtime uses a dedicated Linux account, Bubblewrap namespaces and
+network restrictions. Host SSH credentials, the production environment and
+Windows interop paths are outside that workspace.
+
+Beta runs use `elo_beta`. Protected single-record maintenance stores an actual
+BSON preimage and applies a compare-and-set update; that backup service does
+not intercept ordinary application database writes. The production restart
+broker holds the Oracle SSH credential separately and rechecks live approval,
+revision and checkout state. GitHub operations also follow the project's sender,
+scope and approval policy.
+
+Diagnostics distinguish observations from guarantees. A live monitor process
+does not prove its subscription is unpaused. A readiness receipt or timestamped
+Oracle observation does not establish current gateway connectivity. Doctor
+reports unprobed dependencies and unknown data explicitly.
+
+See [architecture](docs/architecture.md) and the
+[operator guide](docs/operator-guide.md) for the boundaries and procedures.
+
+## Get running
+
+Helio is the EloBot deployment kit. Adapting it to another application requires
+its own policy, environment and deployment integration.
+
+The supported host is **Windows with WSL Ubuntu 22.04 and systemd**. Native
+Windows execution is unsupported.
+
+| Dependency | Role |
+|---|---|
+| **omo** | Runs the lead and coding sessions |
+| **herdr** | Holds the terminal workspace and lane panes |
+| **This repository's Dori fork** | Provides the `dori` CLI and operating contract |
+| Bun, Python 3.12, GitHub CLI and Node 24 | Run intake, helpers, GitHub operations and omo integrations |
+| Discord bot and BrowserSkill setup | Supply the messaging and browser QA surfaces |
+
+Follow **[the setup guide](docs/setup.md)** for dependencies, configuration,
+accounts and isolated-runtime provisioning. Installing the owner prompt files
+alone does not provision the isolated runtime.
+
+Everyday settings live in **`~/.config/helio/helio.env`**, generated initially
+with `python3 scripts/helio_config.py init`. The
+[`helio.env.example`](helio.env.example) template documents the settings.
+`helio update` renders installed configuration and prompts; edit the source
+configuration rather than generated files.
+
+After provisioning the root services, install the current protected helper
+bundle with [`scripts/helio_root_bundle.py`](scripts/helio_root_bundle.py):
+preview its changes first, then use `--apply`. Root-owned helpers have a
+separate update boundary from routine managed-file deployment.
+
+Once setup is complete:
 
 ```sh
-cd ~/PythonProjects/helio-superagent
-python3 scripts/helio_config.py init         # creates ~/.config/helio/helio.env
-nano ~/.config/helio/helio.env               # fill in the secrets
-python3 scripts/install.py --profile owner --apply
-install -m 700 scripts/helio-host ~/.local/bin/helio
-helio start
+helio start                 # foreground lead and workspace
+
+# From another normal WSL terminal:
+helio doctor
+helio doctor --json
+helio version
 ```
 
-Everyday use: **[docs/workflow.md](docs/workflow.md)**. Edit, then `helio deploy`:
-it updates your install and the isolated one, even while Helio runs, and says
-what the change needs (nothing, monitors reload themselves, `helio restart` for
-the lead only, or a full `helio start`). `helio version` shows what is installed
-and running. `helio doctor` explains startup and work-state warnings directly
-from the isolated installation, even when its runtime is stopped.
-`helio doctor --json` gives coding agents the same structured snapshot.
+## Everyday operation
 
-## How Helio handles requests
-
-- **Listening:** in the trusted chat it answers every ping; in normal chats only pings, plus conversation/working-window follow-ups and replies to Helio within seven days of a conversation. It only ever looks at channels inside `DORI_DISCORD_SCOPE_CATEGORY`. Quick bursts of messages are answered once, with a native reply that pings the person.
-- **Reading:** it sees text, bot embeds, Components V2 text, buttons and Discord-hosted images, plus reply chains (DMs and the trusted chat) or the replied-to message (normal chats). Links into the EloBot repo stay readable; all other links are hidden.
-- **Requests:** bugs, quality-of-life ideas and features follow one procedure (`policy.md`, Request intake). Helio talks it through in place, checks the commit Elo Bot actually runs and any existing work (`helio triage`), plays the request back, then files a labelled issue (`bug`, `qol`, `feature`, `confirmed`, `needs-owner-review`) and announces it in the staff chat. When the issue closes, `helio followups` tells the requester it is live, declined or done; conversations waiting on the requester time out after 72 hours; waiting-on-Helio and held work never do.
-- **Replies:** a 👀 on your message means Helio is working on an answer. It appears at once for a ping in a DM or the trusted chat and for a message in an open conversation, and otherwise as soon as Helio decides to answer; it goes away when the reply is sent. Anything you add while it drafts is folded into the same answer: `reply.ts` will not send while newer messages are unread, holding at most twice within two minutes. Reply and DM text always goes through a file (`--text-file`), never a shell command, so backticks and `$` arrive intact.
-- **Authority:** only you and trusted users can approve PRs, merges, restarts and closing issues. Merge and restart approvals are natural language but pinned to the exact revision that existed when they were given (`release-check`, root release broker).
-- **Working style:** inside clear boundaries (beta, test channels, its own branches) Helio acts without asking; production, credentials and other people's accounts always need approval.
-
-Inside the isolated workspace: `helio triage`, `helio conversation open|close|list`, `helio followups add|check|done|list`, `helio release inspect`, `helio release-check`, `helio beta ...`, `helio browser ready|close`, `helio question ...`, `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`. `helio doctor [--json]` works both here and in the normal host shell. Browser-only diagnostics remain available as `bsk doctor --json` inside Helio.
-
-## Configuration: one file
-
-Helio can open automatic PRs for small confirmed bugs, including Elo Bot reports, only through `helio autofix check|submit`; regression tests must fail on main and pass with the fix. Merges and restarts still need fresh approval. Set `HELIO_AUTOFIX=off` to disable this, and use `HELIO_AUTOFIX_MAX_LINES`, `HELIO_AUTOFIX_MAX_FILES`, `HELIO_AUTOFIX_MAX_OPEN` and the comma-separated `HELIO_AUTOFIX_DENY` globs in `helio.env` to bound it; other work remains issue-only with `needs-owner-review`.
-
-All settings live in **`~/.config/helio/helio.env`** (template:
-[`helio.env.example`](helio.env.example)): the Discord token, channel and
-people IDs, the EloBot checkout path, models and beta credentials. `helio update`
-generates everything else from it (`~/.dori/elobot/env`, `beta.env`,
-`beta-mongo.env`, `trusted-users`, `report-channels`, `release-approvers`,
-`config.json`, and the IDs inside the prompts). Don't edit the generated
-files by hand.
-
-## Layout
-
-| Path | What it is |
+| Command | Purpose |
 |---|---|
-| [`helio.env.example`](helio.env.example) | The configuration template, every setting explained |
-| [`agent/`](agent/README.md) | What gets installed into `~/.dori/elobot`: prompts, profile overlays, runbooks, launchers, helpers, config template |
-| [`vendor/dori-mode/`](vendor/dori-mode/FORK.md) | The Dori skill and `dori` CLI, forked for Helio (`FORK.md` lists every change) |
-| [`omo/`](omo/README.md) | omo project config for the EloBot checkout: memory agent and category models |
-| [`discord-inbound/`](discord-inbound/AGENTS.md) | Discord watcher: filtering, authorization, catch-up, durable delivery |
-| [`isolation/`](isolation/README.md) | Root services and host helpers for the isolated runtime |
-| `elobot-checkout/` | `AGENTS.md` and docs copied into the EloBot checkout |
-| `scripts/` | Installer, updater, config renderer, beta/release brokers, launchers |
-| `tests/` | Offline tests (no Discord, no production) |
-| `memory/` | Local-only snapshot of the shared EloBot omo memory (gitignored; never pushed) |
-| [`docs/`](docs/) | [setup](docs/setup.md), [workflow](docs/workflow.md), [architecture](docs/architecture.md), [migration](docs/migration.md), [operator guide](docs/operator-guide.md) |
+| `helio start` / `helio resume` | Start a new lead or resume the previous session |
+| `helio doctor [--json]` | Inspect startup, queues, recovery and work-state warnings from the host or inside Helio |
+| `helio version` | Compare source, installed and running revisions, including pending restarts |
+| `helio update --preview` / `helio update` | Preview or apply managed updates to the owner installation |
+| `helio deploy [--restart]` | Update both installations and report the required reload; optionally restart the lead |
+| `helio restart` | Replace the lead while preserving the sandbox, network and lanes |
 
-## How the instructions fit together
+Inside Helio, the workflow commands cover issues, plans, questions,
+conversations, blacklists, housekeeping, health, beta and release inspection.
+Start with [day-to-day workflow](docs/workflow.md); use
+[the operator guide](docs/operator-guide.md) for details.
 
-Helio's behaviour comes from three layers, each rule in exactly one place:
+## Repository map
 
-1. **Dori skill** (`vendor/dori-mode/SKILL.md`): how any Dori works, including
-   lanes, the done protocol, writing style and standing rules. It's forked so
-   deployments can add sender roles, relevance rules and authorization gates
-   without contradicting it.
-2. **Lead prompt** (`agent/prompts/lead.md`, installed as `setup-prompt.md`):
-   Helio-only runtime for the lead session, covering monitors, inbound roles,
-   acknowledgement, replies, attachments and learning.
-3. **Work policy** (`agent/prompts/policy.md`, installed as `work-policy.md`):
-   rules the lead and every worker share, covering authority, the release
-   check, beta QA, evidence and questions.
+| Path | Responsibility |
+|---|---|
+| [`agent/`](agent/README.md) | Installed prompts, profile overlays, runbooks, launchers and helpers |
+| [`discord-inbound/`](discord-inbound/) | Authorization, delivery, replay, conversations, moderation and interactions |
+| [`vendor/dori-mode/`](vendor/dori-mode/FORK.md) | Maintained Dori skill and CLI fork |
+| `scripts/`, [`isolation/`](isolation/README.md) | Configuration, installation, diagnostics, host boundary and privileged services |
+| [`omo/`](omo/README.md), `elobot-checkout/` | Configuration and documentation installed into the application checkout |
+| `tests/` | Offline Python regressions alongside the colocated Bun suites |
+| [`docs/`](docs/) | [Setup](docs/setup.md), [workflow](docs/workflow.md), [architecture](docs/architecture.md), [migration](docs/migration.md) and [operation](docs/operator-guide.md) |
 
-Each installed prompt also gets a short **profile overlay**
-(`agent/profiles/owner|isolated/`) for the few things that differ between your
-normal account and the isolated runtime, such as Oracle access and beta
-maintenance.
+Instructions have three main layers: the generic Dori contract, the
+lead-only prompt, and the policy shared by lead and workers. Owner/isolated
+profile overlays supply the differences. Installer payloads are explicit and
+updates check their managed-file baseline.
 
-## Tests
+Credentials, runtime state and the private `memory/` snapshot stay local.
+Provision them separately; never include them in a public commit.
+
+## Test the operating boundaries
 
 ```sh
-~/PythonProjects/elo-bot/.venv/bin/python -m unittest discover -s tests   # needs pymongo for the beta tests
-(cd discord-inbound && bun test)
+PYTHONDONTWRITEBYTECODE=1 ~/PythonProjects/elo-bot/.venv/bin/python -m unittest discover -s tests
+(cd discord-inbound && bun test --timeout 60000)
 (cd vendor/dori-mode/scripts && bun test)
 ```
 
-Installed-helper tests run against a throwaway home:
+The Python suite needs the project's test dependencies, including `pymongo`.
+Installed-helper tests use a throwaway home:
 
 ```sh
 (
   set -eu
   test_home="$(mktemp -d)"; trap 'rm -rf "$test_home"' EXIT
   test_home="$(cd "$test_home" && pwd -P)"
-  mkdir -p "$test_home/.agents/skills" && cp -R vendor/dori-mode "$test_home/.agents/skills/dori-mode"
-  python3 scripts/install.py --home "$test_home" --apply
+  mkdir -p "$test_home/.agents/skills"
+  cp -R vendor/dori-mode "$test_home/.agents/skills/dori-mode"
+  python3 scripts/install.py --profile isolated --home "$test_home" --apply
   HOME="$test_home" bun test "$test_home/.dori/elobot/"{browser-env,thread-target,reply}.test.ts
 )
 ```
 
-Never use a real bot token, production service or live Discord message in a test.
+Offline tests use disposable state and fixtures. Keep real bot tokens,
+production services and live Discord messages out of those suites.
