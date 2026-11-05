@@ -43,8 +43,10 @@ class IsolatedTerminalTests(unittest.TestCase):
                 environment["relay"](master, SimpleNamespace(poll=poll))
             self.assertEqual(termios.tcgetattr(terminal), saved)
             self.assertEqual(select.select([terminal], [], [], 0)[0], [])
-            os.set_blocking(outer, False)
-            output = os.read(outer, 65536)
+            output = b""
+            while not output.endswith(b"\x1b[0m"):
+                self.assertTrue(select.select([outer], [], [], 2)[0], f"terminal reset never arrived: {output!r}")
+                output += os.read(outer, 65536)
             modes = {int(number): enabled == b"h"
                      for number, enabled in re.findall(rb"\x1b\[\?(\d+)([hl])", output)}
             self.assertEqual({mode: modes.get(mode) for mode in (1003, 1006, 1049, 25)},
