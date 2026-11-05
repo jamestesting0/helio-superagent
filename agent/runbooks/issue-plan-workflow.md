@@ -1,4 +1,15 @@
-# Issue plans (opt-in)
+# Issue plans (opt-in) and direct implementation
+
+## Implementing without a plan
+
+An owner's or trusted user's request to implement an issue ("implement #8", "proceed" or "yes"
+replying to your proposal to implement it) is one decision covering the work and its PR. Record it
+immediately: `helio work authorize --issue N --message M --channel C`. On `WORK_AUTHORIZED` launch
+the lane; it removes `needs-owner-review` and lasts seven days. Never ask again before the PR.
+The scope is the current issue body (`helio issue show N`): build its confirmed requirements and leave
+its open questions out. The lane follows the brief below without the plan check; its result file has
+one `scope` row per confirmed requirement, `deviation` for anything left open, which makes the PR
+`Refs #N` and keeps the issue open. A work authorization never approves a merge or restart.
 
 Use this only when the owner or a trusted user asks for a plan or to finalize an issue
 ("finalize #4", "plan #4 first", "put the plan on the issue"). Finalizing means: post the plan
@@ -21,8 +32,10 @@ private. The approved plan is the contract the PR is checked against.
    "I've written up a plan for <issue link>; the team will review it."
 4. On `INBOUND_CONFIRM` with outcome `approved`, run `helio plan approve --issue N --confirmation ID`;
    for a typed approval (a reply naming the issue) run `helio plan approve --issue N --message M`.
-   `INBOUND_PLAN_FEEDBACK` carries suggested changes (`helio confirm feedback ID`): revise and post again. On `PLAN_REFUSED`, tell them the reason
-   and ask again.
+   `INBOUND_PLAN_FEEDBACK` is a reply to the plan message with suggested changes (`helio confirm feedback ID`): revise and post
+   again with `--from-message M`. If that reply also said to go ahead ("6 hours instead, then go"),
+   approve the new revision with `helio plan approve --issue N --message M` without asking again.
+   On `PLAN_REFUSED`, tell them the reason once.
 5. On `PLAN_APPROVED`, launch the lane with the brief below. Approval covers commit, push and PR;
    do not ask again.
 6. Plans awaiting approval are counted in `helio status` and the greeting.
@@ -40,8 +53,8 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
 
 Revisions: post again with `change_note` ("window 8 to 6 hours"). A content change prints
 `PLAN_APPROVAL_RESET`; send the new announcement and ask for approval of the new revision.
-Hand edits on GitHub print `PLAN_EDITED_OUTSIDE_HELIO`: ask whether to adopt them; if so, read
-them into the fields and post a revision. `helio plan drop --issue N` ends plan mode when asked.
+Hand edits on GitHub are adopted automatically as a new revision (`PLAN_ADOPTED`): send its
+announcement for approval; do not ask whether to adopt. `helio plan drop --issue N` ends plan mode when asked.
 
 ## Fields
 

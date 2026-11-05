@@ -253,7 +253,7 @@ If any required live scenario is blocked, report it as unverified before calling
 
 ## 9. Finish and clean up
 
-Commit and push only the verified in-scope working branch when authorized by the bug policy or feature request. PR creation requires an owner or trusted-user request, an approved plan through `helio pr submit` (issue-plan-workflow.md), or standing autofix authorization through `helio autofix submit`; a PR merge and `elobot` restart remain separately confirmation-gated in `work-policy.md`; other production changes remain owner-only.
+Commit and push only the verified in-scope working branch when authorized by the bug policy or feature request. PR creation requires an owner or trusted-user request, an approved plan or a recorded work authorization (`helio work authorize`), submitted through `helio pr submit` (issue-plan-workflow.md), or standing autofix authorization through `helio autofix submit`; a PR merge and `elobot` restart remain separately confirmation-gated in `work-policy.md`; other production changes remain owner-only.
 
 Always use a finally/cleanup path, including failures. Stop the task BrowserSkill session, then run `helio browser close` to close the dedicated profile after browser work; if another BrowserSkill session remains active, defer closure until it finishes. Stop only a beta process started by this run, using its recorded handle. Never broad-kill Python or another lane's bot. Remove only owned disposable fixtures/resources, preserve evidence and unrelated state subject to the isolated Beta data exception, stop the BrowserSkill session, and return borrowed tabs. Keep logins intact.
 

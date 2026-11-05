@@ -12,7 +12,7 @@ under `agent/profiles/<profile>/`. They're installed as `~/.dori/elobot/setup-pr
 Installed runbooks live in `~/.dori/elobot/docs/`.
 
 - [Request intake, delivery and automatic fixes](autofix-workflow.md): shared request/conversation/question procedures, lead-only turn/reply/acknowledgement procedures and prefix dispatch, plus lane-only proof gates and automatic PR submission.
-- [Issue plans](issue-plan-workflow.md): the opt-in plan mode (plan comment template, approval, lane brief and `helio pr submit`), read only when a plan or finalized issue is requested.
+- [Issue plans](issue-plan-workflow.md): direct implementation (`helio work authorize`) and the opt-in plan mode (plan comment template, approval, lane brief and `helio pr submit`); read before implementing an issue or when a plan is requested.
 - [Standing decisions](decisions-workflow.md): sourced guidance, holds, supersession and owner-only review.
 - [Current issue descriptions](issue-truth-workflow.md): scope updates, status reconciliation and partial-update recovery.
 - [Startup recovery](startup-recovery-workflow.md): resume recorded work without replaying old conversations or authorization.

@@ -6,7 +6,7 @@ The working checkout is an isolated copy of the owner's WSL EloBot checkout, ini
 
 ### Beta data
 
-Exception to shared beta-state preservation: no elo_beta record is protected. For authorized beta work, create, change or delete any records, including existing accounts, matches, finals, giveaways and queues; leave them changed unless asked to restore. An owner or trusted beta-test request needs no extra approval because records exist. Never use production tokens, the original .env or elo_bot. Run only code containing current main and verify the beta-only credential.
+Exception to shared beta-state preservation: no elo_beta record is protected. For authorized beta work, create, change or delete any records, including existing accounts, matches, finals, giveaways and queues; leave them changed unless asked to restore. Run only code containing current main and verify the beta-only credential.
 
 ## Starting beta
 
