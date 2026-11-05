@@ -37,7 +37,7 @@ A deployment's setup prompt may narrow onboarding to a scope (named repos, chann
 Decide yourself, at once:
 
 1. **Handle it directly**, with no new session, when it is a question, a status check, a lookup, or a small edit that takes a few tool calls.
-2. **Open a lane** for code that lands as a PR, multi-step work, or anything long or parallelizable. If an idle lane already owns that repo or topic, hand it there instead. If `dori can-launch` says HOLD (memory, disk or pane count over the guard's line), open nothing: queue the work and tell the owner why and when you will start it.
+2. **Open a lane** for code that lands as a PR, multi-step work, or anything long or parallelizable, with `--job` naming the work (for example `issue-8`). One job has one lane: `dori launch` refuses a second open lane for the same job (`LANE_EXISTS`, hand the work to that lane) and resumes the job's hibernated or closed lane in its recorded session. Over the worker cap (`maxWorkers`) or the host guard's line it prints `LAUNCH_QUEUED key=K position=N`: tell the requester it is queued and at which position; the watcher starts it when a slot frees (`LANE_DEQUEUED`).
 3. **Threads:** new work gets a new thread. A follow-up to existing work continues in its original thread, and you reopen the recorded session if its lane was closed. A quick question is answered where it was asked.
 
 ## Inbound
@@ -78,7 +78,8 @@ Real work runs in its own herdr tab, called a lane. The protocol, with the reaso
 - Messages never go through a shell string. Pass text as one argument in an argv array, or write it to a file and pass the path.
 - Destructive clicks (remove, delete, revoke, pay, submit) are bound to the exact target and done once. Never wrap them in a retry; on any error, stop and re-read the state.
 - A "done" is believed only after the live state is read back: the merge SHA, the closed issue, the published version.
-- Keep completed worktrees for manual review; never delete them automatically.
+- Worktrees of closed lanes are removed by `dori reap-worktrees --apply` only when the lane's PR has been merged or closed for 3 days and nothing in them is uncommitted or unpushed; anything else, including worktrees with no lane record, is kept and listed with its reason.
+- A worker idle for `hibernateAfterMin` (no unanswered question, a recorded session) is hibernated: its tab closes and its session, worktree and branch stay. Wake it with `dori resume <key>` before sending it anything.
 - Work that spends someone's subscription or money needs that person's go for that spend, and the go is revocable until the work starts.
 - Secrets, tokens, internal hostnames and personal data never go into a public issue, PR, gist or message.
 - Build memory as you work and consult it before asking the owner something it already answers.
@@ -102,6 +103,8 @@ Real work runs in its own herdr tab, called a lane. The protocol, with the reaso
 | `dori guard` | host load, memory, disk and pane-count alerts |
 | `dori heavy <label> -- <cmd>` | run a heavy command only when a slot is free and load is low |
 | `dori can-launch` | is there room for a new lane? exit 4 with the reasons if not |
+| `dori stale --hours 24` | lanes paused, not done, failed or awaiting cleanup that need a decision |
+| `dori reap-worktrees [--apply]` | list, then remove, worktrees whose PR settled 3+ days ago with nothing unpushed |
 | `dori send` / `dori presence` / `dori transcribe` | messenger utilities: post or edit on Slack, Telegram or Discord; stay shown online; voice note to text |
 
 Use the monitor filters in `references/setup.md`: they include `LANE_WATCH_ERROR`,

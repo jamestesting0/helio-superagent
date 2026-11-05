@@ -1,16 +1,18 @@
-import { mkdirSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { lockRegistry } from "./registry-lock.ts";
 
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
 
-export type LaneStatus = "working" | "paused" | "done-claimed" | "verified-done" | "not-done" | "closed";
+export type LaneStatus = "working" | "paused" | "done-claimed" | "verified-done" | "not-done" | "hibernated" | "cleanup-pending" | "closed";
 export type Claim = { readonly at: string; readonly evidence: string; readonly emitted?: boolean; readonly acknowledgedAt?: string };
 export type Objection = { readonly at: string; readonly reasons: readonly string[] };
 export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
 
 export type Lane = {
   readonly key: string;
+  /** The job this lane does (e.g. issue-8); one open lane per job. Defaults to the key. */
+  readonly job?: string;
   readonly revision?: number;
   readonly launchState?: "reserved" | "worktree-created" | "pane-created" | "started" | "unconfirmed" | "failed";
   readonly launchError?: string;
@@ -44,8 +46,13 @@ export type Lane = {
   readonly pausedSeenWorking?: boolean;
   /** The status a paused lane had before it was paused; `resume` restores it. */
   readonly pausedFrom?: LaneStatus;
+  /** When the lane's agent was first seen idle in the current idle stretch (hibernation timer). */
+  readonly idleSince?: number;
   readonly receipt?: unknown;
+  readonly worktreeRemoved?: { readonly at: string; readonly path: string; readonly branch: string; readonly head: string };
 };
+
+export const jobOf = (lane: Lane): string => lane.job ?? lane.key;
 
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 
@@ -56,10 +63,13 @@ export const withStatus = (lane: Lane, status: LaneStatus, note: string, at: str
   history: [...(lane.history ?? []), { at, status, note }],
 });
 
+/** Open lanes live in lanes/; closed ones move to lanes/archive/ so monitor loops read only active records. */
 export class Registry {
   readonly dir: string;
+  readonly archiveDir: string;
   constructor(stateDir: string) {
     this.dir = join(stateDir, "lanes");
+    this.archiveDir = join(this.dir, "archive");
   }
 
   path(key: string): string {
@@ -67,9 +77,17 @@ export class Registry {
     return join(this.dir, `${key}.json`);
   }
 
+  archivePath(key: string): string {
+    this.path(key);
+    return join(this.archiveDir, `${key}.json`);
+  }
+
   async read(key: string): Promise<Lane | null> {
-    const f = Bun.file(this.path(key));
-    return (await f.exists()) ? ((await f.json()) as Lane) : null;
+    for (const path of [this.path(key), this.archivePath(key)]) {
+      const f = Bun.file(path);
+      if (await f.exists()) return (await f.json()) as Lane;
+    }
+    return null;
   }
 
   // A per-lane lock and revision check prevent concurrent stale writers from losing updates.
@@ -82,26 +100,41 @@ export class Registry {
       const current = await this.read(lane.key);
       if (current && (current.revision ?? 0) !== (lane.revision ?? 0)) throw new Error(`lane ${lane.key} changed concurrently; reread and retry`);
       const revision = (current?.revision ?? 0) + 1;
+      const [target, other] = lane.closedAt ? [this.archivePath(lane.key), this.path(lane.key)] : [this.path(lane.key), this.archivePath(lane.key)];
+      mkdirSync(this.archiveDir, { recursive: true });
       const tmp = `${this.path(lane.key)}.${process.pid}.${crypto.randomUUID()}.tmp`;
       await Bun.write(tmp, JSON.stringify({ ...lane, revision }, null, 1));
-      renameSync(tmp, this.path(lane.key));
+      renameSync(tmp, target);
+      rmSync(other, { force: true });
       Object.assign(lane, { revision });
     } finally { unlock(); }
   }
 
+  /** Active lanes only; a closed record written before the archive existed is moved there on sight. */
   async list(onError?: (key: string, error: unknown) => void): Promise<Lane[]> {
-    mkdirSync(this.dir, { recursive: true });
+    mkdirSync(this.archiveDir, { recursive: true });
     const lanes: Lane[] = [];
     for (const f of readdirSync(this.dir)) {
       if (!f.endsWith(".json")) continue;
       try {
-        lanes.push((await Bun.file(join(this.dir, f)).json()) as Lane);
+        const lane = (await Bun.file(join(this.dir, f)).json()) as Lane;
+        if (lane.closedAt && !existsSync(join(this.archiveDir, f))) renameSync(join(this.dir, f), join(this.archiveDir, f));
+        else lanes.push(lane);
       } catch (error) {
         if (!onError) throw error;
         onError(f.slice(0, -5), error);
       }
     }
     return lanes;
+  }
+
+  async listAll(): Promise<Lane[]> {
+    const active = await this.list();
+    const archived: Lane[] = [];
+    for (const f of readdirSync(this.archiveDir)) {
+      if (f.endsWith(".json")) archived.push((await Bun.file(join(this.archiveDir, f)).json()) as Lane);
+    }
+    return [...active, ...archived];
   }
 
   async open(): Promise<Lane[]> {

@@ -33,6 +33,8 @@ export type DoriConfig = {
   readonly closeAfterMin: number;
   readonly heavySlots: number;
   readonly heavyMaxLoad: number;
+  readonly maxWorkers: number;
+  readonly hibernateAfterMin: number;
   readonly deadPanePatterns: readonly string[];
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;
@@ -54,6 +56,8 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   closeAfterMin: 5,
   heavySlots: 1,
   heavyMaxLoad: 80,
+  maxWorkers: 4,
+  hibernateAfterMin: 30,
   deadPanePatterns: ["has stopped", "no suitable jobs"],
   guard: { loadAlert: 150, loadOk: 80, memFreeMinPct: 20, diskFreeMinGb: 50, panesMax: 20 },
   hooks: {},

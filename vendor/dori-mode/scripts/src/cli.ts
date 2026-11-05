@@ -8,7 +8,9 @@ import { every, monitorLine } from "./monitor.ts";
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
 import { guardTick, sampleHost } from "./host-guard.ts";
-import { adoptLane, launchLane, LaunchError } from "./launch.ts";
+import { adoptLane, launchLane, LaunchError, wakeLane } from "./launch.ts";
+import { lifecycleTick } from "./lifecycle.ts";
+import { reapWorktrees, staleLanes } from "./reap.ts";
 import { pauseLane, resumeLane } from "./pause.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
@@ -26,7 +28,9 @@ import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
 const USAGE = `dori <command> [options]
 
-  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--thread REF] [--model M] [--cwd DIR]
+  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--job J] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]
+                                       one open lane per job (LANE_EXISTS); resumes the job's hibernated or closed lane;
+                                       over the worker cap or host limits it prints LAUNCH_QUEUED and the watcher starts it later
   adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
   sync   [--write]                     registry vs live panes; read-only unless --write
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for $HERDR_PANE_ID
@@ -35,8 +39,10 @@ const USAGE = `dori <command> [options]
   object-done <key> --reason TEXT [--reason TEXT ...]
   close  <key> [--note TEXT]           close now (Done signals must read back live)
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
-  resume <key> [--note TEXT]           undo pause: goal resumed (read back), lane back to its earlier status
-  watch                                long-running: emits LANE_* lines every 30 s
+  resume <key> [--note TEXT] [--brief FILE]   undo pause; or wake a hibernated or closed lane in its recorded session
+  stale [--hours N] [--json]           lanes paused, not done, failed or awaiting cleanup for N hours (default 24)
+  reap-worktrees [--apply] [--json]    remove worktrees of closed lanes whose PR settled 3+ days ago and that hold no unpushed work
+  watch                                long-running: emits LANE_* lines every 30 s; hibernates idle lanes and starts queued launches
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
@@ -66,6 +72,7 @@ const flags = parseArgs({
     title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
+    job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" },
     to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" },
   },
 });
@@ -87,10 +94,12 @@ const lane = async (k: string | undefined) => {
 try {
   switch (command) {
     case "launch": {
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd") });
-      console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
+      const priority = opt("priority") ?? "normal";
+      if (priority !== "owner" && priority !== "normal") die("--priority must be owner or normal");
+      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd"), job: opt("job"), priority: priority as "owner" | "normal" });
+      if (r.lane) console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
-      process.exit(r.startup.startsWith("STARTUP_OK") ? 0 : 3);
+      process.exit(/^(STARTUP_OK|LAUNCH_QUEUED|LANE_WOKEN)/.test(r.startup) ? 0 : 3);
     }
     case "adopt": {
       const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), pane: need("pane") });
@@ -128,10 +137,33 @@ try {
       for (const line of r.lines) console.log(line);
       process.exit(r.closed ? 0 : 2);
     }
-    case "pause":
     case "resume": {
-      const act = command === "pause" ? pauseLane : resumeLane;
-      const r = await act(deps, await lane(key ?? die(`${command} needs a lane key`)), opt("note") ?? `${command}d by the lead`);
+      const found = await deps.registry.read(key ?? die("resume needs a lane key"));
+      if (!found) die(`no registered lane "${key}"`);
+      if (found && ["hibernated", "closed"].includes(statusOf(found))) {
+        const brief = opt("brief");
+        const r = await wakeLane(deps, found, { ...(brief ? { briefText: await Bun.file(brief).text() } : {}), note: opt("note") ?? "woken by the lead" });
+        console.log(r.startup);
+        break;
+      }
+      const r = await resumeLane(deps, await lane(key), opt("note") ?? "resumed by the lead");
+      for (const line of r.lines) console.log(line);
+      process.exit(r.code);
+    }
+    case "stale": {
+      const rows = await staleLanes(deps, Number(opt("hours") ?? 24));
+      if (flags.values.json) console.log(JSON.stringify(rows));
+      else for (const r of rows) console.log(`STALE_LANE ${r.key} job=${r.job} status=${r.status} age_hours=${r.age_hours} unpushed=${r.has_unpushed}`);
+      break;
+    }
+    case "reap-worktrees": {
+      const rows = await reapWorktrees(deps, Boolean(flags.values.apply));
+      if (flags.values.json) console.log(JSON.stringify(rows));
+      else for (const r of rows) console.log(`WORKTREE ${r.action} ${r.key} ${JSON.stringify(r.reason)}`);
+      break;
+    }
+    case "pause": {
+      const r = await pauseLane(deps, await lane(key ?? die("pause needs a lane key")), opt("note") ?? "paused by the lead");
       for (const line of r.lines) console.log(line);
       process.exit(r.code);
     }
@@ -139,6 +171,7 @@ try {
       console.log("LANE_WATCH_READY");
       for (;;) {
         for (const line of await watchTick(deps).catch((e: unknown) => [monitorLine(`LANE_WATCH_ERROR ${String(e)}`)])) console.log(line);
+        for (const line of await lifecycleTick(deps).catch((e: unknown) => [monitorLine(`LANE_LIFECYCLE_ERROR ${String(e)}`)])) console.log(line);
         await Bun.sleep(30_000);
       }
     case "freshness":

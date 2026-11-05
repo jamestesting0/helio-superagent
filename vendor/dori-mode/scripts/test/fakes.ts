@@ -6,6 +6,9 @@ import { type DoriConfig, defaultConfig } from "../src/config.ts";
 import type { FlowDeps } from "../src/done-flow.ts";
 import { Registry } from "../src/registry.ts";
 import type { Clock, Ran, Runner } from "../src/run.ts";
+import type { HostSample } from "../src/host-guard.ts";
+
+export const HEALTHY: HostSample = { load1: 1, memFreePct: 60, diskFreeGb: 500, swapFreeGb: 8, panes: 3 };
 
 export type World = {
   prState: string;
@@ -66,7 +69,7 @@ export const withState = (): { dir: string; done: () => void } => {
 
 export const depsFor = (w: World, clock: Clock, stateDir: string, patch: Partial<DoriConfig> = {}): FlowDeps => {
   const config: DoriConfig = { ...defaultConfig("/home/test"), stateDir, defaultCwd: "/repo", leadPane: "lead:p1", ...patch };
-  return { run: fakeRunner(w), clock, registry: new Registry(stateDir), config, exists: () => true };
+  return { run: fakeRunner(w), clock, registry: new Registry(stateDir), config, exists: () => true, sample: async () => HEALTHY };
 };
 
 export const sent = (w: World): string[] => w.calls.filter((c) => c[0] === "herdr" && c[2] === "send-text").map((c) => c[4] ?? "");

@@ -15,7 +15,7 @@ The key is in your brief's lane footer. If you leave it out, the lane registered
 1. The Dori gets a compact `LANE_CLAIMS_PENDING` count on each tick until it reads `dori show <key>` and acknowledges receipt with `dori claim-ack <key>`. You get a `[LEAD]` line saying the close window waits for acknowledgement.
 2. Stay idle and start no new work.
 3. If the Dori does not object within 5 minutes after acknowledgement, the watcher closes the lane. Before closing, it reads back every `Done =` signal live. It refuses to close if any of your worktrees still has uncommitted tracked changes, or commits that are on no remote. Unacknowledged claims never close on a timer.
-4. Closing marks your thread done (when a thread hook is configured), closes your tab, and retains your worktrees for manual review.
+4. Closing marks your thread done (when a thread hook is configured) and closes your tab. If the tab will not close, the lane stays `cleanup-pending` until the watcher sees it gone. Your worktree is removed 3 days after your PR is merged or closed, and only if nothing in it is uncommitted or unpushed.
 
 ## If the Dori objects, or a check fails
 

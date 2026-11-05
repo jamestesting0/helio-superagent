@@ -49,3 +49,14 @@ Tests: `scripts/test/helio-host.test.ts`.
 | `scripts/src/host-guard.ts`, `routing.ts` | Linux memory availability and swap come from `/proc/meminfo`; unavailable or malformed readings are `null` and reported as unknown, never 100% free. Unknown memory holds new launches. Other platforms retain the macOS probes, now with explicit unknown results on failure. |
 | `SKILL.md`, `references/setup.md`, `references/scripts.md`, `references/done-protocol.md` | Document evidence fetching, acknowledgement, repeated claim counts and the acknowledgement-based timer. Monitor filters include every relevant error prefix and `WORKING-WHILE-PAUSED`. Correct the done protocol's worktree cleanup description to match the existing retention behavior. |
 | `scripts/test/helio-receipts.test.ts`, `helio-monitor.test.ts`, `done-flow.test.ts`, `signals.test.ts` | Cover large/repeated unseen claims, per-lane and corrupt-file isolation, real CLI evidence fetching and acknowledgement, monitor error filters, failed thread hooks, PID lock recovery/exclusion, Linux unknown readings, and the revised timer while retaining close-time signal/worktree checks. |
+
+## Bounded lanes (2026-11-05)
+
+| Files | Change |
+|---|---|
+| `scripts/src/admission.ts`, `launch.ts`, `routing.ts` | `launch` enforces `maxWorkers` and the host guard under a launch lock, failing closed on an unknown pane count or host sample, and queues the rest durably (`LAUNCH_QUEUED`; owner priority first). One open lane per `--job` (`LANE_EXISTS`); a job's hibernated or closed lane is resumed in its recorded session. A failed attempt's key relaunches in place (fixes the stale-brief `EEXIST`). The session id is recorded at startup. |
+| `scripts/src/lifecycle.ts`, `cli.ts` | `watch` also finishes `cleanup-pending` closes, hibernates idle lanes (`hibernateAfterMin`, recorded session, no open question) and drains the launch queue. |
+| `scripts/src/done-flow.ts` | A close whose tab survives records `cleanup-pending` instead of a closed lane with a live tab. |
+| `scripts/src/registry.ts` | Closed lanes move to `lanes/archive/`; hot loops read active records only. |
+| `scripts/src/reap.ts` | `stale` and `reap-worktrees`: worktrees go 3 days after the lane's PR settles, never with unpushed work or without a lane record. Replaces "never delete worktrees automatically" (owner decision). |
+| `scripts/test/lifecycle.test.ts` | Cover the cap and queue, fail-closed admission, job identity, session wake, hibernation guards, cleanup-pending, the archive, stale review and the reaper. |

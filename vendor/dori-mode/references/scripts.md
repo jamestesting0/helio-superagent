@@ -30,6 +30,8 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `nudgeAfterMin`, `postAfterMin` | 15, 20 | `freshness` |
 | `closeAfterMin` | 5 | `watch` |
 | `heavySlots`, `heavyMaxLoad` | 1, 80 | `heavy` |
+| `maxWorkers` | 4 | `launch`: lanes with a running agent; more are queued in `launch-queue.json` |
+| `hibernateAfterMin` | 30 | `watch`: an idle lane with a recorded session and no open question is hibernated (0 turns it off) |
 | `deadPanePatterns` | `has stopped`, `no suitable jobs` | `dead-panes` |
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
@@ -57,7 +59,9 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 
 ## Commands
 
-### `dori launch <key> --title T --brief FILE --done "..." [--thread REF] [--model M] [--cwd DIR]`
+### `dori launch <key> --title T --brief FILE --done "..." [--job J] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]`
+
+Admission and the lane reservation happen under one lock. Over `maxWorkers`, or when the guard holds (memory, disk, unknown or excess pane count, unreadable host sample), the launch is queued: `LAUNCH_QUEUED key=K position=N reasons="..."` (owner priority first). `watch` starts queued launches as slots free (`LANE_DEQUEUED`). An open lane for the same job refuses with `LANE_EXISTS key=K`; a hibernated or closed lane of the job with a recorded session is resumed (`LANE_WOKEN`). A key whose previous attempt failed is relaunched in place. `STARTUP_OK` records the agent's session id, or ends with `session=unknown`.
 Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and after 20 seconds checks it: `STARTUP_ERROR` on a known failure in the pane, `STARTUP_OK` only when herdr reports the agent idle or working, and `STARTUP_UNCONFIRMED` (with the last lines) otherwise. Exit 3 on anything but `STARTUP_OK`.
 
 ### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF]`
@@ -95,6 +99,9 @@ Prints `DEAD_PANE <id>` once per hour for a pane with no running agent status wh
 
 ### `dori guard [--loop MIN]`
 Prints `HOST_GUARD ALERT <reasons>` when load, free memory, free disk or the pane count crosses its threshold, and `HOST_GUARD CLEAR` when it recovers. It also prints `COMPUTE_READY` / `COMPUTE_BUSY` as load crosses `loadOk`. Only changes are printed.
+
+### `dori resume <key>`, `dori stale`, `dori reap-worktrees`
+`resume` undoes a pause, or wakes a hibernated or closed lane in its recorded session (`--brief FILE` gives it new work). `stale [--hours N] [--json]` lists lanes paused, not done, failed or `cleanup-pending` for N hours. `reap-worktrees [--json]` prints what it would remove (`would_remove`) and what it keeps with the reason; `--apply` removes them with `git worktree remove` and records the branch and head in the lane.
 
 ### `dori can-launch`
 Prints `CAN_LAUNCH` and exits 0 when the host has room for another lane. Otherwise it prints `HOLD <reasons>` and exits 4. The reasons come from the guard's memory, disk and pane-count thresholds. CPU load alone never holds a launch, because it moves too fast to plan around.

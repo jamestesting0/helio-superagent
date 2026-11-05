@@ -136,7 +136,7 @@ test("launch reports STARTUP_OK only on a ready agent status; a blank pane is un
     writeFileSync(brief, "# brief\n");
     world = newWorld();
     world.screen = screen;
-    const base = depsFor(world, fakeClock(T0), state.dir);
+    const base = depsFor(world, fakeClock(T0), state.dir, { maxWorkers: 10 });
     const inner = base.run;
     const deps = { ...base, run: async (argv: readonly string[]) => {
       if (argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create") return { code: 0, out: JSON.stringify({ result: { root_pane: { pane_id: "w:p9" }, tab_id: "w:t9" } }), err: "" };
@@ -145,7 +145,7 @@ test("launch reports STARTUP_OK only on a ready agent status; a blank pane is un
     } };
     return (await launchLane(deps, { key, title: "t", brief, done: "closed acme/app#3" })).startup;
   };
-  expect(await run("idle", "❯ ", "ok-lane")).toBe("STARTUP_OK ok-lane w:p9");
+  expect(await run("idle", "❯ ", "ok-lane")).toBe("STARTUP_OK ok-lane w:p9 session=unknown");
   expect(await run(undefined, "", "blank-lane")).toStartWith("STARTUP_UNCONFIRMED blank-lane w:p9");
   expect(await run(undefined, "Error: provider refused the key\n$ ", "worded-lane")).toStartWith("STARTUP_UNCONFIRMED worded-lane w:p9");
   expect(await run("idle", "No API key found\n❯ ", "err-lane")).toBe("STARTUP_ERROR err-lane w:p9: No API key");

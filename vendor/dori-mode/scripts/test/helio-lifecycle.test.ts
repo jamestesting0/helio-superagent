@@ -6,6 +6,7 @@ import { launchLane } from "../src/launch.ts";
 import { Registry } from "../src/registry.ts";
 import { defaultConfig } from "../src/config.ts";
 import { run } from "../src/run.ts";
+import { HEALTHY } from "./fakes.ts";
 
 test("isolated lanes preserve input brief and recover failed pane launch", async () => {
  const dir=mkdtempSync(join(tmpdir(),"helio-launch-")); const repo=join(dir,"repo"), state=join(dir,"state"); mkdirSync(repo);
@@ -18,7 +19,7 @@ test("isolated lanes preserve input brief and recover failed pane launch", async
   mkdirSync(join(repo,".omo")); writeFileSync(join(repo,".omo","omo.jsonc"),"{\"memory\":true}");
   const brief=join(dir,"brief.md"); writeFileSync(brief,"original brief\n");
   const calls:string[][]=[]; const registry=new Registry(state);
-  const deps:any={registry,clock:{now:()=>0,sleep:async()=>{}},config:{...defaultConfig(dir),stateDir:state,defaultCwd:repo},run:async(argv:string[])=>{
+  const deps:any={registry,sample:async()=>HEALTHY,clock:{now:()=>0,sleep:async()=>{}},config:{...defaultConfig(dir),stateDir:state,defaultCwd:repo},run:async(argv:string[])=>{
    calls.push([...argv]); if(argv[0]==="git") return run(argv);
    if(argv.slice(0,3).join(" ")==="herdr tab create") return {code:0,out:JSON.stringify({result:{root_pane:{pane_id:"pane"},tab_id:"tab"}}),err:""};
    if(argv.slice(0,3).join(" ")==="herdr pane run") return {code:1,out:"",err:"simulated failure"};
@@ -33,7 +34,11 @@ test("isolated lanes preserve input brief and recover failed pane launch", async
   expect(calls.some(x=>x[0]==="git" && x.includes("add"))).toBe(true);
   chmodSync(betaEnv,0o644);
   await expect(launchLane(deps,{key:"lane-two",title:"insecure",brief,done:"closed owner/repo#1"})).rejects.toThrow("owner-only regular file");
-  await expect(launchLane(deps,{key:"lane-one",title:"retry",brief,done:"closed owner/repo#1"})).rejects.toThrow("already registered");
+  chmodSync(betaEnv,0o600);
+  await expect(launchLane(deps,{key:"lane-one",title:"retry",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");
+  const retried=await registry.read("lane-one");
+  expect(retried?.history?.map(h=>h.note)).toContain("relaunched after a failed attempt");
+  expect(calls.filter(x=>x[0]==="git" && x.includes("add") && x.includes(join(state,"worktrees","lane-one")))).toHaveLength(1);
  } finally { if(old===undefined) delete process.env.HELIO_WORKTREES; else process.env.HELIO_WORKTREES=old; if(oldBeta===undefined) delete process.env.HELIO_BETA_ENV; else process.env.HELIO_BETA_ENV=oldBeta; rmSync(dir,{recursive:true,force:true}); }
 });
 

@@ -55,6 +55,17 @@ class HelioConfigTests(unittest.TestCase):
         for deny in ("/etc/passwd", "a b.py", "x,,y", "docs/.."):
             self.assertIn("HELIO_AUTOFIX_DENY", " ".join(CONFIG["problems"]({**SECRETS, "HELIO_AUTOFIX_DENY": deny})))
 
+    def test_worker_cap_and_hibernation_come_from_helio_env(self):
+        payload = runpy.run_path(str(ROOT / "scripts/helio_payload.py"))
+        rendered = lambda env: payload["render_config"](payload["values"](self.home, str(self.home / "repo"), env))
+        defaults = rendered({})
+        self.assertEqual((defaults["maxWorkers"], defaults["hibernateAfterMin"]), (4, 30))
+        custom = rendered({"HELIO_MAX_WORKERS": "2", "HELIO_HIBERNATE_AFTER_MIN": "45"})
+        self.assertEqual((custom["maxWorkers"], custom["hibernateAfterMin"]), (2, 45))
+        issues = " ".join(CONFIG["problems"]({**SECRETS, "HELIO_MAX_WORKERS": "0", "HELIO_HIBERNATE_AFTER_MIN": "soon"}))
+        self.assertIn("HELIO_MAX_WORKERS", issues)
+        self.assertIn("HELIO_HIBERNATE_AFTER_MIN", issues)
+
     def test_render_writes_private_files_and_is_idempotent(self):
         self.write_settings(HELIO_TRUSTED_USERS="11111,22222")
         with redirect_stdout(StringIO()):
