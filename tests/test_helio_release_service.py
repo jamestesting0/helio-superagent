@@ -36,8 +36,8 @@ class ButtonReleaseTests(unittest.TestCase):
    'other prompt':lambda:self.result['interaction_metadata'].update(interacted_message_id=snowflake(4)),
    'human author':lambda:self.result['author'].update(id=TRUSTED,bot=False),
    'not a click':lambda:self.result['interaction_metadata'].update(type=2),
-   'clicked after expiry':lambda:self.prompt.update(id=snowflake(20)),
-   'stale click':lambda:(self.prompt.update(id=snowflake(17)),self.result['interaction_metadata'].update(id=snowflake(16)),self.result.update(id=snowflake(16))),
+   'clicked after expiry':lambda:self.prompt.update(id=snowflake(730)),
+   'stale click':lambda:(self.prompt.update(id=snowflake(723)),self.result['interaction_metadata'].update(id=snowflake(722)),self.result.update(id=snowflake(722))),
   }
   for name,change in cases.items():
    with self.subTest(name):
@@ -64,6 +64,13 @@ class ReleaseTests(unittest.TestCase):
  def fetch(self,path,token):
   if path=='/users/@me':return {'id':'777000000000000001'}
   return dict(self.message) if '/messages/' in path else {'id':CHANNEL,'type':0}
+ def test_quoted_restart_never_reaches_the_production_runner(self):
+  self.message['content']='> restart the bot '+REV
+  calls=[]
+  with tempfile.TemporaryDirectory() as temp, self.assertRaises(M['Refused']):
+   M['perform'](self.request,self.config,'/ssh',Path(temp)/'audit.db',self.fetch,lambda _:self.state,
+                 lambda *a,**k:(calls.append(a) or SimpleNamespace(returncode=0)))
+  self.assertEqual(calls,[])
  def test_natural_restart_request_pinned_by_push_time(self):
   pushed=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=5)).isoformat()
   self.message['content']='ok go ahead and restart the bot'
@@ -74,17 +81,69 @@ class ReleaseTests(unittest.TestCase):
   self.message['content']='restart it'
   later=lambda repo,branch:[{'after':REV,'timestamp':datetime.datetime.now(datetime.timezone.utc).isoformat()}]
   with self.assertRaises(M['Refused']):M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=later)
+ def test_fresh_reply_to_expired_restart_prompt_cannot_ship_a_new_head(self):
+  self.message['content']='do it'
+  self.message['referenced_message']={'author':{'id':BOT,'bot':True},
+                                     'content':'Restart Elo Bot on `aaaaaaa`?\n⌛ Expired'}
+  activity=lambda repo,branch:[{'after':REV,'timestamp':(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=5)).isoformat()}]
+  self.assertEqual(M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=activity),(TRUSTED,None))
+  with self.assertRaises(M['Refused']):
+   M['verify_confirmation'](CHANNEL,MESSAGE,'c'*40,self.config,self.fetch,
+                            activity=lambda *a:[{'after':'c'*40,'timestamp':activity('','')[0]['timestamp']}])
  def test_trusted_confirmation_and_owner_confirmation(self):
   self.assertEqual(M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch),(TRUSTED,None))
   self.message['author']={'id':OWNER}
   self.assertEqual(M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch),(OWNER,None))
+ def test_combined_merge_restart_ships_only_the_named_pr_and_reserves_once(self):
+  self.message['content']='merge PR #42 and restart the bot'
+  self.state['running_revision']=OLD
+  calls=[]
+  api={
+   '/branches/main':{'commit':{'sha':REV}},
+   '/pulls/42':{'merged':True,'merge_commit_sha':REV},
+   '/pulls/42/commits?per_page=100&page=1':[{'sha':'c'*40}],
+   f'/compare/{OLD}...{REV}?per_page=100&page=1':{
+    'status':'ahead','merge_base_commit':{'sha':OLD},'total_commits':2,'commits':[{'sha':'c'*40},{'sha':REV}]},
+  }
+  def github(repo,path):return api[path]
+  approval=M['verify_confirmation'].__globals__['APPROVAL']
+  with patch.dict(approval['check_revision'].__globals__, {'github_json':github}):
+   # The pre-merge message cannot pin the new main push through the old revision check.
+   activity=lambda repo,branch:[{'after':REV,'timestamp':(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=1)).isoformat()}]
+   self.assertEqual(M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=activity,
+                    running_revision=OLD),(TRUSTED,None))
+   with tempfile.TemporaryDirectory() as temp:
+    def run(*a,**k):calls.append(a);return SimpleNamespace(returncode=0)
+    result=M['perform'](self.request,self.config,'/ssh',Path(temp)/'audit.db',self.fetch,
+                        lambda _:dict(self.state,head=REV),run)
+    self.assertEqual(result['status'],'restarted')
+    with self.assertRaises(M['Refused']):
+     M['perform'](self.request,self.config,'/ssh',Path(temp)/'audit.db',self.fetch,lambda _:self.state,run)
+   self.assertEqual(len(calls),1)
+   for mutation in ('extra commit','main moved','wrong merge','unmerged','no running revision','merge only'):
+    with self.subTest(mutation=mutation):
+     changed=json.loads(json.dumps(api))
+     text=self.message['content']
+     running=OLD
+     if mutation=='extra commit':
+      changed[f'/compare/{OLD}...{REV}?per_page=100&page=1']['commits'].append({'sha':'d'*40})
+      changed[f'/compare/{OLD}...{REV}?per_page=100&page=1']['total_commits']=3
+     elif mutation=='main moved':changed['/branches/main']['commit']['sha']='d'*40
+     elif mutation=='wrong merge':changed['/pulls/42']['merge_commit_sha']='d'*40
+     elif mutation=='unmerged':changed['/pulls/42']['merged']=False
+     elif mutation=='no running revision':running=None
+     else:self.message['content']='merge PR #42'
+     with patch.dict(approval['check_revision'].__globals__, {'github_json':lambda repo,path:changed[path]}):
+      with self.assertRaises(M['Refused']):
+       M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch,activity=activity,running_revision=running)
+     self.message['content']=text
  def test_rejects_wrong_sender_wrong_revision_and_expired_message(self):
   for change in ('sender','content','age'):
    with self.subTest(change=change):
     original=dict(self.message)
     if change=='sender':self.message['author']={'id':'999999999999999999'}
     elif change=='content':self.message['content']='approve restart elobot '+('c'*40)
-    else:self.message['timestamp']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=1)).isoformat()
+    else:self.message['timestamp']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(hours=13)).isoformat()
     with self.assertRaises(M['Refused']):M['verify_confirmation'](CHANNEL,MESSAGE,REV,self.config,self.fetch)
     self.message=original
  def test_dirty_or_different_revision_blocks_without_restart(self):
@@ -114,8 +173,28 @@ class ReleaseTests(unittest.TestCase):
    with self.assertRaises(M['Refused']):M['perform'](self.request,self.config,'/ssh',db,self.fetch,lambda _:self.state,fail)
 
 class RemoteEvidenceTests(unittest.TestCase):
- def probe(self,reflog_time,updater=False):
+ def test_gateway_probe_matches_resolved_ipv4_and_service_uid(self):
+  script=M['REMOTE_INSPECT'].split("try:\n with open",1)[0]
+  namespace={}
+  exec(script,namespace)
+  probe=namespace['gateway_health']
+  addresses='162.159.133.234 STREAM gateway.discord.gg\n162.159.134.234 DGRAM\n'
+  for sockets,uid,expected in (
+   ('0 0 10.0.0.2:42300 162.159.133.234:443 uid:1001 ino:3', '1001', 'connected'),
+   ('0 0 10.0.0.2:42300 162.159.133.234:443 uid:1002 ino:3', '1001', 'no_connection'),
+   ('0 0 10.0.0.2:42300 162.159.13.234:443 uid:1001 ino:3', '1001', 'no_connection'),
+   ('0 0 10.0.0.2:443 162.159.133.234:8443 uid:1001 ino:3', '1001', 'no_connection'),
+   ('', '1001', 'no_connection'),
+   ('0 0 10.0.0.2:42300 162.159.133.234:443 uid:1001', '', 'unavailable'),
+  ):
+   with self.subTest(sockets=sockets,uid=uid):
+    self.assertEqual(probe(uid,addresses,sockets),expected)
+
+ def probe(self,reflog_time,updater=False,probes=None):
   def run(argv,**kw):
+   if probes and tuple(argv) in probes:
+    code,out=probes[tuple(argv)]
+    return SimpleNamespace(returncode=code,stdout=out)
    out=''
    if 'status' in argv:out=''
    elif 'rev-parse' in argv:out=REV
@@ -136,11 +215,24 @@ class RemoteEvidenceTests(unittest.TestCase):
   with patch('subprocess.run',run),patch('builtins.open',lambda *a,**k:io.StringIO('{"repository_branch":"main"}')),redirect_stdout(output):
    exec(M['REMOTE_INSPECT'],{})
   return json.loads(output.getvalue())
+ def test_remote_gateway_observation_uses_bounded_readonly_probe_results(self):
+  commands={
+   ('getent','ahostsv4','gateway.discord.gg'):(0,'162.159.133.234 STREAM gateway.discord.gg\n'),
+   ('systemctl','show','elobot','-p','User','--value'):(0,'elobot\n'),
+   ('id','-u','elobot'):(0,'1001\n'),
+   ('ss','-tneH','state','established','( dport = :443 )'):(0,'0 0 10.0.0.2:42300 162.159.133.234:443 uid:1001 ino:3\n'),
+  }
+  self.assertEqual(self.probe(100,probes=commands)['gateway_health'],'connected')
+  sockets=('ss','-tneH','state','established','( dport = :443 )')
+  self.assertEqual(self.probe(100,probes={**commands,sockets:(0,'')})['gateway_health'],'no_connection')
+  for command in commands:
+   with self.subTest(command=command):
+    self.assertEqual(self.probe(100,probes={**commands,command:(1,'')})['gateway_health'],'unavailable')
  def test_login_and_revision_have_separate_evidence(self):
   result=self.probe(100)
   self.assertEqual(result['login_evidence'],'observed')
   self.assertEqual(result['running_revision'],REV)
-  self.assertEqual(result['gateway_health'],'unverified')
+  self.assertEqual(result['gateway_health'],'unavailable')
  def test_checkout_moved_after_start_is_never_running_revision(self):
   result=self.probe(300)
   self.assertIsNone(result['running_revision'])

@@ -27,6 +27,7 @@ from typing import Callable
 
 HERE = Path(__file__).resolve().parent
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
+WORK = runpy.run_path(str(HERE / "helio-work.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 MARKER = "<!-- helio-plan v1 -->"
 DATA = re.compile(r"<!-- helio-plan-data:([A-Za-z0-9+/=]+) -->\s*\Z")
@@ -53,7 +54,10 @@ def helio_decided(decision: dict) -> bool:
 
 
 def content_hash(data: dict) -> str:
-    canonical = json.dumps({key: data.get(key) for key in HASHED}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    fields = {key: data.get(key) for key in HASHED}
+    if "github_edit" in data:
+        fields["github_edit"] = data["github_edit"]
+    canonical = json.dumps(fields, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
@@ -155,6 +159,9 @@ def status(data: dict) -> str:
 
 def visible(issue: int, data: dict) -> str:
     beta = data["live_beta"]
+    if data.get("github_edit"):
+        return re.sub(r"^\*\*Status:\*\* .*", f"**Status:** {status(data)} · **Revision** {data['revision']} · "
+                      f"**Size** {data['size']} · **Live beta test:** {beta}", data["github_edit"], count=1, flags=re.M)
     lines = [MARKER, f"## 📋 Plan for #{issue}: {data['title']}",
              f"**Status:** {status(data)} · **Revision** {data['revision']} · **Size** {data['size']} · **Live beta test:** {beta}",
              "", f"> **In short:** {cell(data['in_short'])}", "", "### Why", *(f"- {cell(why)}" for why in data["why"]),
@@ -177,7 +184,7 @@ def visible(issue: int, data: dict) -> str:
 
 def render(issue: int, data: dict) -> str:
     lines = [visible(issue, data)]
-    if data.get("technical_notes"):
+    if data.get("technical_notes") and not data.get("github_edit"):
         lines += ["", "<details><summary>Technical notes (optional reading)</summary>", "", data["technical_notes"].strip(), "</details>"]
     history = "; ".join(f"r{h['revision']}: {cell(h['note'])}" for h in data["history"])
     if data["open_questions"]:
@@ -238,13 +245,20 @@ def pr_body(issue: int, data: dict, plan_url: str, result: dict, summary: str, t
                       f"Full unit suite: {tests_passed} tests passed.", "", metadata, ""])
 
 
-def check_result(data: dict, result: object) -> dict:
+def check_result(data: dict | None, result: object) -> dict:
     if not isinstance(result, dict):
         raise Refused("result file must be a JSON object with scope and done_when lists")
-    for key, planned in (("scope", data["scope"]["changes"]), ("done_when", data["done_when"])):
+    counts = (("scope", None), ("done_when", 0)) if data is None else (
+        ("scope", len(data["scope"]["changes"])), ("done_when", len(data["done_when"])))
+    for key, count in counts:
         entries = result.get(key)
-        if not isinstance(entries, list) or len(entries) != len(planned):
-            raise Refused(f"result {key} needs exactly {len(planned)} entries, one per planned item")
+        if not isinstance(entries, list):
+            raise Refused(f"result {key} must be a list")
+        if count is None:
+            if not entries:
+                raise Refused("result scope needs at least 1 entry, one per confirmed issue requirement")
+        elif len(entries) != count:
+            raise Refused(f"result {key} needs exactly {count} entries, one per planned item")
         for index, entry in enumerate(entries):
             if (not isinstance(entry, dict) or entry.get("status") not in ("met", "deviation")
                     or not isinstance(entry.get("evidence"), str) or not entry["evidence"].strip()):
@@ -264,7 +278,7 @@ class GitHub:
         self.repo, self.run = repo, run
 
     def issue(self, number: int) -> dict:
-        return json.loads(self.run(["gh", "issue", "view", str(number), "--repo", self.repo, "--json", "state,title,comments"]))
+        return json.loads(self.run(["gh", "issue", "view", str(number), "--repo", self.repo, "--json", "state,title,body,comments"]))
 
     def plan_comment(self, number: int) -> tuple[dict, int | None, str, str]:
         issue = self.issue(number)
@@ -330,6 +344,43 @@ def state(issue: int, body: str) -> tuple[str, dict | None]:
     return ("PLAN_APPROVED" if approved(data) else "PLAN_AWAITING"), data
 
 
+def adopt(issue: int, gh: GitHub, now: datetime.datetime) -> str | None:
+    _, comment_id, url, body = gh.plan_comment(issue)
+    old = parse(body)
+    if not comment_id or intact(issue, body, old):
+        return None
+    if old is None:
+        raise Refused("cannot adopt a plan without its Helio data; restore the plan data marker")
+    data = json.loads(json.dumps(old))
+    # Preserve the entire human edit in the approval hash, including prose outside known sections.
+    edited = DATA.sub("", body).split("\n---\nRevision history:", 1)[0].strip()
+    data["github_edit"] = edited
+    sections = dict(re.findall(r"### ([^\n]+)\n(.*?)(?=\n### |\n---|\n<details>|\Z)", edited, re.S))
+    title = re.search(r"## .+?Plan for #\d+: (.+)", edited)
+    short = re.search(r"> \*\*In short:\*\* (.+)", edited)
+    if title:
+        data["title"] = title.group(1)
+    if short:
+        data["in_short"] = short.group(1)
+    if "Why" in sections:
+        data["why"] = re.findall(r"^- (.+)$", sections["Why"], re.M)
+    scope = sections.get("Scope", "")
+    rows = [re.split(r"(?<!\\)\|", line)[1:-1] for line in scope.splitlines() if line.startswith("|")]
+    if len(rows) >= 2 and all(len(row) == 3 for row in rows):
+        data["scope"]["changes"] = [dict(zip(("where", "today", "after"), (v.strip().replace("\\|", "|") for v in row))) for row in rows[2:]]
+    data["done_when"] = re.findall(r"^- \[[ xX]\] (.+)$", sections.get("Done when (beyond the Scope table)", ""), re.M)
+    data["open_questions"] = re.findall(r"^- (.+)$", sections.get("❓ Needs your answer", ""), re.M)
+    data["revision"] = old["revision"] + 1
+    data["posted_at"] = now.isoformat()
+    data["approval"] = None
+    data.pop("revision_source", None)
+    data.pop("status_note", None)
+    data["history"] = [{"revision": data["revision"], "note": "adopted GitHub edit"}, *old["history"]]
+    gh.save(issue, comment_id, render(issue, data))
+    gh.label(issue, True)
+    return f"PLAN_ADOPTED issue={issue} revision={data['revision']} url={url}: approval reset; review the adopted GitHub text"
+
+
 def requested(message: dict, issue: int, now: datetime.datetime) -> str:
     payload, live = message["payload"], message["live"]
     author = str(payload.get("author_id", ""))
@@ -342,7 +393,8 @@ def requested(message: dict, issue: int, now: datetime.datetime) -> str:
     sent = datetime.datetime.fromisoformat(str(live.get("timestamp", "")).replace("Z", "+00:00"))
     if now - sent > REQUEST_MAX_AGE:
         raise Refused("plan request is older than 72 hours; ask again")
-    if not PLAN_REQUEST.search(str(live.get("content", ""))):
+    approval = runpy.run_path(str(HERE / "helio_approval.py"))
+    if not PLAN_REQUEST.search(approval["instruction_text"](str(live.get("content", "")))):
         raise Refused(f"that message does not ask for a plan for #{issue}")
     return str(payload.get("author") or author)
 
@@ -376,7 +428,21 @@ def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], n
     data = {"decisions": [], "open_questions": [], "done_when": [], "risks": [], **fields,
             "scope": {"not_included": [], **fields["scope"]}, "revision": revision, "posted_at": now.isoformat(),
             "requested_by": requester, "history": [{"revision": revision, "note": note}, *(old["history"] if old else [])],
-            "approval": old.get("approval") if old else None}
+            "approval": old.get("approval") if old else None,
+            "source_bindings": dict(old.get("source_bindings", {})) if old else {}}
+    if old and old.get("revision_source"):
+        prior = old["revision_source"]
+        data["source_bindings"].setdefault(prior["message"], {"revision": old["revision"], "hash": content_hash(old)})
+    if args.from_message:
+        source = discord(args.from_message)
+        checker = runpy.run_path(str(HERE / "release-check.py"))
+        try:
+            checker["verify_source"](source["payload"], source["live"], source["owner"], source["trusted"], source["channel_ok"])
+        except checker["Refused"] as error:
+            raise Refused(str(error)) from None
+        data["revision_source"] = {"message": args.from_message, "author": source["payload"]["author_id"],
+                                   "content": source["live"]["content"], "channel": source["live"]["channel_id"]}
+        data["source_bindings"].setdefault(args.from_message, {"revision": revision, "hash": content_hash(data)})
     if len(visible(args.issue, data)) > VISIBLE_LIMIT:
         return [f"PLAN_INVALID field=plan reason=visible part is {len(visible(args.issue, data))} characters (limit {VISIBLE_LIMIT})"]
     gh.label(args.issue, True)
@@ -403,15 +469,21 @@ def approve(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict]
         consume(args.confirmation, now)
         return [f"PLAN_APPROVED issue={args.issue} revision={data['revision']} by={click['username']} url={url}"]
     message = discord(args.message)
+    binding = data.get("source_bindings", {}).get(args.message)
+    if binding and (binding["revision"] != data["revision"] or binding["hash"] != content_hash(data)):
+        raise Refused(f"message {args.message} is bound to r{binding['revision']}; ask for approval of r{data['revision']}")
+    source = data.get("revision_source") or {}
+    is_source = (source.get("message") == args.message and source.get("author") == message["payload"]["author_id"]
+                 and source.get("channel") == message["live"]["channel_id"] and source.get("content") == message["live"]["content"])
     referenced = str((message["live"].get("referenced_message") or {}).get("content", ""))
     answered = PLAN_PATTERN.match(referenced)
-    if answered and int(answered.group(2)) != data["revision"]:
+    if answered and int(answered.group(2)) != data["revision"] and not is_source:
         raise Refused(f"that approves r{answered.group(2)}; the current plan is r{data['revision']} "
                       f"({data['history'][0]['note']}); ask for approval of r{data['revision']}")
     try:
         message["verify"](message["payload"], message["live"], "plan", f"{REPO}#{args.issue}", None, message["owner"],
                           message["trusted"], message["channel_ok"], message["is_dm"], message["bot_id"], now=now,
-                          not_before=datetime.datetime.fromisoformat(data["posted_at"]))
+                          not_before=None if is_source else datetime.datetime.fromisoformat(data["posted_at"]))
     except message["Refused"] as error:
         raise Refused(str(error)) from None
     by = str(message["payload"].get("author") or message["payload"].get("author_id"))
@@ -435,17 +507,42 @@ def consume(prompt_id: str, now: datetime.datetime) -> None:
         db.execute("UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed'", (int(now.timestamp() * 1000), prompt_id))
 
 
+def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[str]:
+    if source["payload"].get("channel_id") != args.channel:
+        raise Refused("work authorization channel does not match the live message")
+    try:
+        author = source["verify"](source["payload"], source["live"], "work", f"{REPO}#{args.issue}", None,
+                                  source["owner"], source["trusted"], source["channel_ok"], source["is_dm"],
+                                  source["bot_id"], now=args.now)
+    except source["Refused"] as error:
+        raise Refused(str(error)) from None
+    if gh.issue(args.issue).get("state") != "OPEN":
+        raise Refused(f"issue #{args.issue} is not open")
+    WORK["record"](WORK["Authorization"](REPO, args.issue, args.message, args.channel, author, args.now))
+    gh.run(["gh", "issue", "edit", str(args.issue), "--repo", gh.repo, "--remove-label", "needs-owner-review"])
+    return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} expires={(args.now + WORK['MAX_AGE']).isoformat()}"]
+
+
 def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], int]) -> list[str]:
-    _, comment_id, plan_url, body = gh.plan_comment(args.issue)
+    issue, comment_id, plan_url, body = gh.plan_comment(args.issue)
     found, data = state(args.issue, body)
+    authorization = None
     if found != "PLAN_APPROVED":
-        raise Refused(f"{found}: helio pr submit needs an approved plan whose content is unchanged")
+        if found != "PLAN_NONE":
+            raise Refused(f"{found}: approve the current plan or explicitly drop it before submitting")
+        try:
+            authorization = WORK["available"](REPO, args.issue, args.now)
+        except WORK["Refused"] as error:
+            raise Refused(f"{found}: {error}") from None
+        if issue.get("state") != "OPEN":
+            raise Refused(f"issue #{args.issue} is not open")
+        data = {"title": issue["title"]}
     branch = f"helio/issue-{args.issue}"
     existing = gh.open_pr(branch)
     if existing:
         return [f"PLAN_PR {existing}"]
     try:
-        result = check_result(data, json.loads(args.result_file.read_text()))
+        result = check_result(None if authorization else data, json.loads(args.result_file.read_text()))
         summary = args.summary_file.read_text().strip()
     except (OSError, ValueError) as error:
         raise Refused(f"cannot read result or summary file: {error}") from None
@@ -469,11 +566,23 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
         git("push", "origin", f"{head}:refs/heads/{branch}")
     with tempfile.TemporaryDirectory(prefix="helio-pr-body-") as temporary:
         path = Path(temporary) / "body.md"
-        path.write_text(pr_body(args.issue, data, plan_url, result, summary, passed))
+        if authorization:
+            complete = all(entry["status"] == "met" for entry in result["scope"])
+            text = "\n".join([f"{'Fixes' if complete else 'Refs'} #{args.issue}", "", "### Issue scope", issue.get("body", ""),
+                              "", "### Result", "| Requirement | Status | Evidence |", "|---|---|---|",
+                              *(f"| {index} | {entry['status']} | {cell(entry['evidence'])} |"
+                                for index, entry in enumerate(result["scope"], 1)), "", summary,
+                              "", f"Full unit suite: {passed} tests passed.", "", ISSUE_LINK["marker"](args.issue, None, complete), ""])
+        else:
+            text = pr_body(args.issue, data, plan_url, result, summary, passed)
+        path.write_text(text)
+        if authorization:
+            WORK["consume"](REPO, args.issue, authorization)
         url = gh.run(["gh", "pr", "create", "--repo", gh.repo, "--base", "main", "--head", branch,
                       "--title", f"{data['title']} (#{args.issue})", "--body-file", str(path)])
-    data["status_note"] = f"implemented in {url}"
-    gh.save(args.issue, comment_id, render(args.issue, data))
+    if not authorization:
+        data["status_note"] = f"implemented in {url}"
+        gh.save(args.issue, comment_id, render(args.issue, data))
     return [f"PLAN_PR {url}"]
 
 
@@ -487,6 +596,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Calla
         if name == "post":
             sub.add_argument("--file", type=Path, required=True)
             sub.add_argument("--request-message")
+            sub.add_argument("--from-message")
             sub.add_argument("--announcement-file", type=Path, required=True)
         if name == "approve":
             source = sub.add_mutually_exclusive_group(required=True)
@@ -495,6 +605,10 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Calla
         if name == "show":
             sub.add_argument("--json", action="store_true")
     commands.add_parser("list")
+    work = commands.add_parser("work").add_subparsers(dest="work_command", required=True).add_parser("authorize")
+    work.add_argument("--issue", type=int, required=True)
+    work.add_argument("--message", required=True)
+    work.add_argument("--channel", required=True)
     pr = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True).add_parser("submit")
     pr.add_argument("--issue", type=int, required=True)
     pr.add_argument("--result-file", type=Path, required=True)
@@ -504,13 +618,20 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Calla
         parser.error("--issue must be positive")
     gh = gh or GitHub(REPO)
     now = now or datetime.datetime.now(datetime.timezone.utc)
+    args.now = now
     try:
+        if args.command != "work" and getattr(args, "issue", None) and args.command != "drop":
+            adopted = adopt(args.issue, gh, now)
+            if adopted:
+                print(adopted)
         if args.command == "post":
             lines = post(args, gh, discord, now)
         elif args.command == "approve":
             lines = approve(args, gh, discord, now)
         elif args.command == "pr":
             lines = submit(args, gh, suite)
+        elif args.command == "work":
+            lines = authorize_work(args, gh, discord(args.message))
         elif args.command == "list":
             waiting = [n for n in gh.labelled() if state(n, gh.plan_comment(n)[3])[0] != "PLAN_APPROVED"]
             lines = [f"PLANS_AWAITING count={len(waiting)}" + (" issues=" + ",".join(f"#{n}" for n in waiting) if waiting else "")]
@@ -525,17 +646,17 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Calla
                 lines = [f"PLAN_DROPPED issue={args.issue}"]
             else:
                 lines = [f"{found} issue={args.issue}" + (f" revision={data['revision']} url={url}" if data else "")]
-    except Refused as error:
+    except (Refused, WORK["Refused"]) as error:
         print(f"PLAN_REFUSED {error}".replace("\n", " "))
         return 1
     print("\n".join(lines))
-    if args.command in ("post", "approve", "pr", "drop") and lines and lines[0].startswith(("PLAN_POSTED", "PLAN_APPROVED", "PLAN_PR", "PLAN_DROPPED")):
+    if args.command in ("post", "approve", "pr", "drop", "work") and lines and lines[0].startswith(("PLAN_POSTED", "PLAN_APPROVED", "PLAN_PR", "PLAN_DROPPED", "WORK_AUTHORIZED")):
         try:
             sync = runpy.run_path(str(HERE / "helio_issue_sync.py"))
             sync["schedule"](gh.repo, args.issue)
         except (OSError, sqlite3.Error) as error:
             print(f"ISSUE_SYNC_PENDING issue={args.issue}: {type(error).__name__}; run helio issue sync")
-    ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "{")
+    ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "WORK_AUTHORIZED", "{")
     return 0 if lines and lines[0].startswith(ok) else 1
 
 

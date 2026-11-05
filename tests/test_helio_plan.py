@@ -37,10 +37,11 @@ PLAN = {
 class FakeGitHub:
     def __init__(self):
         self.comments, self.labels, self.label_created, self.prs, self.created_bodies = [], set(), False, {}, []
+        self.issue_body = "Use an 8-hour window and send one reminder."
 
     def __call__(self, argv, stdin=None, cwd=None):
         if argv[:3] == ["gh", "issue", "view"]:
-            return json.dumps({"state": "OPEN", "title": "t", "comments": self.comments})
+            return json.dumps({"state": "OPEN", "title": "t", "body": self.issue_body, "comments": self.comments})
         if argv[:3] == ["gh", "api", "user"]:
             return "helio-bot"
         if argv[:2] == ["gh", "api"]:
@@ -105,11 +106,12 @@ class PlanCase(unittest.TestCase):
                              suite=suite or (lambda project, head: 5))
         return code, out.getvalue().strip()
 
-    def post(self, plan=PLAN, now=POSTED, request=True, discord_fn=None):
+    def post(self, plan=PLAN, now=POSTED, request=True, discord_fn=None, from_message=None):
         path = self.dir / "plan.json"
         path.write_text(json.dumps(plan))
         argv = ["post", "--issue", "12", "--file", str(path), "--announcement-file", str(self.dir / "announce.txt")]
-        return self.run_cli(*argv, *(["--request-message", "555"] if request else []), discord_fn=discord_fn, now=now)
+        return self.run_cli(*argv, *(["--request-message", "555"] if request else []),
+                            *(["--from-message", from_message] if from_message else []), discord_fn=discord_fn, now=now)
 
     def approve(self, now, sent, referenced=None, author=OWNER, content="approve"):
         return self.run_cli("approve", "--issue", "12", "--message", "555", now=now,
@@ -189,6 +191,11 @@ class TemplateTests(unittest.TestCase):
 
 
 class PostTests(PlanCase):
+    def test_quoted_plan_request_does_not_start_plan_mode(self):
+        code, out = self.post(discord_fn=discord(content="> finalize #12 with a plan"))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.gh_fake.comments, [])
+
     def test_first_plan_needs_a_trusted_request_for_a_plan(self):
         for name, fn in {"stranger": discord(author=STRANGER), "for_owner": discord(for_owner=True),
                          "unrelated": discord(content="what time is it?")}.items():
@@ -234,6 +241,51 @@ class PostTests(PlanCase):
 
 
 class ApprovalTests(PlanCase):
+    def test_feedback_approval_cannot_be_reused_after_a_different_revision(self):
+        self.post()
+        sent = POSTED + datetime.timedelta(minutes=5)
+        source = discord(content="Change to six hours and proceed with #12", sent=sent, referenced=announcement_of(1))
+        self.post(plan={**PLAN, "in_short": "Players get 6 hours.", "change_note": "six hours"},
+                  now=sent + datetime.timedelta(minutes=5), from_message="555", discord_fn=source)
+        for minute in (6, 7):
+            code, out = self.run_cli("approve", "--issue", "12", "--message", "555", discord_fn=source,
+                                     now=sent + datetime.timedelta(minutes=minute))
+            self.assertEqual(code, 0, out)
+        for revision, from_message in ((3, "555"), (4, None), (5, "555")):
+            with self.subTest(revision=revision):
+                self.post(plan={**PLAN, "in_short": f"Players get {revision} hours.", "change_note": "different window"},
+                          now=sent + datetime.timedelta(minutes=revision + 10), from_message=from_message, discord_fn=source)
+                code, out = self.run_cli("approve", "--issue", "12", "--message", "555", discord_fn=source,
+                                         now=sent + datetime.timedelta(minutes=revision + 11))
+                self.assertEqual(code, 1, out)
+                self.assertFalse(P["approved"](self.data()))
+
+    def test_revision_source_with_go_ahead_approves_even_before_the_revision(self):
+        self.post()
+        sent = POSTED + datetime.timedelta(minutes=5)
+        source = discord(content="Change to six hours and proceed with #12", sent=sent, referenced=announcement_of(1))
+        code, out = self.post(plan={**PLAN, "in_short": "Players get 6 hours.", "change_note": "six hours"},
+                              now=sent + datetime.timedelta(minutes=5), from_message="555", discord_fn=source)
+        self.assertEqual(code, 0, out)
+        code, out = self.run_cli("approve", "--issue", "12", "--message", "555", discord_fn=source,
+                                 now=sent + datetime.timedelta(minutes=6))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(P["approved"](self.data()))
+
+    def test_suggestion_source_does_not_approve_and_unrecorded_go_ahead_is_old(self):
+        for content, recorded in (("Change to six hours for #12", True), ("Proceed with #12", False)):
+            with self.subTest(content=content):
+                self.gh_fake.comments.clear()
+                self.post()
+                sent = POSTED + datetime.timedelta(minutes=5)
+                source = discord(content=content, sent=sent, referenced=announcement_of(1))
+                self.post(plan={**PLAN, "size": "Medium", "change_note": "larger"}, now=sent + datetime.timedelta(minutes=5),
+                          from_message="555" if recorded else None, discord_fn=source)
+                code, out = self.run_cli("approve", "--issue", "12", "--message", "555", discord_fn=source,
+                                         now=sent + datetime.timedelta(minutes=6))
+                self.assertEqual(code, 1, out)
+                self.assertFalse(P["approved"](self.data()))
+
     def test_owner_reply_to_the_announcement_approves_the_current_revision(self):
         self.post()
         sent = POSTED + datetime.timedelta(hours=1)
@@ -279,13 +331,26 @@ class ApprovalTests(PlanCase):
 
 
 class StateTests(PlanCase):
+    def test_adopting_removed_questions_allows_approval_of_the_new_revision(self):
+        self.post(plan={**PLAN, "open_questions": ["Keep the old deadline?"]})
+        self.gh_fake.hand_edit("### ❓ Needs your answer\n- Keep the old deadline?\n\n", "")
+        self.run_cli("check", "--issue", "12", now=POSTED + datetime.timedelta(hours=1))
+        code, out = self.approve(POSTED + datetime.timedelta(hours=2), POSTED + datetime.timedelta(hours=2),
+                                 content="approve #12")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.data()["open_questions"], [])
+
     def test_no_plan_means_normal_mode(self):
         self.assertEqual(self.run_cli("check", "--issue", "12"), (0, "PLAN_NONE issue=12"))
 
-    def test_hand_edits_are_detected_and_never_approved(self):
+    def test_hand_edits_are_adopted_into_an_unapproved_revision(self):
         self.approved_plan()
         self.gh_fake.hand_edit("8-hour window", "4-hour window")
-        self.assertEqual(self.run_cli("check", "--issue", "12")[1].split()[0], "PLAN_EDITED_OUTSIDE_HELIO")
+        code, out = self.run_cli("check", "--issue", "12", now=POSTED + datetime.timedelta(hours=2))
+        self.assertEqual(code, 1, out)
+        self.assertIn("PLAN_ADOPTED issue=12 revision=2", out)
+        self.assertEqual(self.data()["scope"]["changes"][0]["after"], "4-hour window")
+        self.assertFalse(P["approved"](self.data()))
         later = POSTED + datetime.timedelta(hours=2)
         self.assertEqual(self.approve(later, later, referenced=announcement_of(1))[0], 1)
 
@@ -332,6 +397,112 @@ class SubmitTests(PlanCase):
         self.post()
         self.assertIn("PLAN_AWAITING", self.submit()[1])
         self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_quoted_work_request_never_authorizes_a_pull_request(self):
+        code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                 discord_fn=discord(content="> implement #12"))
+        self.assertEqual(code, 1, out)
+        (self.dir / "result.json").write_text(json.dumps({"scope": [{"status": "met", "evidence": "window tested"}], "done_when": []}))
+        self.assertEqual(self.submit()[0], 1)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_work_authorization_cannot_bypass_draft_awaiting_or_adopted_plans(self):
+        for name, expected in (("draft", "PLAN_DRAFT"), ("awaiting", "PLAN_AWAITING"), ("adopted", "PLAN_AWAITING")):
+            with self.subTest(state=name), patch.dict(os.environ, {"DORI_STATE_DIR": str(self.dir / name)}):
+                self.gh_fake.comments.clear()
+                self.gh_fake.prs.clear()
+                self.gh_fake.created_bodies.clear()
+                self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                             discord_fn=discord(content="implement #12"))
+                if name == "adopted":
+                    self.approved_plan()
+                    self.gh_fake.hand_edit("8-hour window", "4-hour window")
+                else:
+                    self.post(plan={**PLAN, "open_questions": ["Which deadline?"] if name == "draft" else []})
+                (self.dir / "result.json").write_text(json.dumps({"scope": [{"status": "met", "evidence": "window tested"}], "done_when": []}))
+                code, out = self.submit()
+                self.assertEqual(code, 1, out)
+                self.assertIn(expected, out)
+                self.assertEqual(self.gh_fake.created_bodies, [])
+                self.run_cli("drop", "--issue", "12")
+                code, out = self.submit()
+                self.assertEqual(code, 0, out)
+
+    def test_no_plan_results_render_each_requirement_and_keep_partial_issues_open(self):
+        for complete in (False, True):
+            with self.subTest(complete=complete), patch.dict(os.environ, {"DORI_STATE_DIR": str(self.dir / str(complete))}):
+                self.gh_fake.prs.clear()
+                self.gh_fake.created_bodies.clear()
+                self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                             discord_fn=discord(content="implement #12"))
+                result = {"scope": [{"status": "met", "evidence": "window verified"},
+                                    {"status": "met" if complete else "deviation", "evidence": "reminder proof or remaining work"}],
+                          "done_when": []}
+                (self.dir / "result.json").write_text(json.dumps(result))
+                code, out = self.submit()
+                self.assertEqual(code, 0, out)
+                body = self.gh_fake.created_bodies[0]
+                self.assertIn("window verified", body)
+                self.assertIn("reminder proof or remaining work", body)
+                self.assertTrue(body.startswith(("Fixes" if complete else "Refs") + " #12"), body)
+                self.assertEqual(P["ISSUE_LINK"]["parse"](body).complete, complete)
+
+    def test_no_plan_results_reject_empty_scope_and_malformed_later_requirement(self):
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        for rows in ([], [{"status": "met", "evidence": "window verified"}, {"status": "met", "evidence": ""}]):
+            with self.subTest(rows=rows):
+                (self.dir / "result.json").write_text(json.dumps({"scope": rows, "done_when": []}))
+                code, out = self.submit()
+                self.assertEqual(code, 1, out)
+                self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_recorded_work_uses_current_issue_scope_and_partial_metadata(self):
+        code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                 discord_fn=discord(content="implement issue #12"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("WORK_AUTHORIZED issue=12 message=555 channel=1", out)
+        self.gh_fake.issue_body = "Use a 6-hour window and send one reminder."
+        (self.dir / "result.json").write_text(json.dumps({"scope": [{"status": "deviation", "evidence": "reminder pending"}], "done_when": []}))
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"), now=POSTED + datetime.timedelta(days=6))
+        self.assertEqual(code, 0, out)
+        body = self.gh_fake.created_bodies[0]
+        self.assertIn("Use a 6-hour window and send one reminder.", body)
+        self.assertIn("Refs #12", body)
+        self.assertIn('"complete": false', body)
+        self.assertIn('"plan_revision": null', body)
+        self.assertEqual(self.gh_fake.labels, set())
+        self.gh_fake.prs.clear()
+        self.assertEqual(self.submit()[0], 1)
+
+    def test_recorded_work_complete_scope_closes_issue_and_expires_after_seven_days(self):
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(author=TRUSTED, content="fix #12"))
+        (self.dir / "result.json").write_text(json.dumps({"scope": [{"status": "met", "evidence": "window and reminder tested"}], "done_when": []}))
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"), now=POSTED + datetime.timedelta(days=8))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertIn("Fixes #12", self.gh_fake.created_bodies[0])
+        self.assertIn('"complete": true', self.gh_fake.created_bodies[0])
+
+    def test_work_recording_rechecks_identity_intent_location_and_one_use(self):
+        for fn, channel in ((discord(author=STRANGER, content="fix #12"), "1"),
+                            (discord(content="maybe fix #12"), "1"), (discord(content="fix #13"), "1"),
+                            (discord(content="<@300> fix #12"), "1"),
+                            (discord(content="fix #12", sent=POSTED - datetime.timedelta(minutes=16)), "1"),
+                            (discord(content="fix #12"), "2")):
+            with self.subTest(channel=channel):
+                code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", channel, discord_fn=fn)
+                self.assertEqual(code, 1, out)
+        self.assertEqual(self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                     discord_fn=discord(content="fix #12"))[0], 0)
+        code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                 discord_fn=discord(content="fix #12"))
+        self.assertEqual(code, 1, out)
 
     def test_submit_opens_one_pr_checked_against_the_plan(self):
         self.approved_plan()

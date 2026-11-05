@@ -225,12 +225,13 @@ def main() -> int:
             print('{"phase":"unavailable","reason":"no observation yet"}')
             return 0
         if args.event:
-            row = db.execute("SELECT data FROM oracle_events WHERE id=?", (args.event,)).fetchone()
-            if row is None:
+            event = observer["detail"](db, args.event)
+            if event is None:
                 parser.error("unknown Oracle event")
             if args.done:
                 db.execute("UPDATE oracle_events SET handled=1 WHERE id=?", (args.event,));db.commit()
-            print(row[0])
+                event["handled"] = True
+            print(json.dumps(event))
         else:
             row = db.execute("SELECT data FROM oracle_observations WHERE singleton=1").fetchone()
             print(row[0] if row else '{"phase":"unavailable"}')

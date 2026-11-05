@@ -22,7 +22,7 @@ def get_json(url,token):
         with urllib.request.urlopen(req,timeout=12) as response:return json.load(response)
     except (OSError,ValueError,urllib.error.URLError):raise Refused('Discord verification failed') from None
 
-def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now=None,activity=None):
+def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now=None,activity=None,running_revision=None):
     if not ID.fullmatch(channel_id) or not ID.fullmatch(message_id) or not SHA.fullmatch(revision):raise Refused('invalid confirmation parameters')
     token=config['token']
     message=fetch('/channels/'+channel_id+'/messages/'+message_id,token)
@@ -42,7 +42,8 @@ def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now
         repo=config.get('repo','jamestesting0/elo-bot')
         try:
             APPROVAL['check_intent']('restart',message,bot_id,repo,None,now=now)
-            APPROVAL['check_revision'](revision,message,repo,'main',**({'activity':activity} if activity else {}))
+            APPROVAL['check_revision'](revision,message,repo,'main',running_revision=running_revision,bot_id=bot_id,
+                                       **({'activity':activity} if activity else {}))
         except APPROVAL['Refused'] as error:raise Refused(str(error)) from None
     if author_id!=config['owner'] and author_id not in config['trusted']:raise Refused('sender is not authorized')
     current=fetch('/channels/'+channel_id,token)
@@ -56,12 +57,24 @@ def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now
     if not permitted:raise Refused('confirmation is outside permitted channels')
     return author_id,prompt_id
 
-REMOTE_INSPECT=r'''import datetime,json,os,re,subprocess
+REMOTE_INSPECT=r'''import datetime,ipaddress,json,os,re,subprocess
 def r(*a):
  try:
   p=subprocess.run(a,capture_output=True,text=True,timeout=25)
   return p.returncode,p.stdout
  except Exception:return 1,''
+def gateway_health(uid,addresses,sockets):
+ if not re.fullmatch(r'\d+',uid.strip()):return 'unavailable'
+ gateway=set()
+ for line in addresses.splitlines():
+  try:gateway.add(str(ipaddress.IPv4Address(line.split()[0])))
+  except (ValueError,IndexError):continue
+ if not gateway:return 'unavailable'
+ for line in sockets.splitlines():
+  fields=line.split()
+  if len(fields)>=4 and fields[3] in {ip+':443' for ip in gateway} and 'uid:'+uid.strip() in fields:
+   return 'connected'
+ return 'no_connection'
 try:
  with open('/opt/elobot/config.json') as f:c=json.load(f)
 except Exception:print(json.dumps({'ok':False}));raise SystemExit
@@ -112,6 +125,11 @@ if not running_revision and phase=='running' and dc==0 and stamp and int(stamp.g
 pre=lines.get('ExecStartPre','');start=lines.get('ExecStart','')
 safe_pre=pre.count('{')==1 and 'path=/usr/local/sbin/elobot-update ; argv[]=/usr/local/sbin/elobot-update ;' in pre
 safe_start=start.count('{')==1 and 'path=/usr/local/bin/elobot-start ; argv[]=/usr/local/bin/elobot-start ;' in start
+gc,addresses=r('getent','ahostsv4','gateway.discord.gg')
+sc_user,user=r('systemctl','show','elobot','-p','User','--value')
+uid_code,uid=r('id','-u',user.strip()) if sc_user==0 and user.strip() else (1,'')
+socket_code,sockets=r('ss','-tneH','state','established','( dport = :443 )')
+gateway=gateway_health(uid,addresses,sockets) if gc==sc_user==uid_code==socket_code==0 else 'unavailable'
 parts=tip.strip().split()
 out={'ok':sc==0 and hc==0 and tc==0 and pc==0,'clean':sc==0 and (not changes or pip_only),'ignored_pip_cache':pip_only,
      'head':head.strip() if hc==0 else '', 'tip':parts[0] if len(parts)==2 and parts[1]=='refs/heads/main' else '',
@@ -119,7 +137,7 @@ out={'ok':sc==0 and hc==0 and tc==0 and pc==0,'clean':sc==0 and (not changes or 
      'expected_service':safe_pre and safe_start,'active':lines.get('ActiveState')=='active','restart_permission':uc==0,'bot_login_verified':login,
      'phase':phase,'invocation':invocation,'process_started_at':lines.get('ExecMainStartTimestamp'),
      'restart_count':int(lines.get('NRestarts','0')),'login_evidence':'observed' if login else ('absent' if jc==0 else 'unavailable'),
-     'login_observed_at':login_at,'running_revision':running_revision,'revision_evidence':revision_evidence,'gateway_health':'unverified',
+     'login_observed_at':login_at,'running_revision':running_revision,'revision_evidence':revision_evidence,'gateway_health':gateway,
      'observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
 print(json.dumps(out))
 '''
@@ -167,10 +185,10 @@ def perform(request,config,ssh_config,db_path,fetch=get_json,inspect=inspect_rem
         return result
     if set(request)!={'action','channel_id','message_id','revision'} or request.get('action')!='restart':raise Refused('unsupported action')
     channel=str(request['channel_id']);message=str(request['message_id']);revision=str(request['revision'])
-    author,prompt_id=verify_confirmation(channel,message,revision,config,fetch)
     state=inspect(ssh_config);check_release_state(state,revision)
+    author,prompt_id=verify_confirmation(channel,message,revision,config,fetch,running_revision=state.get('running_revision'))
     # Re-fetch immediately before consuming confirmation and starting restart.
-    if verify_confirmation(channel,message,revision,config,fetch)!=(author,prompt_id):raise Refused('confirmation author changed')
+    if verify_confirmation(channel,message,revision,config,fetch,running_revision=state.get('running_revision'))!=(author,prompt_id):raise Refused('confirmation author changed')
     # One prompt authorizes at most one restart, whichever result message is presented.
     if prompt_id:reserve(db_path,'prompt:'+prompt_id,channel,revision,author)
     reserve(db_path,message,channel,revision,author)

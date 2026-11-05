@@ -46,7 +46,18 @@ class ClickTests(unittest.TestCase):
         merge = ("Merge #6 · `a1b2c3d`?", "✅ <@42> confirmed merge #6 · `a1b2c3d`")
         for action, texts, number, clicked in (("pr", pr, 4, 20), ("merge", merge, 6, 2)):
             with self.subTest(action=action), self.assertRaises(A["Refused"]):
-                A["check_click"](action, *self.click(*texts, posted=600, clicked=clicked), BOT, number, HEAD, now=NOW)
+                A["check_click"](action, *self.click(*texts, posted=900, clicked=clicked), BOT, number, HEAD, now=NOW)
+
+    def test_release_clicks_remain_valid_for_twelve_hours_at_the_same_revision(self):
+        for action, number in (("merge", 6), ("restart", None)):
+            texts = (A["prompt_line"](action, number, HEAD), A["result_line"](action, number, HEAD, "42"))
+            with self.subTest(action=action):
+                result, prompt = self.click(*texts, posted=670, clicked=660)
+                self.assertEqual(A["check_click"](action, result, prompt, BOT, number, HEAD, now=NOW)[0], "42")
+                with self.assertRaises(A["Refused"]):
+                    A["check_click"](action, result, prompt, BOT, number, "f" * 40, now=NOW)
+                with self.assertRaises(A["Refused"]):
+                    A["check_click"](action, result, prompt, BOT, number, HEAD, now=NOW + datetime.timedelta(hours=2))
 
     def test_merge_wording_must_match_exactly(self):
         good = ("Merge #6 · `a1b2c3d`?", "✅ <@42> confirmed merge #6 · `a1b2c3d`")
@@ -58,6 +69,36 @@ class ClickTests(unittest.TestCase):
 
 
 class IntentTests(unittest.TestCase):
+    def test_quoted_or_fenced_commands_never_authorize_an_action(self):
+        for action, text in (("work", "implement #12"), ("merge", "merge #12"),
+                             ("restart", "restart the bot"), ("plan", "approve #12")):
+            for content in ("> " + text, "  > " + text, ">>>\n" + text,
+                            "```\n" + text + "\n```", "```" + text + "```",
+                            "evidence only\n> " + text):
+                with self.subTest(action=action, content=content), self.assertRaises(A["Refused"]):
+                    A["check_intent"](action, message(content), BOT, REPO, 12, now=NOW)
+
+    def test_quoted_targets_and_quoted_helio_context_do_not_supply_authority(self):
+        for action, content in (("work", "implement\n> #12"), ("merge", "merge\n> #12"),
+                                ("plan", "approve\n> #12")):
+            with self.subTest(action=action), self.assertRaises(A["Refused"]):
+                A["check_intent"](action, message(content), BOT, REPO, 12, now=NOW)
+        with self.assertRaises(A["Refused"]):
+            A["check_intent"]("merge", message("yes", referenced=helio_says("> Merge #12?")), BOT, REPO, 12, now=NOW)
+
+    def test_only_authored_text_counts_alongside_quotes_forwards_and_embeds(self):
+        msg = {**message("> wait, do not merge #99\nmerge #12"),
+               "message_snapshots": [{"message": {"content": "restart the bot"}}],
+               "embeds": [{"description": "merge #99"}]}
+        A["check_intent"]("merge", msg, BOT, REPO, 12, now=NOW)
+        for evidence in ({"embeds": [{"description": "merge #12"}]},
+                         {"message_snapshots": [{"message": {"content": "merge #12"}}]}):
+            with self.subTest(evidence=evidence), self.assertRaises(A["Refused"]):
+                A["check_intent"]("merge", {**message("evidence only"), **evidence}, BOT, REPO, 12, now=NOW)
+        with self.assertRaises(A["Refused"]):
+            A["check_intent"]("merge", {**message(f"<@42> merge #12\n> <@{BOT}>"),
+                                       "mentions": [{"id": "42"}, {"id": BOT}]}, BOT, REPO, 12, now=NOW)
+
     def accepted(self, action, msg, pr=123):
         A["check_intent"](action, msg, BOT, REPO, pr if action == "merge" else None, now=NOW)
 
@@ -94,8 +135,28 @@ class IntentTests(unittest.TestCase):
                                 "mentions": [{"id": owner}]})
 
     def test_stale_and_future_messages_are_refused(self):
-        self.refused("merge", message("merge #123", minutes_ago=16))
+        self.refused("merge", message("merge #123", minutes_ago=721))
         self.refused("merge", message("merge #123", minutes_ago=-5))
+
+    def test_release_requests_are_valid_at_eleven_hours_but_not_after_twelve(self):
+        for action, text in (("merge", "merge #123"), ("restart", "restart the bot")):
+            with self.subTest(action=action):
+                self.accepted(action, message(text, minutes_ago=660))
+                self.refused(action, message(text, minutes_ago=721))
+
+    def test_work_intent_is_issue_bound_and_never_a_release_approval(self):
+        for text in ("implement #12", "build https://github.com/jamestesting0/elo-bot/issues/12",
+                     "fix issue #12", "proceed with #12", "go ahead with #12", "do it for #12"):
+            with self.subTest(text=text):
+                A["check_intent"]("work", message(text), BOT, REPO, 12, now=NOW)
+                self.refused("merge", message(text), pr=12)
+                self.refused("restart", message(text))
+        A["check_intent"]("work", message("yes", referenced=helio_says("Implement issue #12?")), BOT, REPO, 12, now=NOW)
+        for msg in (message("implement #13"), message("maybe fix #12"), message("<@42> fix #12"),
+                    message("fix #12", minutes_ago=16), message("fix #12 and #13"),
+                    message("yes", referenced={"author": {"id": "42"}, "content": "Implement #12?"})):
+            with self.subTest(message=msg), self.assertRaises(A["Refused"]):
+                A["check_intent"]("work", msg, BOT, REPO, 12, now=NOW)
 
     def test_natural_pr_forms_and_conversational_confirmation(self):
         for reference in ("pr 123", "PR #123", "pull 123", "pull request 123"):
@@ -140,6 +201,14 @@ class PlanApprovalTests(unittest.TestCase):
 
 
 class RevisionTests(unittest.TestCase):
+    def test_quoted_commit_cannot_pin_a_revision_pushed_after_the_approval(self):
+        with self.assertRaises(A["Refused"]):
+            A["check_revision"](HEAD, message("restart the bot\n> " + HEAD), REPO, "main",
+                                 activity=self.activity(HEAD, 0))
+
+    def test_quoted_merge_does_not_turn_restart_into_a_combined_approval(self):
+        self.assertIsNone(A["combined_pr"](message("restart the bot\n> merge #12"), REPO, BOT))
+
     def activity(self, after, minutes_ago):
         pushed = (NOW - datetime.timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
         return lambda repo, branch: [{"after": after, "timestamp": pushed}]
@@ -163,6 +232,12 @@ class RevisionTests(unittest.TestCase):
             with self.subTest(activity=activity), self.assertRaises(A["Refused"]):
                 A["check_revision"](HEAD, message("merge #123", minutes_ago=1), REPO, "fix", activity=activity)
 
+    def test_eleven_hour_approval_still_refuses_a_changed_revision(self):
+        with self.assertRaises(A["Refused"]):
+            A["check_revision"](HEAD, message("merge #123", minutes_ago=660), REPO, "fix", activity=self.activity(HEAD, 30))
 
-if __name__ == "__main__":
-    unittest.main()
+
+class FenceJoinTests(unittest.TestCase):
+    def test_removed_code_never_joins_surrounding_words_into_an_action(self):
+        with self.assertRaises(A["Refused"]):
+            A["check_intent"]("restart", message("rest```evidence```art the bot"), BOT, REPO, None, now=NOW)

@@ -13,9 +13,9 @@ def ids(path):
  if any(not re.fullmatch(r'\d+',x) for x in values): raise Refused(f'invalid {path.name}')
  return set(values)
 def parse_target(action,target,revision):
- if action=='plan':
+ if action in ('plan','work'):
   m=re.fullmatch(re.escape(REPO)+r'#([1-9][0-9]*)',target)
-  if not m: raise Refused(f'plan target must be {REPO}#<issue>')
+  if not m: raise Refused(f'{action} target must be {REPO}#<issue>')
   return int(m.group(1))
  if not re.fullmatch(r'[0-9a-f]{40}',revision): raise Refused('revision must be a lowercase full 40-character commit SHA')
  if action in ('merge','pr'):
@@ -133,6 +133,11 @@ def load_click(prompt_id,action,target,revision,now=None,not_before=None):
  username=str(((result.get('interaction_metadata') or {}).get('user') or {}).get('username') or clicker)
  return dict(clicker=clicker,username=username,clicked=clicked,result_id=row['result_message_id'],channel_id=channel_id)
 class AlreadyMerged(Exception): pass
+def running_revision():
+ """Read the running process revision from the authoritative release broker."""
+ client=runpy.run_path(str(Path(__file__).with_name('helio_release_client.py')))
+ try: return client['exchange']({'action':'inspect'},timeout=60).get('running_revision')
+ except client['ReleaseError'] as error: raise Refused(str(error)) from None
 def release_gate(action,target,revision):
  """Current GitHub and hold state for the action; returns the branch whose revision timing applies."""
  if action=='merge':
@@ -191,7 +196,9 @@ def main():
    table=db.execute("SELECT 1 FROM sqlite_master WHERE name='inbound_recovery'").fetchone()
    review=db.execute("SELECT outcome,reviewed_at FROM inbound_recovery WHERE id=?",(a.message,)).fetchone() if table else None
   if review and (review[0]!='resume' or not review[1]): raise Refused('Recovered request needs helio recovery scan/review; do not ask for another approval yet')
-  try: APPROVAL['check_revision'](a.revision,live,REPO,branch)
+  try:
+   combined=a.action=='restart' and APPROVAL['combined_pr'](live,REPO,m['bot_id']) is not None
+   APPROVAL['check_revision'](a.revision,live,REPO,branch,running_revision=running_revision() if combined else None,bot_id=m['bot_id'])
   except APPROVAL['Refused'] as e: raise Refused(str(e)) from None
   print(f'APPROVAL_VALID action={a.action} target={a.target} revision={a.revision} sender={author} message={a.message}')
   print('CHECK ONLY: no merge or restart was performed. Follow the work policy and recheck immediately before action.')

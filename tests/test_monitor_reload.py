@@ -234,7 +234,7 @@ class MonitorReloadTests(unittest.TestCase):
                 script = self.home / f"helio-{name}.py"
                 script.write_text(source)
                 if name == "followups":
-                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio_issue_link.py"):
+                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py"):
                         (self.home / helper).write_text((ROOT / "scripts" / helper).read_text())
                 argv = [sys.executable, str(script)]
                 if name == "followups":

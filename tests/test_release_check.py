@@ -21,7 +21,7 @@ class ReleaseCheckTests(unittest.TestCase):
   with self.assertRaises(m['Refused']): self.check()
   self.payload['content']=self.live['content']='lol'
   with self.assertRaises(m['Refused']): self.check()
-  self.payload['content']=self.live['content']=self.text; self.live['timestamp']=stamp(30)
+  self.payload['content']=self.live['content']=self.text; self.live['timestamp']=stamp(721)
   with self.assertRaises(m['Refused']): self.check()
   self.live['timestamp']=stamp(); self.live['author']['bot']=True
   with self.assertRaises(m['Refused']): self.check()
@@ -88,6 +88,66 @@ class ButtonConfirmationTests(unittest.TestCase):
   code,out=self.run_cli('--preflight'); self.assertEqual(code,0,out); self.assertIn('PREFLIGHT_OK',out)
   self.pr['state']='MERGED'; code,out=self.run_cli('--preflight'); self.assertEqual(code,4); self.assertIn('RELEASE_ALREADY_MERGED',out)
 class ReleaseCliTests(unittest.TestCase):
+ def test_fresh_reply_to_expired_release_prompt_keeps_its_pinned_revision(self):
+  sha='a'*40;changed='c'*40
+  g=m['main'].__globals__
+  for action in ('merge','restart'):
+   with self.subTest(action=action),tempfile.TemporaryDirectory() as temp:
+    target='jamestesting0/elo-bot#42' if action=='merge' else 'elobot'
+    prompt='Merge #42 · `aaaaaaa`?' if action=='merge' else 'Restart Elo Bot on `aaaaaaa`?'
+    live={'id':'60','channel_id':'50','author':{'id':'42'},'content':'yes','timestamp':stamp(1),
+          'referenced_message':{'id':snowflake(800),'author':{'id':'7','bot':True},
+                                'content':prompt+'\n⌛ Expired'}}
+    payload={'author_id':'42','channel_id':'50','message_id':'60','content':'yes'}
+    loaded=dict(payload=payload,live=live,owner='1',trusted={'42'},channel_ok=True,is_dm=False,bot_id='7')
+    with sqlite3.connect(Path(temp)/'discord-delivery.sqlite') as db:db.execute('CREATE TABLE delivery(id TEXT)')
+    argv=['release-check','--message','60','--action',action,'--target',target,'--revision',sha]
+    current=[sha]
+    def pr_view(*a):
+     return {'state':'OPEN','headRefOid':current[0],'headRefName':'fix','statusCheckRollup':[
+      {'name':'unit','status':'COMPLETED','conclusion':'SUCCESS'}]}
+    approval=g['APPROVAL']['check_revision'].__globals__
+    # A newer main/branch push happened before the reply; the old prompt still pins its old SHA.
+    activity=lambda *a:[{'after':current[0],'timestamp':stamp(5)}]
+    with patch.dict(g,{'STATE':Path(temp),'load':lambda _:loaded,'pr_view':pr_view}),patch.object(sys,'argv',argv),patch.dict(
+      approval,{'github_activity':activity}):
+     original=approval['check_revision'].__defaults__
+     approval['check_revision'].__defaults__=(activity,*original[1:])
+     try:
+      out=StringIO()
+      with redirect_stdout(out),redirect_stderr(out):self.assertEqual(m['main'](),0,out.getvalue())
+      current[0]=changed
+      argv[-1]=changed
+      out=StringIO()
+      with redirect_stdout(out),redirect_stderr(out):self.assertEqual(m['main'](),2,out.getvalue())
+     finally:approval['check_revision'].__defaults__=original
+
+ def test_combined_restart_uses_broker_running_revision_and_github_coverage(self):
+  revision='a'*40;running='b'*40
+  text='merge PR #42 and restart the bot'
+  live={'id':'60','channel_id':'50','author':{'id':'42'},'content':text,'timestamp':stamp(660)}
+  payload={'author_id':'42','channel_id':'50','message_id':'60','content':text}
+  loaded=dict(payload=payload,live=live,owner='1',trusted={'42'},channel_ok=True,is_dm=False,bot_id='7')
+  api={'/branches/main':{'commit':{'sha':revision}},'/pulls/42':{'merged':True,'merge_commit_sha':revision},
+       '/pulls/42/commits?per_page=100&page=1':[],
+       f'/compare/{running}...{revision}?per_page=100&page=1':{'status':'ahead','merge_base_commit':{'sha':running},
+        'total_commits':1,'commits':[{'sha':revision}]}}
+  g=m['main'].__globals__
+  with tempfile.TemporaryDirectory() as temp:
+   with sqlite3.connect(Path(temp)/'discord-delivery.sqlite') as db:
+    db.execute('CREATE TABLE delivery(id TEXT)')
+   argv=['release-check','--message','60','--action','restart','--target','elobot','--revision',revision]
+   with patch.dict(g,{'STATE':Path(temp),'load':lambda _:loaded,'release_gate':lambda *a:'main',
+                      'running_revision':lambda:running}),patch.object(sys,'argv',argv),patch.dict(
+                      g['APPROVAL']['check_revision'].__globals__,{'github_json':lambda repo,path:api[path]}):
+    out=StringIO()
+    with redirect_stdout(out),redirect_stderr(out):self.assertEqual(m['main'](),0,out.getvalue())
+    self.assertIn('APPROVAL_VALID action=restart',out.getvalue())
+    api['/branches/main']['commit']['sha']='d'*40
+    out=StringIO()
+    with redirect_stdout(out),redirect_stderr(out):self.assertEqual(m['main'](),2,out.getvalue())
+    self.assertIn('ask',out.getvalue().lower())
+
  def test_pending_approval_must_match_live_message_head_and_checks(self):
   with tempfile.TemporaryDirectory() as tmp:
    base=Path(tmp); state=base/'state'; state.mkdir(); (base/'trusted-users').write_text('42'); (base/'release-approvers').write_text('42')

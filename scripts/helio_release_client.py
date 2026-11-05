@@ -11,7 +11,10 @@ def describe(state):
     revision=state.get('running_revision')
     version=f"running revision {revision[:8]}" if revision else f"checkout {(state.get('head') or 'unknown')[:8]}; running revision unverified"
     login=state.get('login_evidence','unavailable')
-    return f"EloBot: {phase}; {version}; login {login}" + (f" at {state['login_observed_at']}" if state.get('login_observed_at') else '') + '; current gateway health unverified'
+    observed=state.get('observed_at')
+    gateway={'connected':f'gateway connection open at {observed}',
+             'no_connection':f'no gateway connection observed at {observed}'}.get(state.get('gateway_health'),'gateway health unverified')
+    return f"EloBot: {phase}; {version}; login {login}" + (f" at {state['login_observed_at']}" if state.get('login_observed_at') else '') + '; '+gateway
 
 def observe(invocation,seconds=300,exchange_fn=None,clock=time.monotonic,sleep=time.sleep):
     """Only inspect after the single restart; never replay the production action."""
@@ -71,6 +74,9 @@ def main():
         print(describe(result));return 0
     if a.action=='restart' and result.get('status')=='restarted':
         result.update(observe(result.get('invocation')))
+        result['bot_login_verified']=result['readiness']=='login_observed'
+        for field in ('login_observed_at','gateway_health','observed_at'):
+            result[field]=result['observation'].get(field)
     print(json.dumps(result,indent=2))
     if a.action=='restart' and (not isinstance(result,dict) or result.get('status')!='restarted' or result.get('readiness')!='login_observed'):return 2
     return 0
