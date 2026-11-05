@@ -43,9 +43,25 @@ class Health(unittest.TestCase):
             (self.state / f"worktrees/w{n}").mkdir(parents=True)
         (self.state / "housekeeping-last.json").write_text(json.dumps({"at": int(NOW - 3 * 86_400), "mode": "applied"}))
         self.assertEqual(self.problems(), [
-            "oldest unaccepted message waiting 3h", "1 lane(s) cleanup-pending", "1 lane(s) launch-failed",
+            "oldest unaccepted message waiting 3h",
             "11 worktrees retaining 0.0 GiB", "housekeeping has not run in 2 days",
         ])
+        work = HEALTH["snapshot"](self.state, self.home, NOW)["work_attention"]
+        self.assertEqual({row["key"]: row["status"] for row in work}, {"a": "cleanup-pending", "b": "launch-failed"})
+
+    def test_old_lane_failure_is_dated_work_attention_without_claiming_an_intake_outage(self):
+        (self.state / "lanes").mkdir()
+        (self.state / "lanes/old.json").write_text(json.dumps({
+            "key": "old", "launchState": "failed", "openedAt": "2026-11-01T00:00:00Z",
+            "launchError": "EEXIST"}))
+        health = HEALTH["snapshot"](self.state, self.home, NOW)
+        self.assertEqual(HEALTH["problems"](health, NOW), [])
+        failure = health["work_attention"][0]
+        self.assertEqual(failure["key"], "old")
+        self.assertEqual(failure["opened_at"], "2026-11-01T00:00:00Z")
+        self.assertEqual(failure["error"], "EEXIST")
+        self.assertEqual(failure["age_s"], 6508800)
+        self.assertTrue((self.state / "lanes/old.json").exists())
 
     def test_retained_worktrees_name_what_blocks_their_cleanup_and_databases_are_measured_alone(self):
         for n in range(11):

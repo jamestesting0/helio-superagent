@@ -61,6 +61,8 @@ def snapshot(home: Path, *, runtime_home: Path | None = None, processes: list[di
     home = home.resolve()
     runtime_home = runtime_home or home
     state = home / ".dori/elobot/state"
+    now = time.time()
+    health = runpy.run_path(str(Path(__file__).with_name("helio_health.py")))
     errors: list[str] = []
     deploy = read_json(home / ".dori/elobot/deploy-state.json", errors, {})
     sessions = read_json(state / "helio-lead-sessions.json", errors, [])
@@ -142,6 +144,8 @@ def snapshot(home: Path, *, runtime_home: Path | None = None, processes: list[di
             key = lane["key"]
             lanes["failed"].append({"key": key, "error": str(lane.get("launchError") or "not recorded")[:300],
                                     "opened_at": lane.get("openedAt"), "pane": lane.get("pane"),
+                                    "age_s": health["age_seconds"](lane.get("openedAt"), now),
+                                    "basis": "recorded launch failure; not current intake state",
                                     "inspect": f"helio dori show {shlex.quote(key)}"})
     observation = query(state, "discord-conversations.sqlite", "SELECT data FROM oracle_observations WHERE singleton=1", errors)
     oracle = {}
@@ -154,13 +158,17 @@ def snapshot(home: Path, *, runtime_home: Path | None = None, processes: list[di
         except (ValueError, TypeError) as error:
             errors.append(f"Oracle observation: {type(error).__name__}")
     oracle["current_connectivity_verified"] = False
-    health = runpy.run_path(str(Path(__file__).with_name("helio_health.py")))
+    oracle["basis"] = "saved observation; no independent connectivity probe"
+    oracle["observation_age_s"] = health["age_seconds"](oracle.get("observed_at"), now)
+    oracle["login_age_s"] = health["age_seconds"](oracle.get("login_observed_at"), now)
     try:
-        health_problems = health["problems"](health["snapshot"](state, home, time.time()), time.time())
+        health_problems = health["problems"](health["snapshot"](state, home, now), now)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, sqlite3.Error) as error:
         errors.append(f"health: {type(error).__name__}")
         health_problems = None
-    attention = [f"Lane {row['key']}: {row['error']} ({row['inspect']})" for row in lanes["failed"]]
+    attention = [f"Recorded lane failure {row['key']} opened {row['opened_at'] or 'unknown'} "
+                 f"(age_s={row['age_s']}): {row['error']} ({row['inspect']}); intake readiness is separate"
+                 for row in lanes["failed"]]
     if not lead:
         attention.append("No live process for the recorded lead session")
     if not ready:

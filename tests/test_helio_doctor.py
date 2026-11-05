@@ -54,10 +54,13 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(report["ingestion"]["pids"], [11])
         self.assertEqual(report["lanes"]["failed"][0]["error"], "EEXIST: brief already exists")
         self.assertEqual(report["lanes"]["failed"][0]["inspect"], "helio dori show old")
+        self.assertEqual(report["lanes"]["failed"][0]["basis"], "recorded launch failure; not current intake state")
+        self.assertGreater(report["lanes"]["failed"][0]["age_s"], 0)
         self.assertTrue(any("old" in item for item in report["attention"]))
         self.assertEqual(report["queues"]["answered_questions"], 0)
         self.assertEqual(report["dependencies"]["oracle"]["phase"], "running")
         self.assertFalse(report["dependencies"]["oracle"]["current_connectivity_verified"])
+        self.assertEqual(report["dependencies"]["oracle"]["basis"], "saved observation; no independent connectivity probe")
 
     def test_receipt_from_before_an_intake_restart_is_not_current_evidence(self):
         self.processes[1]["start_ticks"] = "200"

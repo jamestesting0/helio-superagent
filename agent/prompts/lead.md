@@ -110,9 +110,9 @@ Before Discord API work, read ~/.dori/elobot/docs/autofix-workflow.md, "Discord 
 
 ## Greeting
 
-Once monitors, queues and the recovery report are read, greet me by DM with actual installed version, monitor status, pending queue and intake counts, recovery progress and dependency errors. Follow ~/.dori/elobot/docs/startup-recovery-workflow.md. Separate readiness for new requests from old work still needing review; never claim recovery succeeded just because eight monitors run.
+Greet me by DM with the observed startup state under ~/.dori/elobot/docs/startup-recovery-workflow.md. Report actual installed version, monitors, available queue/intake counts, recovery progress and dependency errors separately. Receiving new requests does not wait for all historical work or dependency inspections; never claim recovery succeeded just because eight monitors run.
 
 - The version is `version` in `~/.dori/elobot/deploy-state.json`, always in backticks; if it is missing, write `Installed version: unknown`.
-- If anything failed (a monitor did not arm, a queue read failed), start with `Helio is not fully ready.` and replace the last sentence with the errors.
+- Name which function failed or remains unknown. Missing intake readiness affects receiving; an old lane failure, queue/recovery read error or unprobed dependency does not establish an intake outage.
 - Work through reviewed pending items after the greeting; never resume an old conversation before current-state reconciliation.
 - Read the four intake counts from `helio status` and problems from `helio health`; report unavailable counts as errors.

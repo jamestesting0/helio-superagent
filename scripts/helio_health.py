@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""One snapshot of Helio's long-run health: backlog, gaps, lanes, storage and upkeep. Prints problems only unless --json."""
+"""Helio health and recorded work attention, kept separate from intake readiness."""
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sqlite3
@@ -15,6 +16,19 @@ PENDING_WARN_S = 2 * 3600
 WORKTREES_WARN, WORKTREES_WARN_BYTES = 10, 2 * 1024 ** 3
 WAL_WARN_BYTES = 64 * 1024 ** 2
 HOUSEKEEPING_STALE_S = 2 * 86_400
+
+
+def age_seconds(at: str | None, now: float) -> int | None:
+    if not isinstance(at, str):
+        return None
+    try:
+        observed = datetime.datetime.fromisoformat(at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        return None
+    age = now - observed.timestamp()
+    return int(age) if age >= 0 else None
 
 
 def _size(path: Path) -> int:
@@ -46,10 +60,16 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
                               "ON a.stream=d.stream AND a.id=d.id WHERE d.stream='inbound' AND d.payload IS NOT NULL AND a.id IS NULL")
     oldest_ms = oldest[0][0] if oldest and oldest[0][0] else None
     lanes: dict[str, int] = {}
+    work_attention = []
     for lane_file in (state / "lanes").glob("*.json"):
         lane = json.loads(lane_file.read_text())
         status = "closed" if lane.get("closedAt") else "launch-failed" if lane.get("launchState") == "failed" else lane.get("status", "working")
         lanes[status] = lanes.get(status, 0) + 1
+        if status in ("cleanup-pending", "launch-failed", "not-done"):
+            work_attention.append({"key": lane.get("key"), "status": status, "opened_at": lane.get("openedAt"),
+                                   "age_s": age_seconds(lane.get("openedAt"), now),
+                                   "error": lane.get("launchError"),
+                                   "basis": "recorded work state; intake readiness is separate"})
     queue = state / "launch-queue.json"
     worktrees = [path for path in (state / "worktrees").glob("*") if path.is_dir()]
     last_file = state / "housekeeping-last.json"
@@ -61,6 +81,7 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
         "oldest_pending_s": int(now - oldest_ms / 1000) if oldest_ms else None,
         "gaps": (_query(delivery, "SELECT count(*) FROM inbound_gaps WHERE acknowledged_at IS NULL") or [(0,)])[0][0],
         "lanes": lanes,
+        "work_attention": work_attention,
         "queued": len(json.loads(queue.read_text())) if queue.exists() else 0,
         "worktrees": {"count": len(worktrees), "bytes": sum(_size(path) for path in worktrees),
                       "kept": kept},
@@ -82,9 +103,6 @@ def problems(health: dict, now: float) -> list[str]:
         found.append(f"oldest unaccepted message waiting {health['oldest_pending_s'] // 3600}h")
     if health["gaps"]:
         found.append(f"{health['gaps']} intake gap(s) not reviewed")
-    for status in ("cleanup-pending", "launch-failed", "not-done"):
-        if health["lanes"].get(status):
-            found.append(f"{health['lanes'][status]} lane(s) {status}")
     trees = health["worktrees"]
     if trees["count"] > WORKTREES_WARN or trees["bytes"] > WORKTREES_WARN_BYTES:
         blocking = ", ".join(f"{row['key']} ({row['reason']})" for row in trees["kept"][:5]) + (f", +{len(trees['kept']) - 5} more" if len(trees["kept"]) > 5 else "")
@@ -114,6 +132,8 @@ def main() -> int:
         print(json.dumps({**health, "problems": found}))
     else:
         print("HEALTH ok" if not found else "HEALTH problems: " + "; ".join(found))
+        for row in health["work_attention"]:
+            print("WORK_ATTENTION " + json.dumps(row))
     return 0
 
 
