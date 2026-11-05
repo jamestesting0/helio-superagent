@@ -21,6 +21,15 @@ ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "scripts/install.py"
 
 
+class PayloadTests(unittest.TestCase):
+    def test_every_intake_source_file_is_installed(self):
+        # A file the payload omits is never deployed, and intake crashes importing it.
+        source = ROOT / "discord-inbound"
+        shipped = {str(path.relative_to(source)) for path in source.rglob("*")
+                   if path.is_file() and "node_modules" not in path.parts and path.name != "AGENTS.md"}
+        self.assertEqual(sorted(shipped - set(runpy.run_path(str(INSTALLER))["INBOUND_FILES"])), [])
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

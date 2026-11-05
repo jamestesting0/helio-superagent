@@ -64,7 +64,7 @@ INBOUND_FILES = (
     "intake/archived-threads.test.ts", "intake/archived-threads.ts", "intake/authorization.ts",
     "intake/bug-reports.test.ts", "intake/catchup-gaps.test.ts", "intake/catchup.test.ts", "intake/catchup.ts", "intake/channel-policy.test.ts",
     "intake/filter.test.ts", "intake/filter.ts", "intake/lastseen.ts", "intake/owner-mentions.test.ts",
-    "intake/preceding.test.ts", "intake/preceding.ts", "intake/turns.test.ts", "intake/turns.ts",
+    "intake/preceding.test.ts", "intake/preceding.ts", "intake/recent-ids.test.ts", "intake/recent-ids.ts", "intake/turns.test.ts", "intake/turns.ts",
     "intake/watched-channels.ts",
     # delivery
     "delivery/context-render.ts", "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
@@ -92,7 +92,7 @@ INBOUND_FILES = (
     "interactive/questions.test.ts", "interactive/recovery.test.ts",
     "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
     # tests
-    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/ignored-threads.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
+    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/catchup-pages.test.ts", "tests/ignored-threads.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
     "tests/stage-first.test.ts",
     "tests/learning-context.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",
