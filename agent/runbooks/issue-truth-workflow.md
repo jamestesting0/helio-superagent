@@ -12,7 +12,7 @@ The command manages the status block from GitHub plan/PR facts, preserves prose,
 
 On `ISSUE_EDITED_OUTSIDE_HELIO`, read the new body, merge its changes into the proposed text and pass `--adopt` with the reported SHA256 of that exact reviewed body. This detects earlier edits and narrows concurrent races; GitHub does not provide an atomic body compare-and-swap here. Never claim human edits cannot race.
 
-Updates persist before/after bodies and intended operations locally. If a later step fails, keep the successful body/PR and resume with `helio issue resume --operation ID`. Do not create a second PR or repeat notification comments to recover. A pending operation blocks later edits to that issue until reviewed/resumed. Notification markers deduplicate an uncertain successful send.
+Updates persist before/after bodies and intended operations locally. If a later step fails (for example a connection error), keep the successful body/PR: the next update or the five-minute sync of that issue finishes the interrupted operation first, so no manual step is needed. Call it pending until `ISSUE_UPDATED` or the next sync confirms it. Do not create a second PR or repeat notification comments to recover. Only an operation that cannot finish (the issue was edited during it) stays pending; review it, then `helio issue resume --operation ID` or `cancel`. Notification markers deduplicate an uncertain successful send.
 
 If a human changed the body while an operation was pending, preserve the saved history and review the current issue. `helio issue cancel --operation ID` abandons only the local intent; it does not revert any external changes. Start a newly reviewed/adopted update after cancellation rather than forcing the old body over the human edit.
 

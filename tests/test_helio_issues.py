@@ -15,8 +15,12 @@ class IssueTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.body = "Human request"
+        self.meta = {"state": "open", "state_reason": None, "labels": []}
         self.comments = []
         self.fail_comment = False
+        self.fail_patch = None
+        self.patches = 0
+        self.during_get = None
         self.gh = M["Issues"]("o/r", Path(self.temp.name), self.command)
 
     def command(self, argv, stdin=None):
@@ -29,9 +33,23 @@ class IssueTests(unittest.TestCase):
             self.comments.append(data)
             return "{}"
         if data is not None:
+            if self.fail_patch == "before":
+                self.fail_patch = None
+                raise M["Refused"]("error connecting to api.github.com")
+            self.patches += 1
             self.body = data["body"]
+            self.meta.update({key: data[key] for key in ("state", "state_reason") if key in data})
+            if "labels" in data:
+                self.meta["labels"] = list(data["labels"])
+            if self.fail_patch == "after":
+                self.fail_patch = None
+                raise M["Refused"]("error connecting to api.github.com")
             return "{}"
-        return json.dumps({"body": self.body, "state": "open"})
+        if self.during_get:
+            hook, self.during_get = self.during_get, None
+            hook()
+        return json.dumps({"body": self.body, "state": self.meta["state"], "state_reason": self.meta["state_reason"],
+                           "labels": [{"name": name} for name in self.meta["labels"]]})
 
     def test_unreviewed_manual_body_is_preserved(self):
         with self.assertRaisesRegex(M["Refused"], "ISSUE_EDITED_OUTSIDE_HELIO"):
@@ -68,6 +86,77 @@ class IssueTests(unittest.TestCase):
         self.gh.update(4, {"body": "Changed scope", "adopt": M["digest"](self.body), "note": "Loss cap is -30"})
         self.assertIn("Loss cap is -30", self.comments[0]["body"])
 
+    def test_a_later_change_first_finishes_an_interrupted_update(self):
+        note = {"body": "Keep the wording", "adopt": M["digest"](self.body), "note": "Owner keeps the wording"}
+        self.fail_comment = True
+        with self.assertRaises(M["Refused"]):
+            self.gh.update(4, note)
+        self.fail_comment = False
+        self.gh.update(4, {"projection": "PR #6 merged"})
+        self.assertEqual([c["body"].split("\n")[0] for c in self.comments], ["**Issue updated:** Owner keeps the wording"])
+        self.assertEqual(M["split"](self.body)[0], "Keep the wording")
+        self.assertIn("PR #6 merged", self.body)
+
+    def test_repeating_a_finished_update_after_a_status_refresh_is_not_a_conflict(self):
+        note = {"body": "Keep the wording", "adopt": M["digest"](self.body), "note": "Owner keeps the wording"}
+        first = self.gh.update(4, note)
+        self.gh.update(4, {"projection": "PR #6 merged"})
+        self.assertEqual(self.gh.update(4, note), first)
+        self.assertEqual(len(self.comments), 1)
+        self.assertIn("PR #6 merged", self.body)
+
+    def test_a_repeated_finished_sync_still_finishes_a_later_interrupted_note(self):
+        sync = {"projection": "PR #6 open"}
+        self.gh.update(4, sync)
+        note = {"body": "Keep the wording", "adopt": M["digest"](self.body), "note": "Owner keeps the wording"}
+        self.fail_comment = True
+        with self.assertRaises(M["Refused"]):
+            self.gh.update(4, note)
+        self.fail_comment = False
+        self.gh.update(4, sync)
+        self.assertEqual(len(self.comments), 1)
+
+    def test_cancel_waits_for_an_update_in_flight_and_never_reports_a_cancel_that_did_not_happen(self):
+        import threading
+        note = {"body": "Keep the wording", "adopt": M["digest"](self.body), "note": "Owner keeps the wording"}
+        self.fail_comment = True
+        with self.assertRaises(M["Refused"]):
+            self.gh.update(4, note)
+        self.fail_comment = False
+        operation = M["digest"](json.dumps(["o/r", 4, note], sort_keys=True))
+        outcome = {}
+
+        def cancel():
+            try:
+                outcome["result"] = self.gh.cancel(operation)
+            except M["Refused"] as error:
+                outcome["error"] = str(error)
+        worker = threading.Thread(target=cancel)
+        self.during_get = worker.start
+        self.gh.update(4, {"projection": "PR #6 open"})
+        worker.join()
+        self.assertEqual(len(self.comments), 1)
+        self.assertIn("already completed", outcome.get("error", ""))
+
+    def test_recovery_never_replays_close_or_labels_over_a_human_decision(self):
+        intent = {"projection": "PR #6 merged", "close": "completed", "labels": ["reviewed"]}
+        self.fail_patch = "before"
+        with self.assertRaises(M["Refused"]):
+            self.gh.update(4, intent)
+        self.meta.update(state="closed", state_reason="not_planned", labels=["human-hold"])
+        with self.assertRaisesRegex(M["Refused"], "changed during the update"):
+            self.gh.update(4, {"projection": "PR #6 merged"})
+        self.assertEqual(self.meta, {"state": "closed", "state_reason": "not_planned", "labels": ["human-hold"]})
+
+    def test_a_write_that_landed_despite_an_error_is_not_sent_again(self):
+        intent = {"projection": "PR #6 merged", "close": "completed", "labels": ["reviewed"]}
+        self.fail_patch = "after"
+        with self.assertRaises(M["Refused"]):
+            self.gh.update(4, intent)
+        self.gh.update(4, {"projection": "PR #6 merged"})
+        self.assertEqual(self.patches, 2)
+        self.assertEqual(self.meta, {"state": "closed", "state_reason": "completed", "labels": ["reviewed"]})
+
     def test_milestones_after_first_use_are_logged_once(self):
         events = [("pr6:opened", "PR #6 opened", 900.0), ("pr6:merged", "PR #6 merged", 1100.0)]
         self.assertEqual(self.gh.log_milestones(4, events[:1], now=1000.0), [])
@@ -75,6 +164,48 @@ class IssueTests(unittest.TestCase):
         self.assertEqual(self.gh.log_milestones(4, events, now=1300.0), [])
         self.assertEqual(len(self.comments), 1)
         self.assertIn("PR #6 merged", self.comments[0]["body"])
+
+
+class ProjectionTests(unittest.TestCase):
+    def test_status_does_not_change_when_only_the_observation_time_does(self):
+        import datetime, sqlite3
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp)
+            db = sqlite3.connect(state / "discord-conversations.sqlite")
+            db.execute("CREATE TABLE oracle_observations (singleton INTEGER PRIMARY KEY, data TEXT NOT NULL)")
+
+            class Gh:
+                def command(self, argv, stdin=None):
+                    joined = " ".join(argv)
+                    if "issue view" in joined:
+                        return json.dumps({"state": "CLOSED", "stateReason": "COMPLETED", "title": "Facts", "comments": [],
+                                           "closedByPullRequestsReferences": [{"number": 9}]})
+                    if "api user" in joined:
+                        return "helio\n"
+                    if "/timeline" in joined:
+                        return "[[]]"
+                    return json.dumps({"state": "MERGED", "url": "https://github.com/o/r/pull/9", "statusCheckRollup": [],
+                                       "mergeCommit": {"oid": "abc"}, "body": "", "closingIssuesReferences": [{"number": 8}],
+                                       "createdAt": "2026-11-05T09:00:00Z", "mergedAt": "2026-11-05T09:10:00Z"})
+
+                def api(self, suffix):
+                    return {"status": "identical"}
+
+            statuses = []
+            for seconds in (0, 5):
+                observed = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds)).isoformat()
+                data = {"observed_at": observed, "active": True, "login_evidence": "observed", "running_revision": "def"}
+                db.execute("INSERT OR REPLACE INTO oracle_observations VALUES (1, ?)", (json.dumps(data),))
+                db.commit()
+                old = CLI["projection"].__globals__["STATE"], CLI["projection"].__globals__["REPO"]
+                CLI["projection"].__globals__.update(STATE=state, REPO="o/r")
+                try:
+                    statuses.append(CLI["projection"](8, Gh())["status"])
+                finally:
+                    CLI["projection"].__globals__.update(STATE=old[0], REPO=old[1])
+            db.close()
+            self.assertIn("live revision observed", statuses[0])
+            self.assertEqual(statuses[0], statuses[1])
 
 
 class ReviewTests(unittest.TestCase):

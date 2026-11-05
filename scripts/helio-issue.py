@@ -103,7 +103,7 @@ def projection(issue: int, gh) -> Projection:
             if age is not None and 0 <= age <= 300 and observation.get("active") and observation.get("login_evidence") == "observed" and observation.get("running_revision"):
                 comparison = gh.api(f"compare/{detail['mergeCommit']['oid']}...{observation['running_revision']}")
                 if comparison.get("status") in ("ahead", "identical"):
-                    parts.append(f"PR #{pr['number']} live revision observed at {observed_at}; gateway health unverified")
+                    parts.append(f"PR #{pr['number']} live revision observed; gateway health unverified")
                     events.append((f"pr{number}:live", f"PR #{number} observed running in production", age_at))
     ledger_path = STATE / "decisions.sqlite"
     if ledger_path.exists():
@@ -170,17 +170,13 @@ def main() -> int:
                 print(f"- {(item.get('author') or {}).get('login')} at {item.get('createdAt')}: {item.get('body', '')[:2000]}")
             print("Helio's own comments are omitted: the description is the current truth.")
             return 0
-        if args.command in ("resume", "cancel"):
-            with closing(sqlite3.connect(STATE / "issue-updates.sqlite")) as db, db:
-                row = db.execute("SELECT issue,change FROM operations WHERE id=? AND repo=?", (args.operation, REPO)).fetchone()
-                if row is not None and args.command == "cancel":
-                    db.execute("UPDATE operations SET completed=2 WHERE id=?", (args.operation,))
-                    print("ISSUE_OPERATION_CANCELLED: saved history retained; external changes are not reverted")
-                    return 0
-            if row is None:
-                raise ISSUES["Refused"]("Unknown operation.")
-            operation = gh.update(row[0], json.loads(row[1]))
-            print(f"ISSUE_UPDATED issue={row[0]} operation={operation}")
+        if args.command == "cancel":
+            gh.cancel(args.operation)
+            print("ISSUE_OPERATION_CANCELLED: saved history retained; external changes are not reverted")
+            return 0
+        if args.command == "resume":
+            issue, operation = gh.resume(args.operation)
+            print(f"ISSUE_UPDATED issue={issue} operation={operation}")
             return 0
         facts = projection(args.issue, gh)
         change = {"projection": facts["status"], "summary": facts["summary"], "links": facts["links"],
