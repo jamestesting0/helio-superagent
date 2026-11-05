@@ -65,7 +65,7 @@ def content_hash(data: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
-def validate(data: object, revision: int) -> list[tuple[str, str]]:
+def validate(data: object, revision: int, *, editorial: bool = True) -> list[tuple[str, str]]:
     if not isinstance(data, dict):
         return [("plan", "must be a JSON object")]
     errors: list[tuple[str, str]] = [(key, "unknown field") for key in sorted(set(data) - FIELDS)]
@@ -75,11 +75,11 @@ def validate(data: object, revision: int) -> list[tuple[str, str]]:
             errors.append((field, "required text"))
             return
         size = len(value.split()) if words else len(value)
-        if size > limit:
+        if editorial and size > limit:
             errors.append((field, f"over {limit} {'words' if words else 'characters'}"))
-        if field != "technical_notes" and CODE.search(value):
+        if editorial and field != "technical_notes" and CODE.search(value):
             errors.append((field, "no code, file paths or function names outside technical_notes"))
-        if FILLER.search(value):
+        if editorial and FILLER.search(value):
             errors.append((field, "no TBD, TODO or etc.; decide or ask an open question"))
 
     def items(field: str, value: object, low: int, high: int) -> list:
@@ -124,7 +124,7 @@ def validate(data: object, revision: int) -> list[tuple[str, str]]:
     afters = [c["after"].strip().lower() for c in changes if isinstance(c, dict) and isinstance(c.get("after"), str)]
     for index, check in enumerate(items("done_when", data.get("done_when", []), 0, 4)):
         text(f"done_when[{index}]", check, 120)
-        if isinstance(check, str) and any(len(after) >= 4 and after in check.lower() for after in afters):
+        if editorial and isinstance(check, str) and any(len(after) >= 4 and after in check.lower() for after in afters):
             errors.append((f"done_when[{index}]", "repeats a Scope row; Scope rows are already checked in the PR"))
     for index, risk in enumerate(items("risks", data.get("risks", []), 0, 3)):
         if not isinstance(risk, dict) or set(risk) != {"level", "what", "mitigation"} or risk.get("level") not in LEVELS:
@@ -135,7 +135,7 @@ def validate(data: object, revision: int) -> list[tuple[str, str]]:
     notes = data.get("technical_notes", "")
     if notes:
         text("technical_notes", notes, 600)
-        if isinstance(notes, str) and "```" in notes:
+        if editorial and isinstance(notes, str) and "```" in notes:
             errors.append(("technical_notes", "no code blocks"))
     if revision > 1:
         text("change_note", data.get("change_note"), 120)
@@ -220,19 +220,23 @@ def intact(issue: int, body: str, data: dict | None) -> bool:
 def announcement(issue: int, data: dict, url: str) -> str:
     head = f"📋 Plan for #{issue} (r{data['revision']})"
     if data["open_questions"]:
-        return f"{head} needs answers before it can be approved: " + "; ".join(data["open_questions"]) + f" · <{url}>"
-    changes, decisions = len(data["scope"]["changes"]), len(data["decisions"])
-    helio = sum(helio_decided(d) for d in data["decisions"])
-    beta = "not planned" if data["live_beta"] == "Not planned" else data["live_beta"]
-    facts = [f"{changes} change{'s' * (changes != 1)}",
-             f"{decisions} decision{'s' * (decisions != 1)}" + (f" ({helio} ⚑ Helio's call)" if helio else ""),
-             f"Live beta: {beta}", f"<{url}>"]
-    tail = " · " + " · ".join(facts) + "\nReply **approve** to start, or tell me what to change."
-    lead = data["in_short"] if data["revision"] == 1 else f"changed: {data['history'][0]['note']}. {data['in_short']}"
-    room = ANNOUNCE_LIMIT - len(head) - 2 - len(tail)
+        prefix = f"{head} "
+        lead = "needs answers before it can be approved: " + "; ".join(data["open_questions"])
+        tail = f" · <{url}>"
+    else:
+        prefix = f"{head}: "
+        changes, decisions = len(data["scope"]["changes"]), len(data["decisions"])
+        helio = sum(helio_decided(d) for d in data["decisions"])
+        beta = "not planned" if data["live_beta"] == "Not planned" else "requested (details in plan)"
+        facts = [f"{changes} change{'s' * (changes != 1)}",
+                 f"{decisions} decision{'s' * (decisions != 1)}" + (f" ({helio} ⚑ Helio's call)" if helio else ""),
+                 f"Live beta: {beta}", f"<{url}>"]
+        tail = " · " + " · ".join(facts) + "\nReply **approve** to start, or tell me what to change."
+        lead = data["in_short"] if data["revision"] == 1 else f"changed: {data['history'][0]['note']}. {data['in_short']}"
+    room = ANNOUNCE_LIMIT - len(prefix) - len(tail)
     if len(lead) > room:
         lead = lead[:max(room - 1, 0)].rstrip() + "…"
-    return f"{head}: {lead}{tail}"
+    return f"{prefix}{lead}{tail}"
 
 
 def pr_body(issue: int, data: dict, plan_url: str, result: dict, summary: str, tests_passed: int) -> str:
@@ -338,6 +342,45 @@ def full_suite(project: Path, head: str) -> int:
     return counts.run
 
 
+def task_worktree(project: Path, issue: int, explicit: Path | None) -> tuple[Path, str]:
+    """Use the selected task context; issue-numbered trees are a discovery fallback."""
+    branch = f"helio/issue-{issue}"
+    matches_issue = re.compile(rf"refs/heads/helio/issue-?{issue}(?:$|[-_])")
+    trees = command(["git", "worktree", "list", "--porcelain"], cwd=project)
+    task_trees: set[Path] = set()
+    candidates: dict[Path, str] = {}
+    for record in trees.split("\n\n"):
+        fields = dict(line.split(" ", 1) for line in record.splitlines() if " " in line)
+        if fields.get("branch", "").startswith("refs/heads/helio/"):
+            task_trees.add(Path(fields["worktree"]).resolve())
+        if matches_issue.match(fields.get("branch", "")):
+            candidates[Path(fields["worktree"]).resolve()] = fields["branch"].removeprefix("refs/heads/")
+    caller = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    current = Path(caller.stdout.strip()).resolve() if caller.returncode == 0 else None
+    selected = None
+    if explicit:
+        selected = explicit.expanduser().resolve()
+    elif current in task_trees:
+        selected = current
+    if selected is None:
+        if len(candidates) != 1:
+            raise Refused(f"check out {branch} in a task worktree; found {len(candidates)} matching trees; use --worktree")
+        selected = next(iter(candidates))
+    common = command(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=project)
+    selected_common = command(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=selected)
+    if Path(common).resolve() != Path(selected_common).resolve():
+        raise Refused("task worktree belongs to a different repository")
+    if command(["git", "remote", "get-url", "--push", "origin"], cwd=selected) != command(
+            ["git", "remote", "get-url", "--push", "origin"], cwd=project):
+        raise Refused("task worktree origin differs from the canonical repository")
+    selected_branch = command(["git", "branch", "--show-current"], cwd=selected)
+    named_issue = re.match(r"helio/issue-?(\d+)(?:$|[-_])", selected_branch)
+    if (not selected_branch.startswith("helio/") or selected_branch.startswith("helio/autofix-")
+            or (named_issue and int(named_issue.group(1)) != issue)):
+        raise Refused(f"check out {branch} in the selected task worktree")
+    return selected, selected_branch
+
+
 def state(issue: int, body: str) -> tuple[str, dict | None]:
     if not body:
         return "PLAN_NONE", None
@@ -426,9 +469,10 @@ def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], n
     except (OSError, ValueError) as error:
         raise Refused(f"cannot read plan file: {error}") from None
     revision = old["revision"] + 1 if old else 1
-    errors = validate(fields, revision)
+    errors = validate(fields, revision, editorial=False)
     if errors:
         return [f"PLAN_INVALID field={field} reason={reason}" for field, reason in errors]
+    advice = validate(fields, revision)
     note = fields.pop("change_note", None) or "first version"
     data = {"decisions": [], "open_questions": [], "done_when": [], "risks": [], **fields,
             "scope": {"not_included": [], **fields["scope"]}, "revision": revision, "posted_at": now.isoformat(),
@@ -448,13 +492,16 @@ def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], n
         data["revision_source"] = {"message": args.from_message, "author": source["payload"]["author_id"],
                                    "content": source["live"]["content"], "channel": source["live"]["channel_id"]}
         data["source_bindings"].setdefault(args.from_message, {"revision": revision, "hash": content_hash(data)})
-    if len(visible(args.issue, data)) > VISIBLE_LIMIT:
-        return [f"PLAN_INVALID field=plan reason=visible part is {len(visible(args.issue, data))} characters (limit {VISIBLE_LIMIT})"]
+    if len(render(args.issue, data)) > 65536:
+        return ["PLAN_INVALID field=plan reason=rendered comment exceeds GitHub's 65536-character limit"]
     gh.label(args.issue, True)
     url = gh.save(args.issue, comment_id, render(args.issue, data))
     args.announcement_file.write_text(announcement(args.issue, data, url) + "\n")
     lines = [f"PLAN_POSTED issue={args.issue} revision={revision} status={status(data).replace(' ', '_')} url={url}",
              f"PLAN_ANNOUNCEMENT_FILE {args.announcement_file}"]
+    lines += [f"PLAN_ADVICE field={field} reason={reason}" for field, reason in advice]
+    if len(visible(args.issue, data)) > VISIBLE_LIMIT:
+        lines.append(f"PLAN_ADVICE field=plan reason=consider shortening the visible part below {VISIBLE_LIMIT} characters")
     if old and old.get("approval") and not approved(data):
         lines.append(f"PLAN_APPROVAL_RESET issue={args.issue}: the content changed; ask for approval of r{revision}")
     return lines
@@ -469,7 +516,7 @@ def approve(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict]
     if args.confirmation:
         click = click_approval(args.confirmation, args.issue, data, now)
         data["approval"] = {"revision": data["revision"], "hash": content_hash(data), "by": click["username"],
-                            "message": click["result_id"]}
+                            "message": click["result_id"], "confirmation": args.confirmation}
         gh.save(args.issue, comment_id, render(args.issue, data))
         consume(args.confirmation, now)
         return [f"PLAN_APPROVED issue={args.issue} revision={data['revision']} by={click['username']} url={url}"]
@@ -488,11 +535,14 @@ def approve(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict]
     try:
         message["verify"](message["payload"], message["live"], "plan", f"{REPO}#{args.issue}", None, message["owner"],
                           message["trusted"], message["channel_ok"], message["is_dm"], message["bot_id"], now=now,
-                          not_before=None if is_source else datetime.datetime.fromisoformat(data["posted_at"]))
+                          not_before=None if is_source else datetime.datetime.fromisoformat(data["posted_at"]),
+                          resolved_plan=args.resolved_approval)
     except message["Refused"] as error:
         raise Refused(str(error)) from None
     by = str(message["payload"].get("author") or message["payload"].get("author_id"))
     data["approval"] = {"revision": data["revision"], "hash": content_hash(data), "by": by, "message": args.message}
+    data["approval"].update(author=message["payload"]["author_id"], channel=message["live"]["channel_id"],
+                            source_hash=hashlib.sha256(message["live"]["content"].encode()).hexdigest())
     gh.save(args.issue, comment_id, render(args.issue, data))
     return [f"PLAN_APPROVED issue={args.issue} revision={data['revision']} by={by} url={url}"]
 
@@ -526,10 +576,8 @@ def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[s
     recorded = WORK["record"](WORK["Authorization"](REPO, args.issue, args.message, args.channel, author, args.now,
                                                   hashlib.sha256(source["live"]["content"].encode()).hexdigest()))
     if not recorded:
-        existing = gh.open_pr(f"helio/issue-{args.issue}")
-        if existing:
-            return [f"PLAN_PR {existing}"]
-        raise Refused("this work request already produced its PR; inspect the issue history before starting new work")
+        return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} "
+                f"sender={author} creation=used update=existing-PR-only; run helio pr submit to verify delivery"]
     gh.run(["gh", "issue", "edit", str(args.issue), "--repo", gh.repo, "--remove-label", "needs-owner-review"])
     return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} valid=until-used"]
 
@@ -537,34 +585,76 @@ def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[s
 def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], int], discord: DiscordReader) -> list[str]:
     issue, comment_id, plan_url, body = gh.plan_comment(args.issue)
     found, data = state(args.issue, body)
-    branch = f"helio/issue-{args.issue}"
+    if found not in ("PLAN_APPROVED", "PLAN_NONE"):
+        raise Refused(f"{found}: approve the current plan or explicitly drop it before submitting")
+    project = Path(os.environ["HELIO_PROJECT"]).expanduser().resolve()
+    tree, branch = task_worktree(project, args.issue, args.worktree)
     existing = gh.open_pr(branch)
     if existing:
-        try:
-            authorization = WORK["available"](REPO, args.issue, args.now)
-        except WORK["Refused"]:
-            pass
-        else:
-            WORK["consume"](REPO, args.issue, authorization.message)
-        return [f"PLAN_PR {existing}"]
+        pull = json.loads(gh.run(["gh", "pr", "view", existing, "--repo", gh.repo, "--json",
+                                 "state,headRefName,baseRefName,isCrossRepository"]))
+        if (pull.get("state"), pull.get("headRefName"), pull.get("baseRefName"), pull.get("isCrossRepository")) != (
+                "OPEN", branch, "main", False):
+            raise Refused("existing PR does not belong to this task branch against main in the canonical repository")
     authorization = None
     if found != "PLAN_APPROVED":
-        if found != "PLAN_NONE":
-            raise Refused(f"{found}: approve the current plan or explicitly drop it before submitting")
         try:
-            authorization = WORK["available"](REPO, args.issue, args.now)
+            authorization = WORK["available"](REPO, args.issue, args.now, include_used=bool(existing))
         except WORK["Refused"] as error:
             raise Refused(f"{found}: {error}") from None
         if issue.get("state") != "OPEN":
             raise Refused(f"issue #{args.issue} is not open")
-        source = discord(authorization.message, authorization.channel, authorization.source_hash)
+        data = {"title": issue["title"]}
+
+    def verify_request() -> None:
+        if authorization:
+            message, channel, fingerprint = authorization.message, authorization.channel, authorization.source_hash
+            expected_author = authorization.author
+        else:
+            approval = data["approval"]
+            confirmation = approval.get("confirmation")
+            prompts = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state"))) / "discord-prompts.sqlite"
+            if not confirmation and prompts.exists():
+                try:
+                    with closing(sqlite3.connect(prompts.as_uri() + "?mode=ro", uri=True)) as db:
+                        row = db.execute("SELECT id FROM prompts WHERE result_message_id=? AND kind='plan'",
+                                         (approval["message"],)).fetchone()
+                        confirmation = row[0] if row else None
+                except sqlite3.Error as error:
+                    raise Refused(f"cannot inspect legacy plan confirmation: {error}") from None
+            if confirmation:
+                checker = runpy.run_path(str(HERE / "release-check.py"))
+                try:
+                    checker["load_click"](confirmation, "plan", f"{REPO}#{args.issue}", str(data["revision"]),
+                                          not_before=datetime.datetime.fromisoformat(data["posted_at"]), accepted_plan=True)
+                except checker["Refused"] as error:
+                    raise Refused(str(error)) from None
+                return
+            if not approval.get("channel"):
+                conversations = prompts.with_name("discord-conversations.sqlite")
+                channel = None
+                if conversations.exists():
+                    try:
+                        with closing(sqlite3.connect(conversations.as_uri() + "?mode=ro", uri=True)) as db:
+                            row = db.execute("SELECT channel_id FROM working WHERE message_id=?",
+                                             (approval["message"],)).fetchone()
+                            channel = row[0] if row else None
+                    except sqlite3.Error as error:
+                        raise Refused(f"cannot inspect legacy plan source location: {error}") from None
+                source = discord(approval["message"], channel)
+                expected_author = None
+                message = channel = fingerprint = None
+            else:
+                message, channel, fingerprint = approval["message"], approval["channel"], approval["source_hash"]
+                expected_author = approval["author"]
+        if message:
+            source = discord(message, channel, fingerprint)
         try:
             author = source["verify_source"](source["payload"], source["live"], source["owner"], source["trusted"], source["channel_ok"])
         except source["Refused"] as error:
             raise Refused(str(error)) from None
-        if author != authorization.author:
+        if expected_author and author != expected_author:
             raise Refused("work requester identity differs from the recorded request")
-        data = {"title": issue["title"]}
     try:
         result = check_result(None if authorization else data, json.loads(args.result_file.read_text()))
         summary = args.summary_file.read_text().strip()
@@ -572,22 +662,31 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
         raise Refused(f"cannot read result or summary file: {error}") from None
     if not summary:
         raise Refused("summary file must describe what was built")
-    project = Path(os.environ["HELIO_PROJECT"]).expanduser().resolve()
-    git = lambda *argv: command(["git", *argv], cwd=project)
+    git = lambda *argv: command(["git", *argv], cwd=tree)
     git("fetch", "--quiet", "origin", "main")
-    if git("branch", "--show-current") != branch:
-        raise Refused(f"check out {branch}")
     if git("status", "--porcelain"):
         raise Refused("worktree must be clean")
     base, head = git("rev-parse", "origin/main"), git("rev-parse", "HEAD")
     if git("merge-base", base, head) != base:
-        raise Refused("branch must include current origin/main")
+        git("merge", "--no-edit", "origin/main")
+        head = git("rev-parse", "HEAD")
     passed = suite(project, head)
+    if git("rev-parse", "HEAD") != head or git("status", "--porcelain"):
+        raise Refused("task worktree changed during verification; verify its new head before submission")
     remote = git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
     if remote and remote.split()[0] != head:
-        raise Refused("remote branch has a different head")
-    if not remote:
+        git("fetch", "--quiet", "origin", f"refs/heads/{branch}")
+        if git("merge-base", "FETCH_HEAD", head) != remote.split()[0]:
+            raise Refused("remote branch diverged or moved; reconcile its work in the task tree before submitting")
+    verify_request()
+    current_issue, _, _, current_body = gh.plan_comment(args.issue)
+    if current_issue.get("state") != "OPEN" or current_body != body or current_issue.get("body") != issue.get("body"):
+        raise Refused("issue or plan changed during verification; review current scope before submitting")
+    if not remote or remote.split()[0] != head:
         git("push", "origin", f"{head}:refs/heads/{branch}")
+    delivered = git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
+    if not delivered or delivered.split()[0] != head:
+        raise Refused("remote does not represent the verified task head; inspect the push before retrying")
     with tempfile.TemporaryDirectory(prefix="helio-pr-body-") as temporary:
         path = Path(temporary) / "body.md"
         if authorization:
@@ -600,8 +699,17 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
         else:
             text = pr_body(args.issue, data, plan_url, result, summary, passed)
         path.write_text(text)
-        url = gh.run(["gh", "pr", "create", "--repo", gh.repo, "--base", "main", "--head", branch,
-                      "--title", f"{data['title']} (#{args.issue})", "--body-file", str(path)])
+        if existing:
+            gh.run(["gh", "pr", "edit", existing, "--repo", gh.repo, "--body-file", str(path)])
+            url = existing
+        else:
+            url = gh.run(["gh", "pr", "create", "--repo", gh.repo, "--base", "main", "--head", branch,
+                          "--title", f"{data['title']} (#{args.issue})", "--body-file", str(path)])
+        pull = json.loads(gh.run(["gh", "pr", "view", url, "--repo", gh.repo, "--json",
+                                 "state,headRefOid,headRefName,baseRefName"]))
+        if (pull.get("state"), pull.get("headRefOid"), pull.get("headRefName"), pull.get("baseRefName")) != (
+                "OPEN", head, branch, "main"):
+            raise Refused("PR does not yet represent the verified task head; inspect it before reporting success")
         if authorization:
             WORK["consume"](REPO, args.issue, authorization.message)
     if not authorization:
@@ -626,6 +734,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
             source = sub.add_mutually_exclusive_group(required=True)
             source.add_argument("--message")
             source.add_argument("--confirmation")
+            sub.add_argument("--resolved-approval", action="store_true",
+                             help="lead has interpreted this human message as approval; retain source and target checks")
         if name == "show":
             sub.add_argument("--json", action="store_true")
     commands.add_parser("list")
@@ -637,6 +747,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     pr.add_argument("--issue", type=int, required=True)
     pr.add_argument("--result-file", type=Path, required=True)
     pr.add_argument("--summary-file", type=Path, required=True)
+    pr.add_argument("--worktree", type=Path, help="task worktree in the canonical repository; otherwise discovered automatically")
     args = parser.parse_args(argv)
     if getattr(args, "issue", 1) < 1:
         parser.error("--issue must be positive")

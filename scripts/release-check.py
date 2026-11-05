@@ -24,10 +24,10 @@ def parse_target(action,target,revision):
   return int(m.group(1))
  if target!='elobot': raise Refused('restart target must be elobot')
  return None
-def verify(payload, live, action, target, revision, owner, trusted, channel_ok, is_dm, bot_id='', now=None, not_before=None):
+def verify(payload, live, action, target, revision, owner, trusted, channel_ok, is_dm, bot_id='', now=None, not_before=None,*,resolved_plan=False):
  pr=parse_target(action,target,revision)
  author=verify_source(payload,live,owner,trusted,channel_ok)
- try: APPROVAL['check_intent'](action,live,bot_id,REPO,pr,now=now,not_before=not_before)
+ try: APPROVAL['check_intent'](action,live,bot_id,REPO,pr,now=now,not_before=not_before,resolved_plan=resolved_plan)
  except APPROVAL['Refused'] as e: raise Refused(str(e)) from None
  return author
 def verify_source(payload,live,owner,trusted,channel_ok):
@@ -125,12 +125,13 @@ def prompt_row(prompt_id):
  finally: db.close()
  if not row: raise Refused('unknown button confirmation')
  return dict(row)
-def load_click(prompt_id,action,target,revision,now=None,not_before=None):
+def load_click(prompt_id,action,target,revision,now=None,not_before=None,*,accepted_plan=False):
  """A recorded button confirmation, re-verified against Discord's own click record and current trust; shared with helio-plan.py."""
  row=prompt_row(prompt_id)
  if row['kind']!=('plan' if action=='plan' else 'confirm') or row['action']!=action or row['target']!=target or row['revision']!=revision:
   raise Refused('the button confirmation is for a different action, target or revision')
- if row['status']!='confirmed': raise Refused(f"the button confirmation is {row['status']}, not confirmed; ask again")
+ if accepted_plan and action!='plan': raise Refused('accepted-plan verification is only for an already approved plan')
+ if row['status']!=('used' if accepted_plan else 'confirmed'): raise Refused(f"the button confirmation is {row['status']}, not confirmed; ask again")
  if not row['result_message_id'] or not row['message_id']: raise Refused('the button confirmation has no recorded result; ask again')
  token=os.environ.get('DORI_DISCORD_TOKEN',''); owner=os.environ.get('DORI_DISCORD_OWNER_ID',''); allowed=set(os.environ.get('DORI_DISCORD_ALLOWED','').split(','))
  if not token or not re.fullmatch(r'\d+',owner): raise Refused('missing Discord token or owner ID')
@@ -141,7 +142,11 @@ def load_click(prompt_id,action,target,revision,now=None,not_before=None):
  if result.get('id')!=row['result_message_id'] or prompt.get('id')!=row['message_id'] or result.get('channel_id')!=channel_id:
   raise Refused('the recorded confirmation no longer matches Discord')
  number=None if action=='restart' else int(target.rsplit('#',1)[1])
- try: clicker,clicked=APPROVAL['check_click'](action,result,prompt,bot_id,number,revision,now=now,not_before=not_before)
+ # A used plan stays accepted while work runs. Revalidate the original click proof
+ # and current trust without turning elapsed implementation time into reapproval.
+ try:
+  if accepted_plan: now=APPROVAL['snowflake_time'](result['id'])
+  clicker,clicked=APPROVAL['check_click'](action,result,prompt,bot_id,number,revision,now=now,not_before=not_before)
  except APPROVAL['Refused'] as e: raise Refused(str(e)) from None
  if not location(channel_id,token,allowed)[0]: raise Refused('the confirmation is outside permitted channels')
  if clicker!=owner and clicker not in ids(BASE/'trusted-users'): raise Refused('the person who clicked is not currently the owner or a trusted user')

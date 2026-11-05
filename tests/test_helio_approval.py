@@ -25,6 +25,39 @@ def snowflake(at):
 
 
 class ClickTests(unittest.TestCase):
+    def test_used_plan_click_revalidates_proof_and_current_trust_without_spending_again(self):
+        import os
+        import sqlite3
+        import tempfile
+        from unittest.mock import patch
+        checker = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/release-check.py"))
+        result, prompt = self.click("📋 Plan for #12 (r2): shorter", "✅ <@42> approved the plan for #12 (r2)")
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            with sqlite3.connect(state / "discord-prompts.sqlite") as db:
+                db.execute("CREATE TABLE prompts (id,kind,action,target,revision,status,result_message_id,message_id,channel_id)")
+                db.execute("INSERT INTO prompts VALUES (?,?,?,?,?,?,?,?,?)",
+                           ("a" * 20, "plan", "plan", REPO + "#12", "2", "used", result["id"], prompt["id"], "5"))
+            responses = {f"/channels/5/messages/{result['id']}": result,
+                         f"/channels/5/messages/{prompt['id']}": prompt, "/users/@me": {"id": BOT}}
+            with patch.dict(os.environ, {"DORI_DISCORD_TOKEN": "synthetic", "DORI_DISCORD_OWNER_ID": "42",
+                                         "DORI_DISCORD_ALLOWED": "5"}), \
+                    patch.dict(checker["load_click"].__globals__, STATE=state,
+                               api=lambda path, token: responses[path], location=lambda *args: (True, False)):
+                value = checker["load_click"]("a" * 20, "plan", REPO + "#12", "2",
+                                               now=NOW + datetime.timedelta(days=10), accepted_plan=True)
+                self.assertEqual(value["clicker"], "42")
+                with self.assertRaises(checker["Refused"]):
+                    checker["load_click"]("a" * 20, "plan", REPO + "#12", "2", now=NOW)
+                with patch.dict(checker["load_click"].__globals__, location=lambda *args: (False, False)):
+                    with self.assertRaises(checker["Refused"]):
+                        checker["load_click"]("a" * 20, "plan", REPO + "#12", "2", accepted_plan=True)
+                result["content"] = "cancelled"
+                with self.assertRaises(checker["Refused"]):
+                    checker["load_click"]("a" * 20, "plan", REPO + "#12", "2", accepted_plan=True)
+            with sqlite3.connect(state / "discord-prompts.sqlite") as db:
+                self.assertEqual(db.execute("SELECT status FROM prompts").fetchone()[0], "used")
+
     def click(self, prompt_text, result_text, user="42", posted=3, clicked=2):
         prompt = {"id": snowflake(NOW - datetime.timedelta(minutes=posted)), "channel_id": "5", "author": {"id": BOT}, "content": prompt_text}
         at = NOW - datetime.timedelta(minutes=clicked)
@@ -187,6 +220,12 @@ class IntentTests(unittest.TestCase):
 
 
 class PlanApprovalTests(unittest.TestCase):
+    def test_resolved_plan_intent_cannot_relax_merge_or_restart_parsing(self):
+        for action in ("merge", "restart"):
+            with self.subTest(action=action), self.assertRaises(A["Refused"]):
+                A["check_intent"](action, message(f"{action} #12 if tests pass"), BOT, REPO, 12,
+                                  now=NOW, resolved_plan=True)
+
     PLAN_SAYS = helio_says("📋 Plan for #12 (r2): Players get 8 hours. Reply **approve** to start, or tell me what to change.")
 
     def plan(self, msg, not_before=None):

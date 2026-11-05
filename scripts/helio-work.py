@@ -60,10 +60,11 @@ def record(authorization: Authorization) -> bool:
         return not used
 
 
-def available(repo: str, issue: int, now: datetime.datetime) -> Authorization:
+def available(repo: str, issue: int, now: datetime.datetime, *, include_used: bool = False) -> Authorization:
     with closing(connect()) as db:
-        rows = db.execute("SELECT message,channel,author,recorded_at,source_hash FROM authorizations WHERE repo=? AND issue=? AND used=0 ORDER BY recorded_at DESC",
-                          (repo, issue)).fetchall()
+        rows = db.execute("""SELECT message,channel,author,recorded_at,source_hash FROM authorizations
+                             WHERE repo=? AND issue=? AND (used=0 OR ?) ORDER BY recorded_at DESC""",
+                          (repo, issue, include_used)).fetchall()
     for message, channel, author, recorded, fingerprint in rows:
         recorded_at = datetime.datetime.fromisoformat(recorded)
         if recorded_at <= now:

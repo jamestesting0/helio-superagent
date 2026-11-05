@@ -46,18 +46,24 @@ private. The approved plan is the contract the PR is checked against.
    It replaces the buttons of any earlier revision. If the requester cannot approve, also reply to them:
    "I've written up a plan for <issue link>; the team will review it."
 4. On `INBOUND_CONFIRM` with outcome `approved`, run `helio plan approve --issue N --confirmation ID`;
-   for a typed approval (a reply naming the issue) run `helio plan approve --issue N --message M`.
+   for a typed approval you have interpreted in context run `helio plan approve --issue N --message M --resolved-approval`.
    `INBOUND_PLAN_FEEDBACK` is a reply to the plan message with suggested changes (`helio confirm feedback ID`): revise and post
    again with `--from-message M`. If that reply also said to go ahead ("6 hours instead, then go"),
-   approve the new revision with `helio plan approve --issue N --message M` without asking again.
-   On `PLAN_REFUSED`, tell them the reason once.
+   approve the new revision with `helio plan approve --issue N --message M --resolved-approval` without asking again.
+   A side question or method constraint does not cancel clear approval. Suggestions, unresolved scope,
+   conditions and cancellations are not approval: resolve them before invoking approve.
+   The flag records your interpretation; it cannot bypass identity, source, recipient, issue or revision checks.
+   Legacy callers without the flag retain the conservative parser. Production approvals do not use this flag.
+   On `PLAN_REFUSED`, inspect the failed fact and recover within existing authority; ask only for a real missing decision.
 5. On `PLAN_APPROVED`, launch the lane with the brief below. Approval covers commit, push and PR;
    do not ask again.
 6. Plans awaiting approval are counted in `helio status` and the greeting.
 
 Lane brief (include the approved fields from `helio plan show --issue N --json`):
 1. Run `helio plan check --issue N`; stop unless it prints `PLAN_APPROVED`.
-2. Work on `helio/issue-N` from current `origin/main`. Build exactly the approved Scope; add
+2. Use the lane's task worktree and `helio/` branch; `helio/issue-N` is a default for new work,
+   not a requirement to rename an existing lane. Include current `origin/main` in that tree.
+   Build exactly the approved Scope; add
    regressions for changed behavior. Use direct `ulw`, sized to the actual change, unless the
    requester selected another method. Do not create a planning pipeline merely to launch a lane.
 3. Live beta only if the plan says "Requested by"; otherwise none.
@@ -68,8 +74,14 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
    `deviation`), and a summary file. Then run
    `helio pr submit --issue N --result-file RESULT.json --summary-file SUMMARY.md`.
    Run focused checks while implementing; `pr submit` owns its full-suite integration gate.
-   Do not immediately repeat a passing full suite. A retry returns an existing PR, and a failed
-   creation does not spend the work request before a PR exists.
+   Do not immediately repeat a passing full suite. Submission discovers the matching task worktree
+   independently of the shared checkout and interpreter. Named lane branches are valid:
+   run from the actual task tree, or pass its recorded `--worktree PATH` from the lead/shared tree.
+   Without either, only a unique issue-numbered tree is a discovery fallback.
+   Keep unrelated shared changes untouched. It handles normal branch
+   updates and verifies the actual remote and PR head. An existing PR is updated when necessary;
+   its URL alone is not success. Failed or uncertain creation does not spend authority before
+   read-back establishes the PR and intended head. Do not create a duplicate to recover.
 
 Revisions: post again with `change_note` ("window 8 to 6 hours"). A content change prints
 `PLAN_APPROVAL_RESET`; send the new announcement and ask for approval of the new revision.
@@ -94,8 +106,11 @@ announcement for approval; do not ask whether to adopt. `helio plan drop --issue
 | `technical_notes` | 600 chars | Optional, collapsed: areas at module level, data changes, test approach. No code. |
 | `change_note` | 120 chars | Required from revision 2. |
 
-Outside `technical_notes`: no code, file paths, function names, "TBD" or "etc."; the visible part
-stays under 2,500 characters. `PLAN_INVALID field=F reason=R` names the field to fix.
+The word/character targets and language recommendations above are editorial advice,
+not posting gates. Keep plans readable, but do not rewrite useful content merely to
+satisfy a style counter. `PLAN_ADVICE` is non-blocking. `PLAN_INVALID` names malformed
+fields or actual rendered-comment overflow; the complete GitHub comment must fit
+65,536 characters, including encoded metadata.
 
 ## Self-check before posting
 

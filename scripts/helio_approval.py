@@ -61,10 +61,13 @@ def sent_at(message: dict) -> datetime.datetime:
 
 
 def check_intent(action: str, message: dict, bot_id: str, repo: str, pr: int | None,
-                 now: datetime.datetime | None = None, not_before: datetime.datetime | None = None) -> None:
+                 now: datetime.datetime | None = None, not_before: datetime.datetime | None = None,
+                 *, resolved_plan: bool = False) -> None:
     """For action "plan", `pr` is the issue number and `not_before` the plan revision's posting time."""
     if action != "work" and action not in INTENT:
         raise Refused("unsupported action")
+    if resolved_plan and action != "plan":
+        raise Refused("resolved plan intent cannot authorize a production action")
     age = ((now or datetime.datetime.now(datetime.timezone.utc)) - sent_at(message)).total_seconds()
     limit = PLAN_MAX_AGE_SECONDS if action == "plan" else WORK_MAX_AGE_SECONDS if action == "work" else MAX_AGE_SECONDS
     accepted_work = action == "work" and message.get("_helio_accepted_work") is True
@@ -73,7 +76,7 @@ def check_intent(action: str, message: dict, bot_id: str, repo: str, pr: int | N
     if not_before is not None and sent_at(message) < not_before:
         raise Refused("message was sent before the current plan revision; ask for approval of the current revision")
     content = instruction_text(str(message.get("content", "")))
-    if action != "work" and HEDGE.search(content):
+    if action != "work" and not resolved_plan and HEDGE.search(content):
         raise Refused("confirmation is conditional or asks a question; ask for a clear go-ahead")
     affirmative = AFFIRMATIVE.match(content) is not None and len(content) <= 80
     referenced = message.get("referenced_message") or {}
@@ -92,12 +95,14 @@ def check_intent(action: str, message: dict, bot_id: str, repo: str, pr: int | N
             raise Refused("work needs an authored human request, not only quoted evidence")
         return
     if action == "plan":
+        if not content:
+            raise Refused("plan approval needs authored human text, not only quoted evidence")
         if replies_to_helio and not announcement:
             raise Refused("message answers a Helio message that is not a plan announcement; ask for approval of the plan")
         refs = pr_numbers(content, repo) | ({int(announcement.group(1))} if announcement else set())
         if refs != {pr}:
             raise Refused(f"message does not approve the plan for issue #{pr}; ask the sender to name it or reply to its announcement")
-        if not (INTENT["plan"].search(content) or (announcement and affirmative)):
+        if not resolved_plan and not (INTENT["plan"].search(content) or (announcement and affirmative)):
             raise Refused("message does not clearly approve the plan; ask the sender to confirm")
         return
     if announcement:

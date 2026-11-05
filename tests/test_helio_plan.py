@@ -69,6 +69,16 @@ class FakeGitHub:
             self.created_bodies.append(Path(argv[argv.index("--body-file") + 1]).read_text())
             self.prs[argv[argv.index("--head") + 1]] = url = f"https://github.com/{REPO}/pull/13"
             return url
+        if argv[:3] == ["gh", "pr", "edit"]:
+            self.created_bodies[-1] = Path(argv[argv.index("--body-file") + 1]).read_text()
+            return ""
+        if argv[:3] == ["gh", "pr", "view"]:
+            project = Path(os.environ["HELIO_PROJECT"])
+            branch = next(key for key, url in self.prs.items() if url == argv[3])
+            remote = subprocess.run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+                                    cwd=project, check=True, capture_output=True, text=True).stdout.split()[0]
+            return json.dumps({"state": "OPEN", "headRefOid": remote, "headRefName": branch, "baseRefName": "main",
+                               "isCrossRepository": False})
         raise AssertionError(f"unexpected gh call {argv}")
 
     def hand_edit(self, old, new):
@@ -101,11 +111,16 @@ class PlanCase(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.dir)], check=True))
         self.work_message = None
+        self.approval_message = None
 
     def run_cli(self, *argv, discord_fn=None, now=POSTED, suite=None):
         if argv[:2] == ("work", "authorize") and discord_fn is not None:
             self.work_message = discord_fn
-        reader = discord_fn or (self.work_message if argv[:2] == ("pr", "submit") and self.work_message else discord())
+        reader = discord_fn
+        if reader is None and argv[:2] == ("pr", "submit"):
+            plan = self.data() if self.gh_fake.comments else None
+            reader = self.approval_message if plan and P["approved"](plan) else self.work_message
+        reader = reader or discord()
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = P["main"](list(argv), gh=self.gh, discord=reader, now=now,
@@ -120,8 +135,11 @@ class PlanCase(unittest.TestCase):
                             *(["--from-message", from_message] if from_message else []), discord_fn=discord_fn, now=now)
 
     def approve(self, now, sent, referenced=None, author=OWNER, content="approve"):
-        return self.run_cli("approve", "--issue", "12", "--message", "555", now=now,
-                            discord_fn=discord(author=author, content=content, sent=sent, referenced=referenced))
+        source = discord(author=author, content=content, sent=sent, referenced=referenced)
+        result = self.run_cli("approve", "--issue", "12", "--message", "555", now=now, discord_fn=source)
+        if result[0] == 0:
+            self.approval_message = source
+        return result
 
     def data(self):
         return P["parse"](self.gh_fake.comments[0]["body"])
@@ -197,6 +215,69 @@ class TemplateTests(unittest.TestCase):
 
 
 class PostTests(PlanCase):
+    def test_long_plan_details_reach_the_real_confirmation_consumer(self):
+        javascript = """
+        const posts = [];
+        globalThis.fetch = async (input, init) => {
+          const path = new URL(String(input)).pathname.replace("/api/v10", "");
+          if (path === "/channels/5" && init.method === "GET") return Response.json({id: "5", type: 0});
+          if (path === "/users/@me") return Response.json({id: "88"});
+          if (path === "/channels/5/messages" && init.method === "POST") {
+            posts.push(JSON.parse(String(init.body)));
+            return Response.json({id: "501"});
+          }
+          throw new Error("Unexpected synthetic Discord request: " + path);
+        };
+        const {main} = await import(process.env.CLI_MODULE);
+        const {PromptStore} = await import(process.env.STORE_MODULE);
+        const code = await main(JSON.parse(process.env.CLI_ARGS));
+        const store = new PromptStore(process.env.DORI_STATE_DIR + "/discord-prompts.sqlite");
+        try {
+          console.log("BOUNDARY " + JSON.stringify({code, posts, row: store.get(posts[0]?.nonce)}));
+        } finally { store.close(); }
+        """
+        cases = [
+            ("live_beta", "Requested by James: " + "Verify match confirmation and reminder behavior. " * 45, 1),
+            ("open_questions", ["Which behavior? " + "\U0001f4cb" * 500] * 4, 1),
+            ("change_note", "Scope clarified in detail. " * 100, 2),
+        ]
+        for field, value, revision in cases:
+            with self.subTest(field=field):
+                self.gh_fake.comments.clear()
+                if revision == 2:
+                    self.assertEqual(self.post()[0], 0)
+                code, out = self.post(plan={**PLAN, field: value})
+                self.assertEqual(code, 0, out)
+                data = self.data()
+                self.assertEqual(data["history"][0]["note"] if field == "change_note" else data[field], value)
+                state = self.dir / field
+                state.mkdir()
+                environment = {"PATH": os.environ["PATH"], "HOME": str(self.dir), "DORI_STATE_DIR": str(state),
+                               "DORI_DISCORD_TOKEN": "synthetic", "DORI_DISCORD_ALLOWED": "5", "HELIO_GITHUB_REPO": REPO,
+                               "CLI_MODULE": str(ROOT / "discord-inbound/interactive/cli.ts"),
+                               "STORE_MODULE": str(ROOT / "discord-inbound/interactive/store.ts"),
+                               "CLI_ARGS": json.dumps(["plan", "--issue", "12", "--revision", str(revision),
+                                                       "--text-file", str(self.dir / "announce.txt"), "--channel", "5"])}
+                result = subprocess.run(["bun", "-e", javascript], cwd=self.dir, env=environment,
+                                        capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                observed = json.loads(next(line.removeprefix("BOUNDARY ") for line in result.stdout.splitlines()
+                                           if line.startswith("BOUNDARY ")))
+                self.assertEqual(observed["code"], 0)
+                self.assertEqual(observed["row"]["status"], "open")
+                self.assertEqual(observed["row"]["revision"], str(revision))
+                self.assertEqual(len(observed["posts"]), 1)
+                self.assertIn(self.gh_fake.comments[0]["url"], observed["posts"][0]["content"])
+                self.assertLessEqual(len(observed["posts"][0]["content"]), 500)
+
+    def test_useful_long_summary_and_code_references_do_not_block_a_plan(self):
+        plan = {**PLAN, "in_short": " ".join(["word"] * 41),
+                "why": ["Fix the behavior in common/match.py."]}
+        code, out = self.post(plan=plan)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.data()["in_short"], plan["in_short"])
+        self.assertLessEqual(len((self.dir / "announce.txt").read_text().strip()), 500)
+
     def test_quoted_plan_request_does_not_start_plan_mode(self):
         code, out = self.post(discord_fn=discord(content="> finalize #12 with a plan"))
         self.assertEqual(code, 1, out)
@@ -228,12 +309,21 @@ class PostTests(PlanCase):
         self.assertEqual((code, out.split()[0]), (1, "PLAN_AUTOFIX_ACTIVE"))
 
     def test_invalid_fields_are_reported_and_nothing_is_posted(self):
-        code, out = self.post(plan={**PLAN, "in_short": "TBD"})
+        code, out = self.post(plan={**PLAN, "in_short": ""})
         self.assertEqual(code, 1)
         self.assertIn("PLAN_INVALID field=in_short", out)
         self.assertEqual(self.gh_fake.comments, [])
         long_plan = {**PLAN, "why": ["a" * 150] * 3, "scope": {"changes": [{"where": "w" * 80, "today": "t" * 80, "after": "a" * 80}] * 6}}
-        self.assertIn("field=plan reason=visible part", self.post(plan=long_plan)[1])
+        code, out = self.post(plan=long_plan)
+        self.assertEqual(code, 0, out)
+        self.assertIn("PLAN_ADVICE field=plan", out)
+        self.assertEqual(self.data()["why"], long_plan["why"])
+
+    def test_actual_comment_overflow_is_refused_without_a_github_write(self):
+        code, out = self.post(plan={**PLAN, "technical_notes": "x" * 65536})
+        self.assertEqual(code, 1, out)
+        self.assertIn("65536", out)
+        self.assertEqual(self.gh_fake.comments, [])
 
     def test_a_revision_needs_a_change_note_and_a_content_change_resets_approval(self):
         self.post()
@@ -247,6 +337,24 @@ class PostTests(PlanCase):
 
 
 class ApprovalTests(PlanCase):
+    def test_resolved_approval_with_side_question_keeps_source_and_revision_checks(self):
+        self.post()
+        later = POSTED + datetime.timedelta(hours=1)
+        source = discord(content="Looks good, go ahead with #12. Why was that checker necessary?",
+                         sent=later, referenced=announcement_of(1))
+        code, out = self.run_cli("approve", "--issue", "12", "--message", "555", "--resolved-approval",
+                                 now=later, discord_fn=source)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(P["approved"](self.data()))
+        for reader in (discord(author=STRANGER, content="approve #12", sent=later),
+                       discord(content="approve #13", sent=later),
+                       discord(content="> approve #12", sent=later),
+                       discord(content="<@300> approve #12", sent=later),
+                       discord(content="approve #12", sent=POSTED - datetime.timedelta(hours=1))):
+            with self.subTest(reader=reader):
+                self.assertEqual(self.run_cli("approve", "--issue", "12", "--message", "555",
+                                             "--resolved-approval", now=later, discord_fn=reader)[0], 1)
+
     def test_feedback_approval_cannot_be_reused_after_a_different_revision(self):
         self.post()
         sent = POSTED + datetime.timedelta(minutes=5)
@@ -375,6 +483,276 @@ class StateTests(PlanCase):
 
 
 class SubmitTests(PlanCase):
+    def test_explicit_named_lane_submits_without_an_issue_number_in_its_branch(self):
+        self.approved_plan()
+        branch = "helio/balance-facts-tips-current"
+        self.git(self.work, "branch", "-m", branch)
+        head = self.git(self.work, "rev-parse", "HEAD")
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--worktree", str(self.work),
+                                 "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", branch), head)
+        self.assertEqual(self.git(self.work, "branch", "--show-current"), branch)
+
+    def test_current_named_lane_wins_over_an_old_issue_numbered_tree(self):
+        self.approved_plan()
+        old_head = self.git(self.work, "rev-parse", "HEAD")
+        task = self.dir / "balance-facts-tips"
+        branch = "helio/balance-facts-tips-current"
+        self.git(self.work, "worktree", "add", "-b", branch, str(task))
+        (task / "balance.txt").write_text("new follow-up work\n")
+        self.git(task, "add", "balance.txt")
+        self.git(task, "commit", "-m", "balance the facts")
+        head = self.git(task, "rev-parse", "HEAD")
+        previous = Path.cwd()
+        try:
+            os.chdir(task)
+            code, out = self.submit()
+        finally:
+            os.chdir(previous)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.work, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"),
+                         f"{head}\trefs/heads/{branch}")
+        self.assertEqual(self.git(self.work, "rev-parse", "HEAD"), old_head)
+        self.assertEqual(self.git(self.work, "ls-remote", "--heads", "origin", "refs/heads/helio/issue-12"), "")
+
+    def test_explicit_task_selection_rejects_protected_autofix_and_wrong_issue_branches(self):
+        self.approved_plan()
+        for branch in ("shared-work", "helio/autofix-12", "helio/issue-13"):
+            with self.subTest(branch=branch):
+                self.git(self.work, "branch", "-m", branch)
+                code, out = self.run_cli("pr", "submit", "--issue", "12", "--worktree", str(self.work),
+                                         "--result-file", str(self.dir / "result.json"),
+                                         "--summary-file", str(self.dir / "summary.md"))
+                self.assertEqual(code, 1, out)
+                self.assertEqual(self.git(self.work, "ls-remote", "--heads", "origin", f"refs/heads/{branch}"), "")
+                self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_discovery_preserves_non_ascii_worktree_paths(self):
+        self.approved_plan()
+        self.git(self.work, "branch", "-m", "shared-work")
+        task = self.dir / "lane-\u00e9"
+        self.git(self.work, "worktree", "add", "-b", "helio/issue12-window", str(task))
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue12-window"),
+                         self.git(task, "rev-parse", "HEAD"))
+
+    def test_legacy_message_approval_uses_recorded_location_after_delivery_ack(self):
+        self.approved_plan()
+        data = self.data()
+        for key in ("author", "channel", "source_hash"):
+            data["approval"].pop(key)
+        self.gh_fake.comments[0]["body"] = P["render"](12, data)
+        with sqlite3.connect(self.dir / "state/discord-conversations.sqlite") as db:
+            db.execute("CREATE TABLE working (message_id TEXT,channel_id TEXT)")
+            db.execute("INSERT INTO working VALUES ('555','1')")
+        original = self.approval_message
+
+        def accepted_source(message, channel=None, fingerprint=None):
+            if channel != "1":
+                raise P["Refused"]("delivery already acknowledged; source location required")
+            return original(message, channel, fingerprint)
+
+        self.approval_message = accepted_source
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"),
+                         self.git(self.work, "rev-parse", "HEAD"))
+
+    def test_ambiguous_issue_trees_require_selection_without_switching_either(self):
+        self.approved_plan()
+        other = self.dir / "alternate"
+        self.git(self.work, "worktree", "add", "-b", "helio/issue12-alternate", str(other))
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertIn("2 matching trees", out)
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--worktree", str(self.work),
+                                 "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(other, "branch", "--show-current"), "helio/issue12-alternate")
+
+    def test_existing_pr_wrong_base_cannot_receive_another_push(self):
+        self.approved_plan()
+        self.assertEqual(self.submit()[0], 0)
+        previous = self.git(self.work, "rev-parse", "HEAD")
+        (self.work / "b.txt").write_text("follow-up\n")
+        self.git(self.work, "add", "b.txt")
+        self.git(self.work, "commit", "-m", "follow-up")
+        original = self.gh.run
+
+        def wrong_base(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[:3] == ["gh", "pr", "view"]:
+                return json.dumps({**json.loads(result), "baseRefName": "other"})
+            return result
+
+        self.gh.run = wrong_base
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"), previous)
+
+    def test_submission_uses_the_recorded_issue_lane_branch(self):
+        self.approved_plan()
+        self.git(self.work, "branch", "-m", "helio/issue12-window")
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue12-window"),
+                         self.git(self.work, "rev-parse", "HEAD"))
+
+    def test_task_change_during_suite_cannot_be_pushed_as_verified(self):
+        self.approved_plan()
+
+        def suite(project, head):
+            (self.work / "a.txt").write_text("unverified edit\n")
+            return 5
+
+        code, out = self.submit(suite=suite)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.git(self.work, "ls-remote", "--heads", "origin", "refs/heads/helio/issue-12"), "")
+        self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_shared_interpreter_verifies_committed_tests_without_task_venv(self):
+        import sys
+        self.approved_plan()
+        (self.work / "tests").mkdir()
+        (self.work / "tests/test_task.py").write_text(
+            "import unittest\nfrom pathlib import Path\n"
+            "class Task(unittest.TestCase):\n"
+            "    def test_committed_content(self):\n"
+            "        self.assertEqual(Path('a.txt').read_text(), 'two\\n')\n")
+        self.git(self.work, "add", "tests")
+        self.git(self.work, "commit", "-m", "task regression")
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+        (shared / ".venv/bin").mkdir(parents=True)
+        (shared / ".venv/bin/python").symlink_to(sys.executable)
+        with patch.dict(os.environ, {"HELIO_PROJECT": str(shared)}):
+            code, out = self.submit(suite=P["full_suite"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("Full unit suite: 1 tests passed", self.gh_fake.created_bodies[0])
+        self.assertFalse((self.work / ".venv").exists())
+
+    def test_submission_finds_the_task_tree_without_touching_dirty_shared_main(self):
+        self.approved_plan()
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+        (shared / "unrelated.txt").write_text("keep this\n")
+        with patch.dict(os.environ, {"HELIO_PROJECT": str(shared)}):
+            code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual((shared / "unrelated.txt").read_text(), "keep this\n")
+        self.assertEqual(self.git(shared, "branch", "--show-current"), "main")
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"),
+                         self.git(self.work, "rev-parse", "HEAD"))
+
+    def test_new_commits_update_the_existing_pr_and_actual_remote_head(self):
+        self.setUp_result(direct=True)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        self.assertEqual(self.submit()[0], 0)
+        (self.work / "b.txt").write_text("follow-up\n")
+        self.git(self.work, "add", "b.txt")
+        self.git(self.work, "commit", "-m", "follow-up")
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"),
+                         self.git(self.work, "rev-parse", "HEAD"))
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+
+    def test_existing_pr_update_rechecks_revoked_source_before_pushing(self):
+        self.setUp_result(direct=True)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        self.assertEqual(self.submit()[0], 0)
+        previous = self.git(self.work, "rev-parse", "HEAD")
+        (self.work / "b.txt").write_text("follow-up\n")
+        self.git(self.work, "add", "b.txt")
+        self.git(self.work, "commit", "-m", "follow-up")
+        self.work_message = discord(author=STRANGER, content="implement #12")
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"), previous)
+
+    def test_remote_ancestor_is_updated_without_force(self):
+        self.approved_plan()
+        self.git(self.work, "push", "origin", "HEAD:helio/issue-12")
+        (self.work / "b.txt").write_text("follow-up\n")
+        self.git(self.work, "add", "b.txt")
+        self.git(self.work, "commit", "-m", "follow-up")
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"),
+                         self.git(self.work, "rev-parse", "HEAD"))
+
+    def test_advancing_main_is_merged_in_the_owned_tree_before_verification(self):
+        self.approved_plan()
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+        (shared / "base.txt").write_text("new main\n")
+        self.git(shared, "add", "base.txt")
+        self.git(shared, "commit", "-m", "advance main")
+        self.git(shared, "push", "origin", "main")
+        checked = []
+        code, out = self.submit(suite=lambda project, head: checked.append(head) or 5)
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.work / "base.txt").read_text(), "new main\n")
+        self.assertEqual(checked, [self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12")])
+
+    def test_wrong_repository_explicit_tree_is_rejected(self):
+        self.approved_plan()
+        other = self.dir / "other"
+        self.git(self.work, "clone", str(self.dir / "origin.git"), str(other))
+        self.git(other, "checkout", "-b", "helio/issue-12")
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--worktree", str(other),
+                                 "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_remote_divergence_is_preserved_and_never_reported_as_success(self):
+        self.approved_plan()
+        self.git(self.work, "push", "origin", "HEAD:helio/issue-12")
+        other = self.dir / "other"
+        self.git(self.work, "clone", str(self.dir / "origin.git"), str(other))
+        self.git(other, "checkout", "helio/issue-12")
+        (other / "remote.txt").write_text("someone else's work\n")
+        self.git(other, "add", "remote.txt")
+        self.git(other, "commit", "-m", "remote work")
+        remote = self.git(other, "rev-parse", "HEAD")
+
+        def concurrent_update(project, head):
+            self.git(other, "push", "origin", "helio/issue-12")
+            return 5
+
+        code, out = self.submit(suite=concurrent_update)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"), remote)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_uncertain_successful_creation_is_read_back_without_a_duplicate(self):
+        self.setUp_result(direct=True)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        original = self.gh.run
+
+        def lost_response(argv, **kwargs):
+            result = original(argv, **kwargs)
+            if argv[:3] == ["gh", "pr", "create"]:
+                raise P["Refused"]("response lost after GitHub created the PR")
+            return result
+
+        self.gh.run = lost_response
+        self.assertEqual(self.submit()[0], 1)
+        self.gh.run = original
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+        self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"),
+                         self.git(self.work, "rev-parse", "HEAD"))
+
     def test_clear_work_request_does_not_need_an_issue_number_that_was_created_afterward(self):
         self.setUp_result(direct=True)
         code, out = self.run_cli(
@@ -391,6 +769,11 @@ class SubmitTests(PlanCase):
                      discord_fn=discord(content="implement #12"))
         code, out = self.submit()
         self.assertEqual(code, 0, out)
+        code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                 discord_fn=discord(content="implement #12"))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out.startswith("WORK_AUTHORIZED"), out)
+        self.assertIn("creation=used", out)
         self.assertEqual(self.submit(), (0, f"PLAN_PR https://github.com/{REPO}/pull/13"))
         self.assertEqual(len(self.gh_fake.created_bodies), 1)
 
@@ -420,6 +803,8 @@ class SubmitTests(PlanCase):
         subprocess.run(["git", "init", "--bare", "-b", "main", str(self.dir / "origin.git")], check=True, capture_output=True)
         subprocess.run(["git", "clone", str(self.dir / "origin.git"), str(self.dir / "work")], check=True, capture_output=True)
         self.work = self.dir / "work"
+        git(self.work, "config", "user.name", "t")
+        git(self.work, "config", "user.email", "t@t")
         (self.work / "a.txt").write_text("one\n")
         git(self.work, "add", "a.txt"); git(self.work, "commit", "-m", "base"); git(self.work, "push", "origin", "HEAD:main")
         git(self.work, "checkout", "-b", "helio/issue-12")
