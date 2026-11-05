@@ -16,7 +16,7 @@
 
 import { DiscordBotClient, DiscordBotListener, DiscordIntent } from "agent-messenger/discordbot";
 import { fetchBacklog, PAGE_SIZE, skippedThrough, type Caps, type FetchPage, type RestMessage } from "./intake/catchup.ts";
-import { classify, insideAllowed, insideCategory, type FilterConfig, type Inbound, type IncomingMessage } from "./intake/filter.ts";
+import { countsTowardCatchUp, classify, insideAllowed, insideCategory, type FilterConfig, type Inbound, type IncomingMessage } from "./intake/filter.ts";
 import { LastSeen } from "./intake/lastseen.ts";
 import { RecentIds } from "./intake/recent-ids.ts";
 import { Delivery, REQUEST_MAX_AGE_MS, requestTimestamp } from "./delivery/delivery.ts";
@@ -36,7 +36,7 @@ import { conversationEntry, conversationSnapshot } from "./conversations/convers
 import { sweepConversations } from "./conversations/conversation-upkeep.ts";
 import { reactOnArrival, sweepWorking } from "./conversations/working.ts";
 import { inboundSummary, monitorLine } from "./delivery/monitor-summary.ts";
-import { HOURGLASS, react, reactPendingBlocks } from "./delivery/moderation-effects.ts";
+import { HOURGLASS, react, reactPendingBlocks, reconcileBlocks, strikeLinks } from "./delivery/moderation-effects.ts";
 import { pendingReminder } from "./delivery/pending-reminder.ts";
 import { PromptStore, QuestionStore } from "./interactive/store.ts";
 import { closeExpired, discordCall, expireNow, handleInteraction, handlePlanReply, sweep, type Deps } from "./interactive/handler.ts";
@@ -87,15 +87,7 @@ const lastSeen = await LastSeen.load(statePath).catch((err: unknown) => {
   process.exit(2);
 });
 
-// The cap counts only messages that could be for Helio, so a busy channel's chatter cannot push a request out of reach.
-function mayAddressHelio(msg: RestMessage): boolean {
-  const bot = cfg.botId;
-  const extra = msg as RestMessage & { mentions?: { id: string }[]; referenced_message?: { author?: { id?: string } } | null };
-  return bot === undefined || msg.author.id === cfg.ownerId || cfg.trustedIds?.has(msg.author.id) === true ||
-    conversations.isOpen(msg.channel_id, msg.author.id) || extra.mentions?.some((user) => user.id === bot) === true ||
-    msg.content.includes(`<@${bot}>`) || msg.content.includes(`<@!${bot}>`) || extra.referenced_message?.author?.id === bot;
-}
-const CAPS: Caps = { maxAgeMs: 3 * 24 * 60 * 60 * 1000, maxPerChannel: 100, maxPages: 20, counts: mayAddressHelio };
+const CAPS: Caps = { maxAgeMs: 3 * 24 * 60 * 60 * 1000, maxPerChannel: 100, maxPages: 20 };
 const rest = discordRest(token);
 // Messages inbound already received (catch-up pages, live events) answer most reply lookups without a request.
 const seenMessages = new Map<string, ReplyMessage>();
@@ -199,7 +191,7 @@ async function withPreviews(msg: IncomingMessage): Promise<IncomingMessage> {
 
 const client = await new DiscordBotClient().login({ token });
 
-type ChannelInfo = { readonly type?: number; readonly parent_id?: string };
+type ChannelInfo = { readonly type?: number; readonly parent_id?: string; readonly guild_id?: string };
 const channels = new Map<string, ChannelInfo | undefined>();
 // Missing Access / Unknown Channel: Discord will never show this channel to Helio.
 const UNREADABLE_CHANNEL = new Set(["50001", "10003"]);
@@ -353,12 +345,16 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
       if (prior ? !delivery.recover(msg.id, prior.payload, minimal) : !delivery.stage("inbound", msg.id, minimal)) return false;
       const channel = msg.channel_id;
       if (backlog) backlogOrder.set(msg.id, backlogOrder.size);
-      enrichments.set(channel, (enrichments.get(channel) ?? Promise.resolve())
+      const enrichment = (enrichments.get(channel) ?? Promise.resolve())
         .then(() => enrich(msg, inbound, staged, minimal, backlog))
         .catch((error: unknown) => {
           console.error(monitorLine(`INBOUND_ERROR preparing message ${msg.id} in ${channel}: ${String(error)}`));
           process.exit(1);
-        }));
+        }).finally(() => {
+          // A newer chain for this channel may already be queued behind this one.
+          if (enrichments.get(channel) === enrichment) enrichments.delete(channel);
+        });
+      enrichments.set(channel, enrichment);
       emitted = true;
     }
     tracked.add(msg.channel_id);
@@ -417,17 +413,22 @@ async function catchUp(): Promise<number> {
     tracked.add(channel.id);
     try {
       const after = lastSeen.get(channel.id);
-      const backlog = await fetchBacklog(fetchPage, channel.id, after, Date.now(), CAPS);
+      // The cap counts only what classify would admit, so a busy channel's chatter cannot push a request out of reach.
+      const policy = channel.guildId === undefined || await insideAllowed(channel.id, cfg.trustedChannels ?? new Set(), parentOf) ? "trusted" : "normal";
+      const backlog = await fetchBacklog(fetchPage, channel.id, after, Date.now(),
+        { ...CAPS, counts: (msg) => !blockedAuthor(msg.author.id) && countsTowardCatchUp({ ...msg, guild_id: channel.guildId }, cfg, policy) });
       const { messages, truncated } = backlog;
       if (truncated) console.log(`INBOUND_BACKLOG_TRUNCATED channel=${channel.id} kept=${messages.length}`);
       const skipped = await skippedThrough(fetchPage, channel.id, backlog);
       const before = messages[0]?.id ?? skipped;
       // Older than the 72-hour horizon would expire unread anyway; a cap or page cut is a real gap.
-      if (truncated && backlog.reason !== "age" && after !== undefined && before) {
+      // Without a cursor (a first run) the unread range starts at the beginning of the channel's history.
+      if (truncated && backlog.reason !== "age" && before) {
         const reason = backlog.reason ?? "cap";
-        const id = delivery.recordGap({ stream: "inbound", channel: channel.id, after, before, reason });
+        const from = after ?? "0";
+        const id = delivery.recordGap({ stream: "inbound", channel: channel.id, after: from, before, reason });
         if (id !== undefined) {
-          console.log(monitorLine(`INBOUND_GAP ${JSON.stringify({ id, channel_id: channel.id, after, before, reason, read: "ack gaps", ack: `ack gap ${id}` })}`));
+          console.log(monitorLine(`INBOUND_GAP ${JSON.stringify({ id, channel_id: channel.id, after: from, before, reason, read: "ack gaps", ack: `ack gap ${id}` })}`));
         }
       }
       if (skipped) await lastSeen.advance(channel.id, skipped);
@@ -517,6 +518,7 @@ enqueue("catch-up", async () => {
   const openGaps = delivery.gaps().length;
   if (openGaps) console.log(monitorLine(`INBOUND_GAPS_PENDING count=${openGaps} read="ack gaps"`));
   const upkeep = async () => {
+    await reconcileBlocks({ delivery, conversations, rest, stateDir, warn });
     await sweepConversations({
       store: conversations, rest, now: Date.now(), emit: (line) => console.log(line),
       canContact: async (row, guild) => {
@@ -534,11 +536,22 @@ enqueue("catch-up", async () => {
       console.log(monitorLine(`INBOUND_BLACKLIST_REVIEW ${JSON.stringify({
         user_id: row.user_id, reason: row.reason, evidence_message_id: row.evidence_message_id,
         evidence_channel_id: row.evidence_channel_id, read: "helio blacklist list",
+        strikes: await strikeLinks(delivery.moderation.strikeEvidence(row.user_id), async (channel) => (await channelInfo(channel))?.guild_id),
       })}`));
     }
   };
-  await upkeep();
-  setInterval(() => enqueue("conversation and 👀 upkeep", upkeep), 10 * 60 * 1000).unref();
+  // Upkeep waits on Discord; it runs beside the message queue, never in it, so a slow call cannot hold back a delivery.
+  let upkeeping = false;
+  const runUpkeep = () => {
+    if (upkeeping) return;
+    upkeeping = true;
+    upkeep().then(() => { upkeeping = false; }, (err: unknown) => {
+      console.error(monitorLine(`INBOUND_ERROR conversation and 👀 upkeep: ${String(err)}`));
+      process.exit(1);
+    });
+  };
+  runUpkeep();
+  setInterval(runUpkeep, 10 * 60 * 1000).unref();
 });
 
 const listener = new DiscordBotListener(client, {

@@ -264,3 +264,26 @@ test("ack show keeps the conversation a reply was routed to, not the person's mo
     expect(shown.stdout).not.toContain("roles topic");
   } finally { queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test("the default lead view preserves structured corrections beyond six messages and keeps examples distinct from current requests", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "structured-lead-view-"));
+  const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+  const conversations = new Conversations(join(dir, "discord-conversations.sqlite"));
+  try {
+    conversations.open("100", "99", "400", "registration", NOW - 1000);
+    const fields = { request: "Investigate EU registration", decided: "EU, not NA; the old close command was an example",
+      waiting_on: "Owner to provide the error", result: "PR #22 merged; do not implement it again" };
+    conversations.setState("100", "99", fields);
+    for (let i = 0; i < 10; i++) conversations.append("100", "99", {
+      message_id: String(410 + i), author_id: "88", author: "Helio", bot: true, sent_at: new Date(NOW - 500 + i).toISOString(),
+      content: `discussion ${i}`, attachment_count: 0 }, NOW - 500 + i);
+    const example = 'Example only: "close the issue". Current request: investigate registration, not closure.';
+    queue.stage("inbound", "500", JSON.stringify(message("500", { content: example })));
+    const shown = await invoke(dir, ["show", "inbound", "500"]);
+    const turn = JSON.parse(shown.stdout.slice("ACK_TURN ".length));
+    expect(Object.fromEntries(Object.keys(fields).map((name) => [name, turn.conversation[name]]))).toEqual(fields);
+    expect(turn.conversation.transcript.map((entry: { message_id: string }) => entry.message_id))
+      .toEqual(["414", "415", "416", "417", "418", "419"]);
+    expect(turn.turn.messages[0].content).toBe(example);
+  } finally { queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
+});

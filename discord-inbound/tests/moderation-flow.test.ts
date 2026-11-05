@@ -22,6 +22,9 @@ Listener.prototype.start = async function () {
     author: { id: "501", username: "spammer" }, attachments: [], mentions: [{ id: "88" }] };
   Object.defineProperty(blocked, "content", { get() { console.log("TEST_BLOCKED_CONTENT_READ"); return "<@88> spam"; } });
   this.emit("message_create", blocked);
+  const click = { user: { id: "501" } };
+  Object.defineProperty(click, "type", { get() { console.log("TEST_BLOCKED_CLICK_READ"); return 3; } });
+  this.emit("interaction_create", click);
   for (let i = 0; i < 21; i++) {
     this.emit("message_create", { id: String(920 + i), channel_id: "104", guild_id: "300", content: "<@88> ping " + i,
       timestamp: new Date(${NOW} - (21 - i) * 1000).toISOString(), author: { id: "502", username: "eager" },
@@ -50,6 +53,7 @@ Listener.prototype.start = async function () {
 test("a blacklisted sender's message is dropped before its content is read or staged", async () => {
   const result = await intake();
   expect(result.stdout).not.toContain("TEST_BLOCKED_CONTENT_READ");
+  expect(result.stdout).not.toContain("TEST_BLOCKED_CLICK_READ");
   expect(result.blocked).toBe(false);
 });
 

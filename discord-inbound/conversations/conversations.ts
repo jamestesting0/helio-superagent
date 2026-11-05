@@ -55,6 +55,9 @@ export class Conversations extends WorkingStore {
       this.db.query(`INSERT INTO conversations
         (channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status)
         VALUES (?,?,?,?,?,?,'open')`).run(channel, user, opened_at, now, anchor, topic);
+      // A claim can precede topic selection. The new anchor belongs only to this topic, not the previous default.
+      this.db.query("UPDATE transcript SET opened_at=? WHERE channel_id=? AND user_id=? AND message_id=?")
+        .run(opened_at, channel, user, anchor);
       return row;
     }).immediate();
   }
@@ -157,7 +160,7 @@ export class Conversations extends WorkingStore {
 
   append(channel: string, user: string, entry: ConversationEntry, now = Date.now()): void {
     this.db.transaction(() => {
-      const row = this.forReply(channel, user, entry.reply_to);
+      const row = this.get(channel, user, entry.message_id) ?? this.forReply(channel, user, entry.reply_to);
       if (!row) return;
       const claim = this.working(entry.message_id);
       if (entry.author_id === user && (claim?.claimed_at == null || claim.closed_at !== null)) return;
@@ -274,7 +277,8 @@ export class Conversations extends WorkingStore {
     this.db.transaction(() => {
       this.db.query(`UPDATE conversations SET status='archived',archived_at=resolved_at+?
         WHERE status='resolved' AND resolved_at<=?`).run(7 * DAY_MS, now - 7 * DAY_MS);
-      this.db.query("DELETE FROM conversations WHERE status='archived' AND archived_at<=?").run(now - 30 * DAY_MS);
+      // Raw conversation text has a 30-day ceiling counted from resolution, archived or not.
+      this.db.query("DELETE FROM conversations WHERE status='archived' AND resolved_at<=?").run(now - 30 * DAY_MS);
       this.db.query("DELETE FROM conversation_notices WHERE created_at<=?").run(now - 37 * DAY_MS);
       this.db.exec(`DELETE FROM conversation_migrations WHERE NOT EXISTS (
         SELECT 1 FROM conversations c WHERE c.channel_id=conversation_migrations.channel_id

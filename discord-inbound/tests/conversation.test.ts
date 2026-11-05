@@ -68,6 +68,23 @@ test("CLI requires DORI_STATE_DIR", async () => {
     .toEqual({ code: 2, stderr: "", stdout: "CONVERSATION_REFUSED Requires DORI_STATE_DIR\n" });
 });
 
+test("opening a new topic after claiming its anchor transfers that message out of the previous topic", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conversation-transfer-"));
+  const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+  try {
+    store.open("100", "99", "500", "logs", Date.now());
+    store.claim("100", "99", { message_id: "600", author_id: "99", author: "owner", bot: false, sent_at: new Date().toISOString(),
+      content: "new topic", attachment_count: 0 }, Date.now());
+    expect((await invoke(dir, "open", "100", "99", "600", "roles")).code).toBe(0);
+    const logs = store.get("100", "99", "500");
+    const roles = store.get("100", "99", "600");
+    if (!logs || !roles) throw new Error("Both topics must remain open");
+    expect(store.transcriptOf(logs).map((entry) => entry.message_id)).toEqual([]);
+    expect(store.transcriptOf(roles).map((entry) => entry.message_id)).toEqual(["600"]);
+    expect(store.forReply("100", "99", "600")?.anchor_message_id).toBe("600");
+  } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("show, note, hold, resume and explicit reopen preserve a request through the CLI", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-commands-"));
   try {

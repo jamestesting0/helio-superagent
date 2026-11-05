@@ -43,7 +43,10 @@ export interface BlockRequest {
   readonly by: string;
   readonly evidenceMessageId?: string;
   readonly evidenceChannelId?: string;
+  readonly strikes?: readonly StrikeEvidence[];
 }
+
+export type StrikeEvidence = { readonly message_id: string; readonly channel_id: string; readonly at: number; readonly reason: string };
 
 /** Blacklist, strikes and ping throttle share the delivery database so a strike commits with its dismissal. */
 export class Moderation {
@@ -65,6 +68,12 @@ export class Moderation {
     CREATE TABLE IF NOT EXISTS moderation_proofs (
       proof TEXT PRIMARY KEY, user_id TEXT NOT NULL, action TEXT NOT NULL CHECK (action IN ('add', 'remove')), used_at INTEGER NOT NULL
     );`);
+    db.transaction(() => {
+      const columns = (table: string) => new Set(db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((column) => column.name));
+      if (!columns("strikes").has("reason")) db.exec("ALTER TABLE strikes ADD COLUMN reason TEXT");
+      // Keep block evidence after strikes are pruned; concurrent openers must observe this migration atomically.
+      if (!columns("blocked_users").has("strike_evidence")) db.exec("ALTER TABLE blocked_users ADD COLUMN strike_evidence TEXT");
+    }).immediate();
   }
 
   /**
@@ -100,9 +109,10 @@ export class Moderation {
   insertBlock(userId: string, request: BlockRequest, protectedIds: ReadonlySet<string>, now: number): Blocked {
     if (protectedIds.has(userId)) throw new RangeError(`User ${userId} is the owner or trusted and cannot be blacklisted`);
     this.db.query(`INSERT OR IGNORE INTO blocked_users
-      (user_id, source, reason, created_by, evidence_message_id, evidence_channel_id, created_at, reacted)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(userId, request.source, request.reason, request.by,
-      request.evidenceMessageId ?? null, request.evidenceChannelId ?? null, now, request.evidenceMessageId ? 0 : 1);
+      (user_id, source, reason, created_by, evidence_message_id, evidence_channel_id, created_at, reacted, strike_evidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(userId, request.source, request.reason, request.by,
+      request.evidenceMessageId ?? null, request.evidenceChannelId ?? null, now, request.evidenceMessageId ? 0 : 1,
+      request.strikes ? JSON.stringify(request.strikes) : null);
     return this.get(userId) as Blocked;
   }
 
@@ -113,15 +123,28 @@ export class Moderation {
     }).immediate();
   }
 
-  strike(messageId: string, userId: string, channelId: string, at: number): boolean {
+  strike(messageId: string, userId: string, channelId: string, at: number, reason: string): boolean {
     if (this.isBlocked(userId)) return false;
     const burst = this.db.query("SELECT 1 FROM strikes WHERE user_id = ? AND (message_id = ? OR abs(at - ?) < ?)")
       .get(userId, messageId, at, BURST_MS);
     if (burst === null) {
-      this.db.query("INSERT INTO strikes (message_id, user_id, channel_id, at) VALUES (?, ?, ?, ?)")
-        .run(messageId, userId, channelId, at);
+      this.db.query("INSERT INTO strikes (message_id, user_id, channel_id, at, reason) VALUES (?, ?, ?, ?, ?)")
+        .run(messageId, userId, channelId, at, reason);
     }
     return this.strikeCount(userId, at) >= this.settings.strikes;
+  }
+
+  /** The strikes counted at `at`, oldest first. */
+  strikesWithin(userId: string, at: number): StrikeEvidence[] {
+    return this.db.query<StrikeEvidence, [string, number, number]>(
+      "SELECT message_id, channel_id, at, coalesce(reason, '') AS reason FROM strikes WHERE user_id = ? AND at > ? AND at <= ? ORDER BY at",
+    ).all(userId, at - this.settings.windowMs, at);
+  }
+
+  /** What an automatic block recorded about the strikes that caused it; empty for an owner's block. */
+  strikeEvidence(userId: string): StrikeEvidence[] {
+    const row = this.db.query<{ strike_evidence: string | null }, [string]>("SELECT strike_evidence FROM blocked_users WHERE user_id = ?").get(userId);
+    return row?.strike_evidence ? JSON.parse(row.strike_evidence) as StrikeEvidence[] : [];
   }
 
   strikeCount(userId: string, at: number): number {

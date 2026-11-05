@@ -228,3 +228,14 @@ test("a blacklisted author is never learned from, fresh or already pending", asy
     finally { reopened.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("a later learning read whose unread messages aged out reports the expiry and records no gap", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "helio-learning-aged-"));
+  try {
+    await Bun.write(join(dir, "discord-context.json"), JSON.stringify({ [trusted]: "1" }));
+    const result = await invoke(dir, { DORI_DISCORD_CONTEXT: trusted, TEST_QUIET_CHANNEL: trusted });
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+    expect(result.stdout).toContain("reason=age");
+    expect(result.stdout).not.toContain("CONTEXT_GAP");
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

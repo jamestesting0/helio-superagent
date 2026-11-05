@@ -11,7 +11,7 @@ import { finishWorking, showWorking } from "./conversations/working.ts";
 import { contextSummary, inboundSummary, object } from "./delivery/monitor-summary.ts";
 import { contextSections, detailPage, renderTurn, SECTION_NAMES } from "./delivery/context-render.ts";
 import { TurnAssembler } from "./intake/turns.ts";
-import { settleBlock } from "./delivery/moderation-effects.ts";
+import { settleBlock, strikeLinks } from "./delivery/moderation-effects.ts";
 
 const args = process.argv.slice(2);
 const [action, stream, id] = args;
@@ -237,6 +237,8 @@ try {
       console.log(`AUTO_BLACKLISTED ${JSON.stringify({
         user_id: blocked.user_id, reason: blocked.reason, evidence_message_id: blocked.evidence_message_id,
         evidence_channel_id: blocked.evidence_channel_id, dismissed: result.dismissed.length,
+        strikes: await strikeLinks(queue.moderation.strikeEvidence(blocked.user_id),
+          async (channel) => rest ? (await rest<{ guild_id?: string }>(`/channels/${channel}`)).guild_id : undefined),
         next: "ask the owner with helio question ask --audience owner --option Undo --option Keep, then helio blacklist asked USER_ID --question ID",
       })}`);
     }

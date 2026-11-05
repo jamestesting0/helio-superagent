@@ -108,3 +108,11 @@ test("an incomplete history check keeps an uncertain reply pending instead of gu
     } finally { fetch.mockRestore(); }
   });
 });
+
+test("a sent reply's receipt still prevents a duplicate 40 days later", async () => {
+  await withDb(async (path) => {
+    const day = 24 * 60 * 60 * 1000;
+    expect(await sendOnce(base(path, { now: () => 1_000, send: async () => "first" }))).toEqual({ id: "first", duplicate: false });
+    expect(await sendOnce(base(path, { now: () => 1_000 + 40 * day, send: async () => "second" }))).toEqual({ id: "first", duplicate: true });
+  });
+});

@@ -83,10 +83,7 @@ export async function classify(
   if (msg.guild_id !== undefined && cfg.blockedChannels?.size &&
       await insideAllowed(msg.channel_id, cfg.blockedChannels, parentOf)) return null;
 
-  const isBugReport = msg.author.bot === true &&
-    msg.author.id === cfg.bugReportSource?.authorId &&
-    msg.channel_id === cfg.bugReportSource.channelId &&
-    msg.guild_id !== undefined && cfg.allowed.has(msg.channel_id);
+  const isBugReport = bugReport(msg, cfg);
   if (msg.author.id === cfg.bugReportSource?.authorId && !isBugReport) return null;
   if (msg.author.bot && !isBugReport) return null;
 
@@ -103,17 +100,7 @@ export async function classify(
 
   const channelPolicy: ChannelPolicy = msg.guild_id === undefined ? "trusted" :
     await insideAllowed(msg.channel_id, cfg.trustedChannels ?? new Set(), parentOf) ? "trusted" : "normal";
-  const mentioned = cfg.botId !== undefined && (
-    msg.mentions?.some((user) => user.id === cfg.botId) ||
-    msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`)
-  );
-  const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
-  // A reply to Helio's own message from someone it was talking with is addressed to Helio without a ping.
-  const repliesToHelio = cfg.botId !== undefined && msg.message_reference?.type !== 1 && msg.referenced_message?.author.id === cfg.botId;
-  const conversationFollowup = channelPolicy === "normal" && !isBugReport && !mentioned &&
-    (additionTo !== undefined || cfg.inConversation?.(msg.channel_id, msg.author.id) === true ||
-      (repliesToHelio && cfg.recentlyTalked?.(msg.channel_id, msg.author.id) === true));
-  const forOwner = msg.guild_id !== undefined && !isOwner && !isBugReport && forTheOwner(msg, cfg, mentioned === true);
+  const { mentioned, additionTo, conversationFollowup, forOwner } = addressing(msg, cfg, channelPolicy, isBugReport);
   // Open conversations and working windows admit only their owner's follow-ups in this exact channel.
   if (channelPolicy === "normal" && !isBugReport && !mentioned && !conversationFollowup && !forOwner) {
     onIneligible?.();
@@ -146,6 +133,39 @@ export async function classify(
     ...(mentioned && !isBugReport ? { pinged: true as const } : {}),
     ...(forOwner ? { for_owner: true as const } : {}),
   };
+}
+
+const bugReport = (msg: IncomingMessage, cfg: FilterConfig): boolean => msg.author.bot === true &&
+  msg.author.id === cfg.bugReportSource?.authorId && msg.channel_id === cfg.bugReportSource.channelId &&
+  msg.guild_id !== undefined && cfg.allowed.has(msg.channel_id);
+
+/** How a message is addressed: a ping, a follow-up in its author's conversation or working window, or a message for the owner. */
+function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy, isBugReport: boolean) {
+  const mentioned = cfg.botId !== undefined && (
+    msg.mentions?.some((user) => user.id === cfg.botId) ||
+    msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`)
+  ) === true;
+  const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
+  // A reply to Helio's own message from someone it was talking with is addressed to Helio without a ping.
+  const repliesToHelio = cfg.botId !== undefined && msg.message_reference?.type !== 1 && msg.referenced_message?.author.id === cfg.botId;
+  const conversationFollowup = channelPolicy === "normal" && !isBugReport && !mentioned &&
+    (additionTo !== undefined || cfg.inConversation?.(msg.channel_id, msg.author.id) === true ||
+      (repliesToHelio && cfg.recentlyTalked?.(msg.channel_id, msg.author.id) === true));
+  const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned);
+  return { mentioned, additionTo, conversationFollowup, forOwner };
+}
+
+/**
+ * Whether catch-up counts a message against its per-channel cap: what classify would admit, judged without
+ * channel lookups (the caller knows the channel's policy). Chatter that classify drops never pushes a request out of reach.
+ */
+export function countsTowardCatchUp(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy): boolean {
+  if (msg.author.id === cfg.botId || msg.webhook_id !== undefined) return false;
+  const isBugReport = bugReport(msg, cfg);
+  if (msg.author.bot && !isBugReport) return false;
+  if (channelPolicy === "trusted" || isBugReport || cfg.botId === undefined) return true;
+  const { mentioned, conversationFollowup, forOwner } = addressing(msg, cfg, channelPolicy, false);
+  return mentioned || conversationFollowup || forOwner;
 }
 
 // User mentions only: role and @everyone mentions are not in `mentions`. A message that also pings or

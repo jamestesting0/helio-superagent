@@ -86,7 +86,7 @@ test("a claim supplies recent resolution context but only an explicit reopen res
   });
 });
 
-test("resolved rows archive at seven days and delete after thirty more even when upkeep was absent", async () => {
+test("resolved rows archive at seven days and are deleted thirty days after resolving, even when upkeep was absent", async () => {
   await withStore((store) => {
     store.open("100", "99", "9", "retention", NOW);
     store.close("100", "99", "answered", NOW);
@@ -95,7 +95,9 @@ test("resolved rows archive at seven days and delete after thirty more even when
     store.retain(NOW + 7 * DAY_MS);
     expect([store.latest("100", "99")?.status, store.latest("100", "99")?.archived_at])
       .toEqual(["archived", NOW + 7 * DAY_MS]);
-    store.retain(NOW + 37 * DAY_MS);
+    store.retain(NOW + 30 * DAY_MS - 1);
+    expect(store.latest("100", "99")?.status).toBe("archived");
+    store.retain(NOW + 30 * DAY_MS);
     expect(store.latest("100", "99")).toBeNull();
   });
 });

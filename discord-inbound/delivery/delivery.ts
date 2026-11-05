@@ -273,21 +273,21 @@ export class Delivery {
       this.db.query("INSERT INTO handling (stream, id, disposition, reason) VALUES (?, ?, ?, ?)")
         .run(stream, id, disposition, reason);
       this.db.query("UPDATE delivery SET payload = NULL WHERE stream = ? AND id = ?").run(stream, id);
-      return disposition === "irrelevant" ? this.strikeFor(id, JSON.parse(row.payload)) : { dismissed: [] };
+      return disposition === "irrelevant" ? this.strikeFor(id, JSON.parse(row.payload), reason ?? "") : { dismissed: [] };
     }).immediate();
   }
 
   /** Only an explicit ping by an ordinary user in an untrusted chat counts toward the automatic blacklist. */
-  private strikeFor(id: string, payload: Record<string, unknown>): BlockResult {
+  private strikeFor(id: string, payload: Record<string, unknown>, reason: string): BlockResult {
     const { role, channel_policy, pinged, author_id, channel_id } = payload;
     const at = requestTimestamp(payload.sent_at);
     if (role !== "STAFF_QUESTION" || channel_policy !== "normal" || pinged !== true || at === undefined ||
         typeof author_id !== "string" || typeof channel_id !== "string" ||
-        !this.moderation.strike(id, author_id, channel_id, at)) return { dismissed: [] };
+        !this.moderation.strike(id, author_id, channel_id, at, reason)) return { dismissed: [] };
     const { strikes, windowMs } = this.moderation.settings;
     const blocked = this.moderation.insertBlock(author_id, {
       source: "auto", reason: `${strikes} irrelevant pings within ${windowMs / 3_600_000} hours`, by: "helio",
-      evidenceMessageId: id, evidenceChannelId: channel_id,
+      evidenceMessageId: id, evidenceChannelId: channel_id, strikes: this.moderation.strikesWithin(author_id, at),
     }, new Set(), Date.now());
     return { blocked, dismissed: this.dismissFrom(author_id) };
   }

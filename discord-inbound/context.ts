@@ -10,6 +10,7 @@
 
 import { fetchBacklog, PAGE_SIZE, type Caps, type FetchPage, type RestMessage } from "./intake/catchup.ts";
 import { LastSeen } from "./intake/lastseen.ts";
+import { RecentIds } from "./intake/recent-ids.ts";
 import { Delivery } from "./delivery/delivery.ts";
 import { sweepOrphanAttachments } from "./delivery/expiry.ts";
 import { excludedChannels, learningAllowed, learningChannelAllowed, normalChannels } from "./learning/learning-scope.ts";
@@ -34,7 +35,7 @@ for (const id of normalChannels(process.env)) excluded.add(id);
 const stateDir = requireEnv("DORI_STATE_DIR");
 const statePath = `${stateDir}/discord-context.json`;
 const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`);
-const announced = new Set<string>();
+const announced = new RecentIds();
 
 // A first read is a deliberate sample: up to 40 recent messages, and at least the newest 15 even in quiet channels.
 const FIRST_READ: Caps = { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxPerChannel: 40, minKeep: 15 };
@@ -90,12 +91,13 @@ async function refresh(): Promise<void> {
     try {
       const after = lastRead.get(channel.id);
       const caps = after === undefined ? FIRST_READ : LATER_READ;
-      const { messages, truncated } = await fetchBacklog(fetchPage, channel.id, after, Date.now(), caps);
-      // Only a later read can miss messages; the first read's limits are the intended sample.
+      const { messages, truncated, reason = "cap" } = await fetchBacklog(fetchPage, channel.id, after, Date.now(), caps);
+      // Only a later read can miss messages; the first read's limits are the intended sample. Messages past the
+      // 30-day horizon expire unlearned by design; only a cap or page cut leaves an unread gap.
       if (truncated && after !== undefined) {
-        console.log(monitorLine(`CONTEXT_TRUNCATED channel=${channel.name ?? channel.id} kept=${messages.length}`));
+        console.log(monitorLine(`CONTEXT_TRUNCATED channel=${channel.name ?? channel.id} kept=${messages.length} reason=${reason}`));
         const before = messages[0]?.id;
-        const id = before ? delivery.recordGap({ stream: "context", channel: channel.id, after, before, reason: "cap" }) : undefined;
+        const id = before && reason !== "age" ? delivery.recordGap({ stream: "context", channel: channel.id, after, before, reason }) : undefined;
         if (id !== undefined) console.log(monitorLine(`CONTEXT_GAP ${JSON.stringify({ id, channel_id: channel.id, after, before, read: "ack gaps", ack: `ack gap ${id}` })}`));
       }
       for (const msg of messages) {

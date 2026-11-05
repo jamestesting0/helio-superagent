@@ -92,7 +92,7 @@ INBOUND_FILES = (
     "interactive/questions.test.ts", "interactive/recovery.test.ts",
     "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
     # tests
-    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/catchup-pages.test.ts", "tests/ignored-threads.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
+    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/catchup-pages.test.ts", "tests/ignored-threads.test.ts", "tests/upkeep-independent.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
     "tests/stage-first.test.ts",
     "tests/learning-context.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",

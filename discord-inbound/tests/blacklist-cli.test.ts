@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Delivery } from "../delivery/delivery.ts";
+import { Conversations } from "../conversations/conversations.ts";
 
 async function stateWithAnswers() {
   const dir = await mkdtemp(join(tmpdir(), "helio-blacklist-cli-"));
@@ -66,4 +67,26 @@ test("trusted users come from the installed trusted-users file, as the other wra
   await Bun.write(join(home, ".dori/elobot/trusted-users"), "42\n");
   expect((await run(dir, { HOME: home, DORI_DISCORD_TRUSTED_IDS: undefined }, "add", "42", "--reason", "x", "--question", "q2")).stdout)
     .toBe("BLACKLIST_REFUSED User 42 is the owner or trusted and cannot be blacklisted");
+});
+
+test("repeating a committed block repairs interrupted settlement without consuming accepted work", async () => {
+  const dir = await stateWithAnswers();
+  const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+  const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+  try {
+    queue.stage("inbound", "700", JSON.stringify({ author_id: "501", sent_at: new Date().toISOString() }));
+    queue.accept("700");
+    store.open("104", "501", "700", "work to preserve", Date.now());
+    store.claimWorking("104", "501", "700", Date.now());
+    queue.moderation.withProof("question q1", "501", "add", Date.now(), () =>
+      queue.block("501", { source: "owner", reason: "spam", by: "99" }, new Set(["99"])));
+  } finally { queue.close(); store.dispose(); }
+  expect((await blacklist(dir, "add", "501", "--reason", "spam", "--question", "q1")).code).toBe(0);
+  const reopened = new Delivery(join(dir, "discord-delivery.sqlite"));
+  const conversations = new Conversations(join(dir, "discord-conversations.sqlite"));
+  try {
+    expect(reopened.status("inbound", "700").disposition).toBe("accepted");
+    expect(conversations.get("104", "501")).toBeNull();
+    expect(conversations.working("700")?.closed_at).toBeNumber();
+  } finally { reopened.close(); conversations.dispose(); }
 });

@@ -2,7 +2,8 @@ import { Database } from "bun:sqlite";
 import type { Rest } from "../discord/rest.ts";
 
 export const STALE_SEND_MS = 120_000;
-const RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+/** Identity receipts (target and text hash only) outlive every replay and catch-up horizon. */
+const RETAIN_MS = 180 * 24 * 60 * 60 * 1000;
 
 export interface SendOnce {
   readonly path: string;

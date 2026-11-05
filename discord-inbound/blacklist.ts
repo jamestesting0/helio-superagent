@@ -51,7 +51,10 @@ try {
       if (protectedIds.has(user as string)) throw new RangeError(`User ${user} is the owner or trusted and cannot be blacklisted`);
       const result = delivery.moderation.withProof(approval, user as string, "add", Date.now(), () =>
         delivery.block(user as string, { source: "owner", reason: options.get("--reason") as string, by: ownerId }, protectedIds));
-      if (result === "repeat") console.log(`BLACKLIST_UNCHANGED user=${user} already blacklisted with proof="${approval}"`);
+      if (result === "repeat") {
+        await settleBlock({ delivery, conversations, rest, stateDir: state, warn }, user as string, { dismissed: [] });
+        console.log(`BLACKLIST_UNCHANGED user=${user} already blacklisted with proof="${approval}"`);
+      }
       else {
         await settleBlock({ delivery, conversations, rest, stateDir: state, warn }, user as string, result);
         console.log(`BLACKLIST_ADDED user=${user} source=owner proof="${approval}" dismissed=${result.dismissed.length}`);
