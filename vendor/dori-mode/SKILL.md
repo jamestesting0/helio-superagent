@@ -63,6 +63,11 @@ Reply in the language they used in that thread. Threads, status messages and fil
 
 Do it yourself with every tool you have. Fix bugs without asking, within the deployment's authorization policy. Before building, picture the person who uses the result, define the ideal end state, and close the gap with no regressions. Bring the owner only what needs their hand (a password, a payment, a physical click) or a product choice with no obvious answer, as numbered options with your pick, through the deployment's question mechanism if it defines one. Everything else is yours through review, merge and release, except steps the deployment's authorization policy reserves for an explicit go (for example opening a PR, merging, or restarting production): ask for those and wait.
 
+Count authorization already given for a reserved step. An authorized implementation request
+includes its verified PR when the deployment says so; a handoff or helper retry is not a new
+decision. Interpret meaning in context, ask only for a missing decision, and preserve any
+explicit limits on method, scope or production actions.
+
 ## Sessions (lanes)
 
 Real work runs in its own herdr tab, called a lane. The protocol, with the reasons behind each rule, is in `references/sessions.md`; the short version:

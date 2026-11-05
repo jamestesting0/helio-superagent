@@ -41,6 +41,11 @@ Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed
 
 Work no script can check (a design review, a judgement call) stays in the lane's own plan. You judge it yourself before the claim.
 
+Choose signals for the requested finish. A task to open a verified PR finishes at that PR,
+without waiting for a separately authorized merge or release. Prefer a cheap live check of
+that result and evidence bound to the final revision; do not make the watcher repeat a
+passing full test suite merely to close the lane.
+
 ## The registry
 
 One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file + rename), so two writers never leave a half-written file. Each lane records:

@@ -21,6 +21,7 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 | SKILL.md | Inbound, eyes reaction | Only react to messages that call for a response; deployment relevance rules decide, the rest get no reaction | Helio stays fully silent on unrelated shared-channel chatter |
 | SKILL.md | Doing the work | Bug fixes stay within the deployment's authorization policy; steps it reserves (PR, merge, production restart) need an explicit go | Helio needs explicit authorization for PRs, merges and restarts |
 | SKILL.md | Doing the work | Numbered options go through the deployment's question mechanism if it has one | Helio asks via `helio question ask`, never a terminal prompt |
+| SKILL.md, references/sessions.md | Doing the work, completion signals | Reuse already given authority, resolve meaning in context and match completion checks to the requested finish | A verified PR request must not produce another permission prompt or wait for an unrequested merge |
 | references/writing.md | Voice | Eyes reaction exception limited to messages that call for a response | Matches the SKILL.md change |
 | references/writing.md | Asking | Use the deployment's question mechanism instead of a terminal prompt when one exists | Matches the SKILL.md change |
 | references/writing.md | Visitors | Deployment-defined roles for non-owners take precedence; the visitor rules cover everyone else | Helio staff and trusted-user flows |

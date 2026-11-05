@@ -125,6 +125,10 @@ For bugs, reproduce the failure before changing its owner and capture the failed
 
 Run the focused regression checks for the changed behavior. Run the repository-required full suite at integration:
 
+For work submitted by `helio pr submit`, the helper runs that integration suite for the final
+revision. Reuse its passing result; do not run the same suite immediately before and after
+submission. A code change or a failure requires the affected checks again.
+
 ```bash
 cd {{HELIO_PROJECT}}
 "$HELIO_PROJECT/.venv/bin/python" -m unittest discover -v tests

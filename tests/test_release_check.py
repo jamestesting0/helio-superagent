@@ -42,6 +42,46 @@ class ReleaseCheckTests(unittest.TestCase):
   with self.assertRaises(m['Refused']): self.check(owner='42',channel_ok=False)
   self.assertEqual(self.check(owner='42',channel_ok=True),'42')
 def snowflake(minutes_ago): return str(int(((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(minutes=minutes_ago)).timestamp()*1000-1420070400000))<<22)
+class AcceptedWorkSourceTests(unittest.TestCase):
+ def setUp(self):
+  self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+  self.base=Path(self.tmp.name);(self.base/'trusted-users').write_text('42')
+  with sqlite3.connect(self.base/'discord-delivery.sqlite') as db:
+   db.execute('CREATE TABLE delivery(stream TEXT,id TEXT,payload TEXT)')
+   db.execute('CREATE TABLE acceptance(stream TEXT,id TEXT)')
+   db.execute("INSERT INTO delivery VALUES('inbound','60',NULL)")
+   db.execute("INSERT INTO acceptance VALUES('inbound','60')")
+  self.live={'id':'60','channel_id':'50','author':{'id':'42'},'content':'implement #42 what was the checker?',
+             'timestamp':stamp(8*24*60),'edited_timestamp':None}
+  def api(path,token):
+   if path=='/users/@me':return {'id':'7'}
+   if '/messages/' in path:return dict(self.live)
+   return {'id':'50','type':0}
+  self.env=patch.dict(os.environ,{'DORI_DISCORD_TOKEN':'fake','DORI_DISCORD_OWNER_ID':'1','DORI_DISCORD_ALLOWED':'50'})
+  self.globals=patch.dict(m['load'].__globals__,{'BASE':self.base,'STATE':self.base,'api':api})
+  self.env.start();self.globals.start()
+  self.addCleanup(self.env.stop);self.addCleanup(self.globals.stop)
+ def test_acknowledged_accepted_work_survives_elapsed_time_but_never_becomes_release_approval(self):
+  source=m['load']('60','50')
+  self.assertEqual(m['verify'](**source,action='work',target='jamestesting0/elo-bot#42',revision='-'),'42')
+  with self.assertRaises(m['Refused']):m['load']('60')
+ def test_unaccepted_and_edited_legacy_sources_cannot_be_reconstructed(self):
+  self.live['edited_timestamp']=stamp()
+  with self.assertRaises(m['Refused']):m['load']('60','50')
+  self.live['edited_timestamp']=None
+  with sqlite3.connect(self.base/'discord-delivery.sqlite') as db:db.execute('DELETE FROM acceptance')
+  with self.assertRaises(m['Refused']):m['load']('60','50')
+ def test_recorded_fingerprint_rechecks_changed_content_and_current_trust_after_ack(self):
+  import hashlib
+  fingerprint=hashlib.sha256(self.live['content'].encode()).hexdigest()
+  self.live['edited_timestamp']=stamp()
+  source=m['load']('60','50',fingerprint)
+  self.assertEqual(m['verify_source'](source['payload'],source['live'],'1',{'42'},True),'42')
+  self.live['content']='cancel the work'
+  source=m['load']('60','50',fingerprint)
+  with self.assertRaises(m['Refused']):m['verify_source'](source['payload'],source['live'],'1',{'42'},True)
+  with self.assertRaises(m['Refused']):m['verify_source'](source['payload'],source['live'],'1',set(),True)
+
 class ButtonConfirmationTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)

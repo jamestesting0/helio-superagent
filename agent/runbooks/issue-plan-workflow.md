@@ -5,13 +5,28 @@
 An owner's or trusted user's request to implement an issue ("implement #8", "proceed" or "yes"
 replying to your proposal to implement it) is one decision covering the work and its PR. Record it
 immediately: `helio work authorize --issue N --message M --channel C`. On `WORK_AUTHORIZED` launch
-the lane; it removes `needs-owner-review` and lasts seven days. Never ask again before the PR.
+the lane; it removes `needs-owner-review`. The receipt survives intake acknowledgement, restarts
+and elapsed implementation time until used. Re-recording the same request is idempotent and
+does not restore spent authority. Never ask again before the PR.
+Receipts are per issue: when one human request clearly covers several tasks, record each
+resolved issue. Completing one task does not revoke the other tasks from that request.
+
+Decide intent and the issue from the permitted conversation before invoking the command.
+A request can ask for a separate PR before its issue exists, contain a side question or rule out
+a workflow. These do not cancel the instruction. Do not record a conditional suggestion or a
+cancelled request as authorized work. The helper checks source identity, trust, location and
+integrity; it does not decide the meaning of English. Before a new PR it rechecks the current
+source against the recorded fingerprint. Accepted legacy sources without a fingerprint must
+still be unedited on Discord. Inspect a changed or unavailable source instead of asking for
+the same clear decision again.
 The scope is the current issue body (`helio issue show N`): build its confirmed requirements and leave
 its open questions out. The lane follows the brief below without the plan check; its result file has
 one `scope` row per confirmed requirement, `deviation` for anything left open, which makes the PR
 `Refs #N` and keeps the issue open. A work authorization never approves a merge or restart.
 
-Use this only when the owner or a trusted user asks for a plan or to finalize an issue
+## Opting into a plan
+
+Use plan mode only when the owner or a trusted user asks for a plan or to finalize an issue
 ("finalize #4", "plan #4 first", "put the plan on the issue"). Finalizing means: post the plan
 and wait. It never means building. Other requests and standing autofix work as usual.
 
@@ -42,7 +57,9 @@ private. The approved plan is the contract the PR is checked against.
 
 Lane brief (include the approved fields from `helio plan show --issue N --json`):
 1. Run `helio plan check --issue N`; stop unless it prints `PLAN_APPROVED`.
-2. Work on `helio/issue-N` from current `origin/main`. Build exactly the approved Scope; add tests.
+2. Work on `helio/issue-N` from current `origin/main`. Build exactly the approved Scope; add
+   regressions for changed behavior. Use direct `ulw`, sized to the actual change, unless the
+   requester selected another method. Do not create a planning pipeline merely to launch a lane.
 3. Live beta only if the plan says "Requested by"; otherwise none.
 4. If the work needs a different Scope, decision or Done-when item, stop and report; the lead posts
    a new revision. Small mechanical details (a helper name, an extra test) need no new approval.
@@ -50,6 +67,9 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
    `{"scope": [{"status": "met", "evidence": "test_name"}], "done_when": [...]}` (status `met` or
    `deviation`), and a summary file. Then run
    `helio pr submit --issue N --result-file RESULT.json --summary-file SUMMARY.md`.
+   Run focused checks while implementing; `pr submit` owns its full-suite integration gate.
+   Do not immediately repeat a passing full suite. A retry returns an existing PR, and a failed
+   creation does not spend the work request before a PR exists.
 
 Revisions: post again with `change_note` ("window 8 to 6 hours"). A content change prints
 `PLAN_APPROVAL_RESET`; send the new announcement and ask for approval of the new revision.

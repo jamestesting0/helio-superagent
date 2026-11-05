@@ -69,17 +69,28 @@ class ClickTests(unittest.TestCase):
 
 
 class IntentTests(unittest.TestCase):
+    def test_work_records_the_resolved_request_without_requiring_a_magic_phrase(self):
+        for text in (
+            "please make a separate pr to handle those errors gracefully "
+            "(this is a small change do not do it with ulw)",
+            "implement #12 what was the checker?",
+            "implement #12, too many unnecessary checks and validation",
+            "could you fix the problem we just discussed?",
+        ):
+            with self.subTest(content=text):
+                A["check_intent"]("work", message(text), BOT, REPO, 12, now=NOW)
+
     def test_quoted_or_fenced_commands_never_authorize_an_action(self):
         for action, text in (("work", "implement #12"), ("merge", "merge #12"),
                              ("restart", "restart the bot"), ("plan", "approve #12")):
             for content in ("> " + text, "  > " + text, ">>>\n" + text,
                             "```\n" + text + "\n```", "```" + text + "```",
-                            "evidence only\n> " + text):
+                            *(("evidence only\n> " + text,) if action != "work" else ())):
                 with self.subTest(action=action, content=content), self.assertRaises(A["Refused"]):
                     A["check_intent"](action, message(content), BOT, REPO, 12, now=NOW)
 
     def test_quoted_targets_and_quoted_helio_context_do_not_supply_authority(self):
-        for action, content in (("work", "implement\n> #12"), ("merge", "merge\n> #12"),
+        for action, content in (("merge", "merge\n> #12"),
                                 ("plan", "approve\n> #12")):
             with self.subTest(action=action), self.assertRaises(A["Refused"]):
                 A["check_intent"](action, message(content), BOT, REPO, 12, now=NOW)
@@ -144,7 +155,7 @@ class IntentTests(unittest.TestCase):
                 self.accepted(action, message(text, minutes_ago=660))
                 self.refused(action, message(text, minutes_ago=721))
 
-    def test_work_intent_is_issue_bound_and_never_a_release_approval(self):
+    def test_recorded_work_is_never_a_release_approval(self):
         for text in ("implement #12", "build https://github.com/jamestesting0/elo-bot/issues/12",
                      "fix issue #12", "proceed with #12", "go ahead with #12", "do it for #12"):
             with self.subTest(text=text):
@@ -152,11 +163,12 @@ class IntentTests(unittest.TestCase):
                 self.refused("merge", message(text), pr=12)
                 self.refused("restart", message(text))
         A["check_intent"]("work", message("yes", referenced=helio_says("Implement issue #12?")), BOT, REPO, 12, now=NOW)
-        for msg in (message("implement #13"), message("maybe fix #12"), message("<@42> fix #12"),
-                    message("fix #12", minutes_ago=16), message("fix #12 and #13"),
-                    message("yes", referenced={"author": {"id": "42"}, "content": "Implement #12?"})):
+        for msg in (message("<@42> fix #12"), message("> implement #12"),
+                    message("fix #12", minutes_ago=72 * 60 + 1)):
             with self.subTest(message=msg), self.assertRaises(A["Refused"]):
                 A["check_intent"]("work", msg, BOT, REPO, 12, now=NOW)
+        A["check_intent"]("work", {**message("fix #12", minutes_ago=8 * 24 * 60),
+                                   "_helio_accepted_work": True}, BOT, REPO, 12, now=NOW)
 
     def test_natural_pr_forms_and_conversational_confirmation(self):
         for reference in ("pr 123", "PR #123", "pull 123", "pull request 123"):

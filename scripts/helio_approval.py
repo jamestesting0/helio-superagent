@@ -16,14 +16,14 @@ import urllib.error
 import urllib.request
 
 MAX_AGE_SECONDS = 12 * 3600
-WORK_MAX_AGE_SECONDS = 900
+WORK_MAX_AGE_SECONDS = 72 * 3600
+PR_CLICK_MAX_AGE_SECONDS = 900
 # A plan is read on GitHub and approved later; freshness is bound to the revision instead.
 PLAN_MAX_AGE_SECONDS = 72 * 3600
 INTENT = {
     "merge": re.compile(r"\b(merge|merged|merging|land|ship|approved?|go ahead|lgtm)\b", re.I),
     "restart": re.compile(r"\b(restart|redeploy|deploy|reboot|bounce|go live|roll ?out)\b", re.I),
     "plan": re.compile(r"\b(approved?|approving|lgtm|looks good|sounds good|go ahead|proceed|start|go|ship it|do it)\b", re.I),
-    "work": re.compile(r"\b(implement|build|fix|proceed|go ahead|do it)\b", re.I),
 }
 # Helio's plan announcements always start with this; replies to them approve plans, never releases.
 PLAN_ANNOUNCEMENT = re.compile(r"^\W*Plan for #(\d+) \(r(\d+)\)")
@@ -63,16 +63,17 @@ def sent_at(message: dict) -> datetime.datetime:
 def check_intent(action: str, message: dict, bot_id: str, repo: str, pr: int | None,
                  now: datetime.datetime | None = None, not_before: datetime.datetime | None = None) -> None:
     """For action "plan", `pr` is the issue number and `not_before` the plan revision's posting time."""
-    if action not in INTENT:
+    if action != "work" and action not in INTENT:
         raise Refused("unsupported action")
     age = ((now or datetime.datetime.now(datetime.timezone.utc)) - sent_at(message)).total_seconds()
     limit = PLAN_MAX_AGE_SECONDS if action == "plan" else WORK_MAX_AGE_SECONDS if action == "work" else MAX_AGE_SECONDS
-    if age < -30 or age > limit:
+    accepted_work = action == "work" and message.get("_helio_accepted_work") is True
+    if age < -30 or (age > limit and not accepted_work):
         raise Refused("confirmation is too old or has a future timestamp; ask for a fresh one")
     if not_before is not None and sent_at(message) < not_before:
         raise Refused("message was sent before the current plan revision; ask for approval of the current revision")
     content = instruction_text(str(message.get("content", "")))
-    if HEDGE.search(content):
+    if action != "work" and HEDGE.search(content):
         raise Refused("confirmation is conditional or asks a question; ask for a clear go-ahead")
     affirmative = AFFIRMATIVE.match(content) is not None and len(content) <= 80
     referenced = message.get("referenced_message") or {}
@@ -85,11 +86,10 @@ def check_intent(action: str, message: dict, bot_id: str, repo: str, pr: int | N
         raise Refused("message is addressed to someone else, not Helio; ask the sender to confirm to Helio")
     announcement = PLAN_ANNOUNCEMENT.match(referenced_text) if replies_to_helio else None
     if action == "work":
-        numbers = lambda text: pr_numbers(text, repo) | {int(n) for n in re.findall(
-            rf"https?://github\.com/{re.escape(repo)}/issues/(\d+)\b", text, re.I)}
-        refs = numbers(content) | (numbers(referenced_text) if replies_to_helio and affirmative else set())
-        if refs != {pr} or not (INTENT["work"].search(content) or (replies_to_helio and affirmative)):
-            raise Refused(f"message does not authorize work on issue #{pr}; ask for a clear go-ahead naming the issue")
+        # The lead resolves work intent and its issue from the conversation. Re-parsing
+        # English here rejects clear requests, side questions and unrelated constraints.
+        if not content:
+            raise Refused("work needs an authored human request, not only quoted evidence")
         return
     if action == "plan":
         if replies_to_helio and not announcement:
@@ -272,10 +272,10 @@ def check_click(action: str, result: dict, prompt: dict, bot_id: str, number: in
     clicked, posted, shown = snowflake_time(meta.get("id")), snowflake_time(prompt.get("id")), snowflake_time(result.get("id"))
     # A PR prompt stays clickable as long as a plan prompt; its click is still used within 15 minutes.
     open_for = PLAN_MAX_AGE_SECONDS if action in ("plan", "pr") else CLICK_MAX_AGE_SECONDS
-    limit = PLAN_MAX_AGE_SECONDS if action == "plan" else WORK_MAX_AGE_SECONDS if action == "pr" else CLICK_MAX_AGE_SECONDS
+    limit = PLAN_MAX_AGE_SECONDS if action == "plan" else PR_CLICK_MAX_AGE_SECONDS if action == "pr" else CLICK_MAX_AGE_SECONDS
     if clicked < posted or (clicked - posted).total_seconds() > open_for:
         raise Refused("the prompt had expired when it was clicked; ask again")
-    if not 0 <= (shown - clicked).total_seconds() <= WORK_MAX_AGE_SECONDS:
+    if not 0 <= (shown - clicked).total_seconds() <= PR_CLICK_MAX_AGE_SECONDS:
         raise Refused("the button result was not created for this click")
     age = ((now or datetime.datetime.now(datetime.timezone.utc)) - clicked).total_seconds()
     if age < -30 or age > limit:

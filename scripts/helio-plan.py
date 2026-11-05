@@ -23,7 +23,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from typing import Callable
+from typing import Callable, Protocol
+
+
+class DiscordReader(Protocol):
+    def __call__(self, message_id: str, channel: str | None = None, fingerprint: str | None = None) -> dict: ...
 
 HERE = Path(__file__).resolve().parent
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
@@ -310,10 +314,11 @@ class GitHub:
         return sorted(item["number"] for item in found)
 
 
-def discord_message(message_id: str) -> dict:
+def discord_message(message_id: str, channel: str | None = None, fingerprint: str | None = None) -> dict:
     checker = runpy.run_path(str(HERE / "release-check.py"))
     try:
-        return {**checker["load"](message_id), "verify": checker["verify"], "Refused": checker["Refused"]}
+        return {**checker["load"](message_id, channel, fingerprint), "verify": checker["verify"],
+                "verify_source": checker["verify_source"], "Refused": checker["Refused"]}
     except checker["Refused"] as error:
         raise Refused(str(error)) from None
 
@@ -518,14 +523,30 @@ def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[s
         raise Refused(str(error)) from None
     if gh.issue(args.issue).get("state") != "OPEN":
         raise Refused(f"issue #{args.issue} is not open")
-    WORK["record"](WORK["Authorization"](REPO, args.issue, args.message, args.channel, author, args.now))
+    recorded = WORK["record"](WORK["Authorization"](REPO, args.issue, args.message, args.channel, author, args.now,
+                                                  hashlib.sha256(source["live"]["content"].encode()).hexdigest()))
+    if not recorded:
+        existing = gh.open_pr(f"helio/issue-{args.issue}")
+        if existing:
+            return [f"PLAN_PR {existing}"]
+        raise Refused("this work request already produced its PR; inspect the issue history before starting new work")
     gh.run(["gh", "issue", "edit", str(args.issue), "--repo", gh.repo, "--remove-label", "needs-owner-review"])
-    return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} expires={(args.now + WORK['MAX_AGE']).isoformat()}"]
+    return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} valid=until-used"]
 
 
-def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], int]) -> list[str]:
+def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], int], discord: DiscordReader) -> list[str]:
     issue, comment_id, plan_url, body = gh.plan_comment(args.issue)
     found, data = state(args.issue, body)
+    branch = f"helio/issue-{args.issue}"
+    existing = gh.open_pr(branch)
+    if existing:
+        try:
+            authorization = WORK["available"](REPO, args.issue, args.now)
+        except WORK["Refused"]:
+            pass
+        else:
+            WORK["consume"](REPO, args.issue, authorization.message)
+        return [f"PLAN_PR {existing}"]
     authorization = None
     if found != "PLAN_APPROVED":
         if found != "PLAN_NONE":
@@ -536,11 +557,14 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
             raise Refused(f"{found}: {error}") from None
         if issue.get("state") != "OPEN":
             raise Refused(f"issue #{args.issue} is not open")
+        source = discord(authorization.message, authorization.channel, authorization.source_hash)
+        try:
+            author = source["verify_source"](source["payload"], source["live"], source["owner"], source["trusted"], source["channel_ok"])
+        except source["Refused"] as error:
+            raise Refused(str(error)) from None
+        if author != authorization.author:
+            raise Refused("work requester identity differs from the recorded request")
         data = {"title": issue["title"]}
-    branch = f"helio/issue-{args.issue}"
-    existing = gh.open_pr(branch)
-    if existing:
-        return [f"PLAN_PR {existing}"]
     try:
         result = check_result(None if authorization else data, json.loads(args.result_file.read_text()))
         summary = args.summary_file.read_text().strip()
@@ -576,17 +600,17 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
         else:
             text = pr_body(args.issue, data, plan_url, result, summary, passed)
         path.write_text(text)
-        if authorization:
-            WORK["consume"](REPO, args.issue, authorization)
         url = gh.run(["gh", "pr", "create", "--repo", gh.repo, "--base", "main", "--head", branch,
                       "--title", f"{data['title']} (#{args.issue})", "--body-file", str(path)])
+        if authorization:
+            WORK["consume"](REPO, args.issue, authorization.message)
     if not authorization:
         data["status_note"] = f"implemented in {url}"
         gh.save(args.issue, comment_id, render(args.issue, data))
     return [f"PLAN_PR {url}"]
 
 
-def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Callable[[str], dict] = discord_message,
+def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: DiscordReader = discord_message,
          suite: Callable[[Path, str], int] = full_suite, now: datetime.datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -629,9 +653,9 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Calla
         elif args.command == "approve":
             lines = approve(args, gh, discord, now)
         elif args.command == "pr":
-            lines = submit(args, gh, suite)
+            lines = submit(args, gh, suite, discord)
         elif args.command == "work":
-            lines = authorize_work(args, gh, discord(args.message))
+            lines = authorize_work(args, gh, discord(args.message, args.channel))
         elif args.command == "list":
             waiting = [n for n in gh.labelled() if state(n, gh.plan_comment(n)[3])[0] != "PLAN_APPROVED"]
             lines = [f"PLANS_AWAITING count={len(waiting)}" + (" issues=" + ",".join(f"#{n}" for n in waiting) if waiting else "")]

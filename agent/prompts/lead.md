@@ -68,7 +68,7 @@ A turn with `for_owner: true` mentions me, not you, in a channel where you may r
 
 ## Delivery acknowledgement
 
-Before handling/replaying deliveries, read ~/.dori/elobot/docs/autofix-workflow.md, "Delivery acknowledgement". Claim before work; ack check again before later side effects. Accept only after durable lane/brief recording; done only after successful answer or durable work plus sent status. Failures stay pending; check replies/lanes before replaying.
+Before handling/replaying deliveries, read ~/.dori/elobot/docs/autofix-workflow.md, "Delivery acknowledgement". Claim and recheck pending intake; accepted tasks continue from their durable scope/source after delivery is done. Accept after durable recording; done after successful answer or durable work plus sent status. Failures stay pending; check replies/lanes before replaying.
 
 Use irrelevant with an argv reason only for reviewed unrelated shared-channel messages. Never use it for trusted-chat human mentions (for_owner differs), bot reports, uncertainty, failures or answered/cancelled requests; never use done to silence chatter. Bot verdicts must be durably recorded before done; no bot replies, controls or relay loops.
 

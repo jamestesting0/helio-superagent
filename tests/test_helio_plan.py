@@ -81,8 +81,10 @@ def discord(author=OWNER, content="please finalize issue #12 with a plan", sent=
             "timestamp": sent.isoformat(), **({"referenced_message": referenced} if referenced else {})}
     payload = {"message_id": message_id, "channel_id": "1", "author_id": author, "author": "James" if author == OWNER else "Someone",
                "content": content, **({"for_owner": True} if for_owner else {})}
-    return lambda _id: {"payload": payload, "live": live, "owner": OWNER, "trusted": {TRUSTED}, "channel_ok": True,
-                        "is_dm": False, "bot_id": BOT, "verify": RC["verify"], "Refused": RC["Refused"]}
+    return lambda _id, channel=None, fingerprint=None: {
+        "payload": {**payload, **({"discord_origin": {"content_sha256": fingerprint}} if fingerprint else {})},
+        "live": live, "owner": OWNER, "trusted": {TRUSTED}, "channel_ok": True,
+        "is_dm": False, "bot_id": BOT, "verify": RC["verify"], "verify_source": RC["verify_source"], "Refused": RC["Refused"]}
 
 
 def announcement_of(revision):
@@ -98,11 +100,15 @@ class PlanCase(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.dir)], check=True))
+        self.work_message = None
 
     def run_cli(self, *argv, discord_fn=None, now=POSTED, suite=None):
+        if argv[:2] == ("work", "authorize") and discord_fn is not None:
+            self.work_message = discord_fn
+        reader = discord_fn or (self.work_message if argv[:2] == ("pr", "submit") and self.work_message else discord())
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = P["main"](list(argv), gh=self.gh, discord=discord_fn or discord(), now=now,
+            code = P["main"](list(argv), gh=self.gh, discord=reader, now=now,
                              suite=suite or (lambda project, head: 5))
         return code, out.getvalue().strip()
 
@@ -369,6 +375,43 @@ class StateTests(PlanCase):
 
 
 class SubmitTests(PlanCase):
+    def test_clear_work_request_does_not_need_an_issue_number_that_was_created_afterward(self):
+        self.setUp_result(direct=True)
+        code, out = self.run_cli(
+            "work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+            discord_fn=discord(content="please make a separate pr for those errors (do not do it with ulw)"))
+        self.assertEqual(code, 0, out)
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+
+    def test_repeating_direct_submission_returns_the_existing_pr_without_new_authorization(self):
+        self.setUp_result(direct=True)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.submit(), (0, f"PLAN_PR https://github.com/{REPO}/pull/13"))
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+
+    def test_failed_pr_creation_does_not_spend_the_work_request(self):
+        self.setUp_result(direct=True)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        original = self.gh.run
+
+        def fail_create(argv, **kwargs):
+            if argv[:3] == ["gh", "pr", "create"]:
+                raise P["Refused"]("GitHub unavailable before creation")
+            return original(argv, **kwargs)
+
+        self.gh.run = fail_create
+        self.assertEqual(self.submit()[0], 1)
+        self.gh.run = original
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+
     def setUp(self):
         super().setUp()
         git = lambda cwd, *argv: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *argv], cwd=cwd,
@@ -476,24 +519,20 @@ class SubmitTests(PlanCase):
         self.gh_fake.prs.clear()
         self.assertEqual(self.submit()[0], 1)
 
-    def test_recorded_work_complete_scope_closes_issue_and_expires_after_seven_days(self):
+    def test_recorded_work_survives_elapsed_time_and_closes_a_complete_issue(self):
         self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
                      discord_fn=discord(author=TRUSTED, content="fix #12"))
         (self.dir / "result.json").write_text(json.dumps({"scope": [{"status": "met", "evidence": "window and reminder tested"}], "done_when": []}))
         code, out = self.run_cli("pr", "submit", "--issue", "12", "--result-file", str(self.dir / "result.json"),
                                  "--summary-file", str(self.dir / "summary.md"), now=POSTED + datetime.timedelta(days=8))
-        self.assertEqual(code, 1, out)
-        self.assertEqual(self.gh_fake.created_bodies, [])
-        code, out = self.submit()
         self.assertEqual(code, 0, out)
         self.assertIn("Fixes #12", self.gh_fake.created_bodies[0])
         self.assertIn('"complete": true', self.gh_fake.created_bodies[0])
 
-    def test_work_recording_rechecks_identity_intent_location_and_one_use(self):
+    def test_work_recording_rechecks_identity_location_and_is_idempotent(self):
         for fn, channel in ((discord(author=STRANGER, content="fix #12"), "1"),
-                            (discord(content="maybe fix #12"), "1"), (discord(content="fix #13"), "1"),
                             (discord(content="<@300> fix #12"), "1"),
-                            (discord(content="fix #12", sent=POSTED - datetime.timedelta(minutes=16)), "1"),
+                            (discord(content="fix #12", sent=POSTED - datetime.timedelta(hours=73)), "1"),
                             (discord(content="fix #12"), "2")):
             with self.subTest(channel=channel):
                 code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", channel, discord_fn=fn)
@@ -502,7 +541,18 @@ class SubmitTests(PlanCase):
                                      discord_fn=discord(content="fix #12"))[0], 0)
         code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
                                  discord_fn=discord(content="fix #12"))
-        self.assertEqual(code, 1, out)
+        self.assertEqual(code, 0, out)
+
+    def test_changed_or_revoked_work_source_cannot_create_a_pr(self):
+        for reader in (discord(content="cancel this work"), discord(author=STRANGER, content="implement #12")):
+            with self.subTest(reader=reader):
+                self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                             discord_fn=discord(content="implement #12"))
+                self.work_message = reader
+                self.setUp_result(direct=True)
+                code, out = self.submit()
+                self.assertEqual(code, 1, out)
+                self.assertEqual(self.gh_fake.created_bodies, [])
 
     def test_submit_opens_one_pr_checked_against_the_plan(self):
         self.approved_plan()
@@ -558,8 +608,9 @@ class SubmitTests(PlanCase):
         with contextlib.closing(sqlite3.connect(state / "discord-prompts.sqlite")) as db:
             self.assertEqual(db.execute("SELECT status FROM prompts").fetchone()[0], "used")
 
-    def setUp_result(self):
-        result = {"scope": [{"status": "met", "evidence": "t"}] * 2, "done_when": [{"status": "met", "evidence": "t"}]}
+    def setUp_result(self, direct=False):
+        result = {"scope": [{"status": "met", "evidence": "t"}] * 2,
+                  "done_when": [] if direct else [{"status": "met", "evidence": "t"}]}
         (self.dir / "result.json").write_text(json.dumps(result))
 
 

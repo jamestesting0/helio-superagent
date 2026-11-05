@@ -100,8 +100,8 @@ RULES: tuple[Rule, ...] = (
          (f"DELETE FROM decision_digest WHERE handled=1 AND created_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
     Rule("reply-sends.sqlite", "reply_sends", "receipt", "Target and text-hash receipts are kept 180 days.",
          (f"DELETE FROM reply_sends WHERE started_at < :now_ms - {RECEIPT_DAYS * DAY_MS}",)),
-    Rule("work-authorizations.sqlite", "authorizations", "receipt", "Work authorizations are kept 180 days.",
-         ("DELETE FROM authorizations WHERE recorded_at < :receipt_iso",)),
+    Rule("work-authorizations.sqlite", "authorizations", "receipt", "Unfinished work is retained; used authorizations are kept 180 days.",
+         ("DELETE FROM authorizations WHERE used=1 AND recorded_at < :receipt_iso",)),
 )
 
 

@@ -78,18 +78,33 @@ def require_passing(rollup):
  if failing: raise Refused('PR checks failing: '+', '.join(failing))
  if running: raise Refused('PR checks still running: '+', '.join(running)+'; check again when they finish')
  if not passed: raise Refused('PR has no passing check')
-def load(message_id):
+def load(message_id, work_channel=None, work_fingerprint=None):
  """The pending inbound delivery and its live Discord state; shared with helio-plan.py."""
  if not re.fullmatch(r'\d+',message_id): raise Refused('message must be a numeric ID')
  token=os.environ.get('DORI_DISCORD_TOKEN',''); owner=os.environ.get('DORI_DISCORD_OWNER_ID',''); allowed=set(os.environ.get('DORI_DISCORD_ALLOWED','').split(','))
  if not token or not re.fullmatch(r'\d+',owner): raise Refused('missing Discord token or owner ID')
  db=sqlite3.connect(f'file:{STATE / "discord-delivery.sqlite"}?mode=ro',uri=True)
- try: row=db.execute("SELECT payload FROM delivery WHERE stream='inbound' AND id=? AND payload IS NOT NULL",(message_id,)).fetchone()
+ try:
+  row=db.execute("SELECT payload FROM delivery WHERE stream='inbound' AND id=? AND payload IS NOT NULL",(message_id,)).fetchone()
+  accepted=False
+  if work_channel is not None and db.execute("SELECT 1 FROM sqlite_master WHERE name='acceptance'").fetchone():
+   accepted=db.execute("SELECT 1 FROM acceptance WHERE stream='inbound' AND id=?",(message_id,)).fetchone() is not None
  finally: db.close()
- if not row: raise Refused('confirmation is not an unacknowledged inbound delivery')
- payload=json.loads(row[0]); channel_id=str(payload.get('channel_id',''))
+ if not row and not (work_channel is not None and (accepted or work_fingerprint)):
+  raise Refused('confirmation is not an unacknowledged inbound delivery')
+ payload=json.loads(row[0]) if row else None
+ channel_id=str(payload.get('channel_id','')) if payload is not None else str(work_channel)
  if not re.fullmatch(r'\d+',channel_id): raise Refused('invalid channel')
  live=api(f'/channels/{channel_id}/messages/{message_id}',token)
+ if payload is None:
+  if not work_fingerprint and live.get('edited_timestamp'):
+   raise Refused('accepted request was edited and its original fingerprint is unavailable; inspect the current request')
+  payload={'message_id':message_id,'channel_id':channel_id,'author_id':str((live.get('author') or {}).get('id','')),
+           'content':live.get('content','')}
+ if work_fingerprint:
+  payload={**payload,'discord_origin':{'content_sha256':work_fingerprint}}
+ if accepted or work_fingerprint:
+  live={**live,'_helio_accepted_work':True}
  bot_id=str(api('/users/@me',token).get('id',''))
  permitted,dm=location(channel_id,token,allowed)
  return dict(payload=payload,live=live,owner=owner,trusted=ids(BASE/'trusted-users'),channel_ok=permitted,is_dm=dm,bot_id=bot_id)

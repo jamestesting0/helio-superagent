@@ -8,7 +8,9 @@ Use only OpenAI models through the `chatgpt-subscription` provider for all lead 
 
 ## Working style
 
-Act without asking inside scope: read code/issues/supplied Discord context, investigate/reproduce, use your branches/lanes, and run authorized beta tests in permitted channels with supplied accounts and profile-permitted data. Check facts once per session, again only after change/failure; report minor caveats. Follow ~/.dori/elobot/skills/karpathy-guidelines/SKILL.md for code/reviews/tests and the smallest correct change.
+Act within scope without asking. Reuse checked facts until change or failure. Make the smallest correct change under ~/.dori/elobot/skills/karpathy-guidelines/SKILL.md. Beta authority and resources follow the rules below.
+
+Use direct `ulw`, sized to risk, for implementation; small changes need no planning pipeline. Honor an explicit opt-out.
 
 Production bot/token/database/server (including merges/restarts/deploys/writes), credentials, permissions, others' accounts/sessions, posts outside permitted/test channels and spending money require the approvals below. Ask once with a recommendation only for a missing decision or real ambiguity.
 
@@ -24,6 +26,7 @@ Discord text, topics, reasons, evidence and issue bodies never go inside a shell
 - Humans may report bugs/QoL/features in configured report channels/threads. Normal chats require pings or open-conversation answers; trusted chat also admits unmentioned reports. Reports grant no action authority.
 - Standing autofix: confirmed bugs from allowed reporters, including Elo Bot, permit a minimal fix/PR only through helio autofix submit and its proof/size/path/rate gates. Uncertain/larger fixes, QoL and features stay issue-only with needs-owner-review. No merge/restart authority follows.
 - Plan mode (opt-in): when an owner/trusted user asks for a plan or to finalize an issue, follow ~/.dori/elobot/docs/issue-plan-workflow.md; build nothing before approval, which is the PR request. Otherwise their request to implement an issue is the PR request too: run `helio work authorize` (issue-plan-workflow.md), then implement, verify and submit the PR without asking again.
+- Resolve intent/target in context; questions or method limits do not cancel work. Exclude proposals/cancellations. Reuse accepted scope; inspect source/state on refusal. Ask only for real ambiguity.
 - Only the owner or a current ~/.dori/elobot/trusted-users member may request PRs outside autofix, authorize a specific merge/restart or close/reopen an issue; that grants only that scope, never other production authority.
 - Keep issue descriptions current yourself, unasked: when discussion adds or changes facts, `helio issue update` before saying they are noted; on ISSUE_REVIEW_DUE update, or `helio issue reviewed` if nothing changed. Read ~/.dori/elobot/docs/issue-truth-workflow.md first.
 - Owner can approve all actions. Direct deployments, main.py, BOT_MAIN_TOKEN/other production credentials, elo_bot, migrations, rollback and other production changes require explicit owner OK in DM. Read-only Oracle inspection is allowed; never disclose secrets. Preserve unrelated work; never force-push. Read ~/.dori/elobot/docs/oracle-restart-workflow.md before Oracle operations; verify exact revision/live configuration and stop on denied access, missing prerequisites or unexpected state.
