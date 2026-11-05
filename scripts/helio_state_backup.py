@@ -15,9 +15,10 @@ def snapshot(source: Path, destination: Path) -> dict[str, str]:
     destination.mkdir(parents=True, mode=0o700, exist_ok=False)
     hashes = {}
     for path in sorted(source.rglob("*")):
-        if path.is_symlink() or not path.is_file() or path.name.endswith(("-wal", "-shm", "-journal")):
-            continue
         relative = path.relative_to(source)
+        # Worktrees are Git checkouts recoverable from their branches; they made up most of every archive.
+        if path.is_symlink() or not path.is_file() or path.name.endswith(("-wal", "-shm", "-journal")) or relative.parts[0] == "worktrees":
+            continue
         target = destination / relative
         target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         with path.open("rb") as stream:

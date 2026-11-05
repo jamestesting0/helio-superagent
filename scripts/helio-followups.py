@@ -158,6 +158,23 @@ def check(db: sqlite3.Connection, include_announced: bool, observation: dict | N
     return 1 if failed else 0
 
 
+def daily_upkeep(housekeeping: dict) -> None:
+    try:
+        result = housekeeping["run"](STATE, Path.home(), time.time(), ["dori"])
+        if housekeeping["notable"](result):
+            print(housekeeping["summary"](result)[:1000], flush=True)
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+        print(f"FOLLOWUP_WARN housekeeping failed: {type(error).__name__}: {error}"[:1000], flush=True)
+    try:
+        stale = json.loads(run(["dori", "stale", "--hours", "24", "--json"]) or "[]")
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"FOLLOWUP_WARN lane review unavailable: {type(error).__name__}"[:1000], flush=True)
+        return
+    for lane in stale:
+        print(f'FOLLOWUP_LANE_REVIEW key={lane["key"]} job={lane["job"]} status={lane["status"]} '
+              f'age_hours={lane["age_hours"]} unpushed={str(lane["has_unpushed"]).lower()} read="dori show {lane["key"]}" audience=owner'[:1000], flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -246,6 +263,7 @@ def main() -> int:
         observer = runpy.run_path(str(Path(__file__).with_name("helio_observations.py")))
         decisions = runpy.run_path(str(Path(__file__).with_name("helio_decision_upkeep.py")))
         issue_sync = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
+        housekeeping = runpy.run_path(str(Path(__file__).with_name("helio_housekeeping.py")))
         while True:
             try:
                 digest = decisions["check"](STATE, REPO)
@@ -262,6 +280,8 @@ def main() -> int:
                 print(f"FOLLOWUP_WARN issue sync pending: {warning}"[:1000], flush=True)
             for line in issue_sync["reminders"](STATE, REPO, int(time.time())):
                 print(line, flush=True)
+            if housekeeping["due"](STATE, time.time()):
+                daily_upkeep(housekeeping)
             first = False
             deadline = time.monotonic() + args.interval
             while True:

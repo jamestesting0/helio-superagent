@@ -1,0 +1,309 @@
+import gzip
+import json
+import os
+import runpy
+import sqlite3
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import unittest
+from contextlib import closing
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from state_fixture import build_state  # noqa: E402
+
+ROOT = Path(__file__).resolve().parent.parent
+HK = runpy.run_path(str(ROOT / "scripts/helio_housekeeping.py"))
+RETENTION = runpy.run_path(str(ROOT / "scripts/helio_retention.py"))
+NOW = 1_800_000_000.0
+DAY = 86_400
+EPOCH_MS = 1420070400000
+
+
+def snowflake(seconds: float) -> str:
+    return str((int(seconds * 1000) - EPOCH_MS) << 22)
+
+
+class Fixture(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name) / "home"
+        self.state = self.home / ".dori/elobot/state"
+        build_state(self.state)
+        self.dori = Path(self.tmp.name) / "dori"
+        self.dori.write_text("#!/bin/sh\necho '[]'\n")
+        self.dori.chmod(0o755)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def db(self, name):
+        return closing(sqlite3.connect(self.state / name))
+
+    def housekeeping(self, approve=False, preview=False):
+        return HK["run"](self.state, self.home, NOW, [str(self.dori)], approve=approve, preview=preview)
+
+    def snapshot(self):
+        files = {}
+        for path in sorted(self.home.rglob("*")):
+            # SQLite creates its -wal/-shm coordination files for any reader, read-only ones included; they hold no data.
+            if path.is_file() and path.name != "housekeeping-last.json" and not path.name.endswith(("-wal", "-shm")):
+                files[str(path.relative_to(self.home))] = (path.stat().st_size, path.read_bytes())
+        return files
+
+
+class RetentionCoverage(Fixture):
+    def test_every_table_the_code_creates_has_a_retention_rule(self):
+        self.assertEqual(RETENTION["uncovered"](self.state), [])
+
+    def test_a_table_without_a_rule_is_reported_and_left_untouched(self):
+        with self.db("discord-delivery.sqlite") as db, db:
+            db.execute("CREATE TABLE mystery (x)")
+            db.execute("INSERT INTO mystery VALUES (1)")
+        result = self.housekeeping(approve=True)
+        self.assertEqual(result["uncovered"], ["discord-delivery.sqlite:mystery"])
+        with self.db("discord-delivery.sqlite") as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM mystery").fetchone()[0], 1)
+
+
+class RetentionRules(Fixture):
+    def seed(self):
+        old, recent = NOW - 200 * DAY, NOW - DAY
+        with self.db("discord-delivery.sqlite") as db, db:
+            for stream, ident, payload in [("context", snowflake(NOW - 40 * DAY), "old context"),
+                                           ("context", snowflake(recent), "new context"),
+                                           ("inbound", snowflake(old), "accepted old work"),
+                                           ("inbound", snowflake(old), None)]:
+                db.execute("INSERT OR REPLACE INTO delivery VALUES (?,?,?)", (stream, ident if payload else snowflake(old - 1), payload))
+            db.execute("INSERT INTO acceptance(stream,id) VALUES ('inbound',?)", (snowflake(old),))
+            db.execute("INSERT INTO handling(stream,id,disposition,reason) VALUES ('inbound',?,'done',NULL)", (snowflake(old - 1),))
+            db.execute("INSERT INTO strikes VALUES ('9','u','c',?)", (int((NOW - 2 * DAY) * 1000),))
+            db.execute("CREATE TABLE context_quarantine (id TEXT PRIMARY KEY, payload TEXT NOT NULL, quarantined_at TEXT NOT NULL)")
+            db.execute("INSERT INTO context_quarantine VALUES ('1','private','2026-01-01 00:00:00')")
+        with self.db("discord-questions.sqlite") as db, db:
+            db.execute("DELETE FROM questions")
+            for ident, status in [("q-done", "done"), ("q-open", "awaiting_answer")]:
+                db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,updated) VALUES (?,?,?,?,?,?,?,?)",
+                           (ident, ident, "l", "owner", "1", "text", status, int((NOW - 60 * DAY) * 1000)))
+        with self.db("discord-prompts.sqlite") as db, db:
+            for ident, status, used in [("p-done", "approved", 1), ("p-unused", "confirmed", None)]:
+                db.execute("INSERT INTO prompts(id,kind,action,target,revision,content,channel_id,status,created_at,expires_at,used_at) "
+                           "VALUES (?,'confirm','merge','t','r','c','1',?,?,?,?)", (ident, status, int((NOW - 60 * DAY) * 1000), 0, used))
+
+    def counts(self):
+        with self.db("discord-delivery.sqlite") as db:
+            pending = {row[0] for row in db.execute("SELECT payload FROM delivery WHERE payload IS NOT NULL")}
+            receipts = db.execute("SELECT count(*) FROM delivery WHERE payload IS NULL").fetchone()[0]
+            strikes = db.execute("SELECT count(*) FROM strikes").fetchone()[0]
+            quarantine = db.execute("SELECT count(*) FROM context_quarantine").fetchone()[0]
+        with self.db("discord-questions.sqlite") as db:
+            questions = {row[0] for row in db.execute("SELECT id FROM questions")}
+        with self.db("discord-prompts.sqlite") as db:
+            prompts = {row[0] for row in db.execute("SELECT id FROM prompts")}
+        return pending, receipts, strikes, quarantine, questions, prompts
+
+    def test_first_run_only_reports_until_the_owner_approves(self):
+        self.seed()
+        before = self.counts()
+        result = self.housekeeping()
+        self.assertEqual(result["mode"], "dry-run")
+        self.assertGreater(sum(result["rows"].values()), 0)
+        self.assertEqual(self.counts(), before)
+        self.assertIn('approve="helio housekeeping --approve-first-run"', HK["summary"](result))
+
+    def test_approved_run_erases_settled_chat_and_keeps_unresolved_work(self):
+        self.seed()
+        self.housekeeping(approve=True)
+        pending, receipts, strikes, quarantine, questions, prompts = self.counts()
+        self.assertEqual(pending, {"new context", "accepted old work"})
+        self.assertEqual((receipts, strikes, quarantine), (1, 0, 0))
+        self.assertEqual(questions, {"q-open"})
+        self.assertEqual(prompts, {"p-unused"})
+
+
+class Preview(Fixture):
+    def seed_everything(self):
+        RetentionRules.seed(self)
+        Sessions.session(self, "old", 40)
+        logs = self.home / ".local/share/helio-chrome"
+        logs.mkdir(parents=True)
+        (logs / "helio-browser.log").write_bytes(b"x" * (HK["LOG_MAX_BYTES"] + 1))
+        (logs / "helio-browser.log.2").write_text("oldest")
+        backups = self.home / ".dori/elobot/backups"
+        backups.mkdir(parents=True)
+        for offset in range(1, 20):
+            (backups / f"daily-{time.strftime('%Y%m%d', time.gmtime(NOW - offset * DAY))}.tar.gz").write_text("x")
+
+    def test_an_unapproved_first_run_changes_nothing_but_its_report(self):
+        self.seed_everything()
+        before = self.snapshot()
+        result = self.housekeeping()
+        self.assertEqual(result["mode"], "dry-run")
+        self.assertTrue(result["logs_to_rotate"] and result["sessions"]["archived"])
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_explicit_preview_changes_nothing_after_approval(self):
+        self.seed_everything()
+        (self.state / "housekeeping-approved").write_text("approved")
+        before = self.snapshot()
+        self.assertEqual(self.housekeeping(preview=True)["mode"], "dry-run")
+        self.assertEqual(self.snapshot(), before)
+
+
+class Sessions(Fixture):
+    def session(self, name, age_days):
+        project = self.home / ".omo/agent/sessions/--proj--"
+        project.mkdir(parents=True, exist_ok=True)
+        path = project / f"2026-01-01T00-00-00-000Z_{name}.jsonl"
+        path.write_text(json.dumps({"type": "session", "id": name}) + "\n")
+        (project / f"{path.stem}-artifacts").mkdir()
+        os.utime(path, (NOW - age_days * DAY, NOW - age_days * DAY))
+        return path
+
+    def test_old_inactive_sessions_are_archived_and_lane_and_lead_sessions_kept(self):
+        old = self.session("old", 40)
+        lane = self.session("lane", 40)
+        lead = self.session("lead", 40)
+        recent = self.session("recent", 2)
+        (self.state / "lanes").mkdir()
+        (self.state / "lanes/worker.json").write_text(json.dumps({"key": "worker", "status": "hibernated", "session": "lane"}))
+        (self.state / "helio-lead-sessions.json").write_text(json.dumps([{"id": "lead", "project": "/p"}]))
+        result = self.housekeeping(approve=True)
+        self.assertEqual(result["sessions"], {"archived": 1, "deleted": 0})
+        self.assertFalse(old.exists())
+        archived = self.home / ".omo/agent/sessions-archive/--proj--" / f"{old.name}.gz"
+        self.assertEqual(json.loads(gzip.decompress(archived.read_bytes()))["id"], "old")
+        self.assertTrue((archived.parent / f"{old.stem}-artifacts").is_dir())
+        self.assertTrue(all(path.exists() for path in (lane, lead, recent)))
+        index = [json.loads(line) for line in (archived.parent.parent / "index.jsonl").read_text().splitlines()]
+        self.assertEqual([entry["session"] for entry in index], ["old"])
+
+    def test_a_session_opened_while_housekeeping_runs_is_never_archived(self):
+        old = self.session("old", 40)
+        scan = HK["sessions"].__globals__["_protected_sessions"]
+
+        def opened_after_scan(state, sessions):
+            keep = scan(state, sessions)
+            holders = old.parent / "session-holders" / "old"
+            holders.mkdir(parents=True, exist_ok=True)
+            (holders / f"{os.getpid()}.json").write_text(json.dumps({"pid": os.getpid()}))
+            return keep
+        HK["sessions"].__globals__["_protected_sessions"] = opened_after_scan
+        try:
+            result = self.housekeeping(approve=True)
+        finally:
+            HK["sessions"].__globals__["_protected_sessions"] = scan
+        self.assertEqual(result["sessions"]["archived"], 0)
+        self.assertTrue(old.exists())
+        self.assertFalse((old.parent / "session-holders/old/move.lock").exists())
+
+    def test_a_session_being_moved_by_omo_is_skipped(self):
+        old = self.session("old", 40)
+        holders = old.parent / "session-holders" / "old"
+        holders.mkdir(parents=True)
+        (holders / "move.lock").write_text(json.dumps({"pid": os.getpid()}))
+        self.assertEqual(self.housekeeping(approve=True)["sessions"]["archived"], 0)
+        self.assertTrue(old.exists())
+
+    def test_the_archive_index_names_the_lane_and_job_of_a_closed_lane(self):
+        self.session("closed", 40)
+        (self.state / "lanes").mkdir()
+        (self.state / "lanes/fix.json").write_text(json.dumps({"key": "fix", "job": "issue-8", "closedAt": "x", "session": "closed"}))
+        self.housekeeping(approve=True)
+        index = [json.loads(line) for line in (self.home / ".omo/agent/sessions-archive/index.jsonl").read_text().splitlines()]
+        self.assertEqual([(entry["session"], entry["lane"], entry["job"]) for entry in index], [("closed", "fix", "issue-8")])
+
+    def test_a_session_a_lane_starts_using_after_the_scan_is_never_archived(self):
+        old = self.session("old", 40)
+        scan = HK["sessions"].__globals__["_protected_sessions"]
+
+        def resumed_after_scan(state, sessions):
+            keep = scan(state, sessions)
+            (state / "lanes").mkdir(exist_ok=True)
+            (state / "lanes/worker.json").write_text(json.dumps({"key": "worker", "status": "working", "session": "old"}))
+            return keep
+        HK["sessions"].__globals__["_protected_sessions"] = resumed_after_scan
+        try:
+            result = self.housekeeping(approve=True)
+        finally:
+            HK["sessions"].__globals__["_protected_sessions"] = scan
+        self.assertEqual(result["sessions"]["archived"], 0)
+        self.assertTrue(old.exists())
+
+    def test_the_archive_index_finds_closed_lanes_in_the_lane_archive(self):
+        self.session("closed", 40)
+        (self.state / "lanes/archive").mkdir(parents=True)
+        (self.state / "lanes/archive/fix.json").write_text(json.dumps({"key": "fix", "job": "issue-8", "closedAt": "x", "session": "closed"}))
+        self.housekeeping(approve=True)
+        index = [json.loads(line) for line in (self.home / ".omo/agent/sessions-archive/index.jsonl").read_text().splitlines()]
+        self.assertEqual([(entry["lane"], entry["job"]) for entry in index], [("fix", "issue-8")])
+
+    def test_lead_registry_drops_archived_sessions_but_keeps_the_newest_five(self):
+        self.session("gone", 40)
+        records = [{"id": "gone", "project": "/p"}] + [{"id": f"new{i}", "project": "/p"} for i in range(5)]
+        (self.state / "helio-lead-sessions.json").write_text(json.dumps(records))
+        self.housekeeping(approve=True)
+        kept = json.loads((self.state / "helio-lead-sessions.json").read_text())
+        self.assertEqual([record["id"] for record in kept], [f"new{i}" for i in range(5)])
+
+
+class Logs(Fixture):
+    def test_an_oversized_helio_log_rotates_keeping_two_generations(self):
+        logs = self.home / ".local/share/helio-chrome"
+        logs.mkdir(parents=True)
+        (logs / "helio-browser.log").write_bytes(b"x" * (HK["LOG_MAX_BYTES"] + 1))
+        (logs / "helio-browser.log.1").write_text("older")
+        (logs / "helio-browser.log.2").write_text("oldest")
+        self.assertEqual(self.housekeeping(approve=True)["logs_rotated"], ["helio-browser.log"])
+        self.assertFalse((logs / "helio-browser.log").exists())
+        self.assertEqual((logs / "helio-browser.log.2").read_text(), "older")
+        self.assertEqual((logs / "helio-browser.log.1").stat().st_size, HK["LOG_MAX_BYTES"] + 1)
+
+
+class Backups(Fixture):
+    def test_daily_backup_restores_state_and_memory_and_omits_worktrees(self):
+        memory = self.home / HK["MEMORY_REPO"]
+        memory.mkdir(parents=True)
+        git = lambda *args: subprocess.run(["git", "-C", str(memory), *args], check=True, capture_output=True, text=True)
+        git("init")
+        git("-c", "user.email=t@e.invalid", "-c", "user.name=t", "commit", "--allow-empty", "-m", "note")
+        head = git("rev-parse", "HEAD").stdout.strip()
+        (self.state / "worktrees/lane").mkdir(parents=True)
+        (self.state / "worktrees/lane/file").write_text("checkout")
+        name = self.housekeeping(approve=True)["backup"]
+        restored = Path(self.tmp.name) / "restored"
+        with tarfile.open(self.home / ".dori/elobot/backups" / name) as tar:
+            tar.extractall(restored, filter="data")
+        with closing(sqlite3.connect(restored / "state/discord-delivery.sqlite")) as db:
+            self.assertEqual(db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertFalse((restored / "state/worktrees").exists())
+        clone = Path(self.tmp.name) / "clone"
+        subprocess.run(["git", "clone", "-q", str(restored / "memory.bundle"), str(clone)], check=True, capture_output=True)
+        self.assertEqual(subprocess.run(["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(), head)
+
+    def test_rotation_keeps_seven_days_and_four_weekly_backups(self):
+        root = self.home / ".dori/elobot/backups"
+        root.mkdir(parents=True)
+        for offset in range(1, 60):
+            day = time.gmtime(NOW - offset * DAY)
+            (root / f"daily-{time.strftime('%Y%m%d', day)}.tar.gz").write_text("x")
+        self.housekeeping(approve=True)
+        kept = sorted(path.name for path in root.glob("daily-*.tar.gz"))
+        sundays = [name for name in kept if time.strptime(name[6:14], "%Y%m%d").tm_wday == 6]
+        self.assertEqual(len(kept), len(set(kept[-7:]) | set(sundays)))
+        self.assertEqual(len(sundays), 4)
+
+
+class Scheduling(Fixture):
+    def test_housekeeping_runs_once_a_day(self):
+        self.assertTrue(HK["due"](self.state, NOW))
+        self.housekeeping()
+        self.assertFalse(HK["due"](self.state, NOW + DAY - 1))
+        self.assertTrue(HK["due"](self.state, NOW + DAY))
+
+
+if __name__ == "__main__":
+    unittest.main()

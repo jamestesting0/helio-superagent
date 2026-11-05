@@ -234,8 +234,9 @@ class MonitorReloadTests(unittest.TestCase):
                 script = self.home / f"helio-{name}.py"
                 script.write_text(source)
                 if name == "followups":
-                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py"):
+                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py"):
                         (self.home / helper).write_text((ROOT / "scripts" / helper).read_text())
+                    self.executable("dori", "#!/bin/sh\necho '[]'\n")
                 argv = [sys.executable, str(script)]
                 if name == "followups":
                     self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
