@@ -84,7 +84,10 @@ def relay(master,proc):
             os.write(stdout,data)
     finally:
         signal.signal(signal.SIGWINCH,old_winch)
-        if saved is not None:termios.tcsetattr(sys.stdin.fileno(),termios.TCSADRAIN,saved)
+        if saved is not None:
+            # A stopped TUI cannot disable its mouse reporting or leave its alternate screen.
+            try:os.write(stdout,b'\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m')
+            finally:termios.tcsetattr(sys.stdin.fileno(),termios.TCSAFLUSH,saved)
 
 def child_tty():
     os.setsid()
