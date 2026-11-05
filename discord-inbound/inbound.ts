@@ -200,7 +200,7 @@ async function channelInfo(channelId: string): Promise<ChannelInfo | undefined> 
   let info: ChannelInfo | undefined;
   try {
     const channel = await client.getChannel(channelId);
-    info = { type: channel.type, parent_id: channel.parent_id ?? undefined };
+    info = { type: channel.type, parent_id: channel.parent_id ?? undefined, guild_id: channel.guild_id ?? undefined };
   }
   catch (error) {
     // An unreadable ancestor (a hidden category) ends the walk, so it can only fail membership checks.

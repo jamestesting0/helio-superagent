@@ -6,16 +6,20 @@ import { Delivery } from "../delivery/delivery.ts";
 
 const NOW = Date.parse("2026-11-02T12:00:00Z");
 
-async function intake() {
+async function intake(autoReview = false) {
   const dir = await mkdtemp(join(tmpdir(), "moderation-flow-"));
   onTestFinished(() => rm(dir, { recursive: true, force: true }));
   const seed = new Delivery(join(dir, "discord-delivery.sqlite"));
-  seed.block("501", { source: "owner", reason: "spam", by: "99" }, new Set(["99"]));
+  seed.block("501", autoReview
+    ? { source: "auto", reason: "five irrelevant pings", by: "auto", strikes: Array.from({ length: 5 }, (_, i) => ({ message_id: String(900 + i), channel_id: "104", at: NOW - (5 - i) * 600000, reason: `Off topic ${i}` })) }
+    : { source: "owner", reason: "spam", by: "99" }, new Set(["99"]));
   seed.close();
   const preload = join(dir, "gateway.ts");
   await Bun.write(preload, `
 import ${JSON.stringify(join(import.meta.dir, "../fixtures/discord.ts"))};
-import { Listener } from ${JSON.stringify(join(import.meta.dir, "../fixtures/discord-client.ts"))};
+import { Listener, Client } from ${JSON.stringify(join(import.meta.dir, "../fixtures/discord-client.ts"))};
+const getChannel = Client.prototype.getChannel;
+Client.prototype.getChannel = async function (id) { return { ...await getChannel.call(this, id), guild_id: "300" }; };
 Listener.prototype.start = async function () {
   this.emit("connected", { user: { id: "88", username: "Helio" }, sessionId: "test" });
   const blocked = { id: "911", channel_id: "104", guild_id: "300", timestamp: new Date(${NOW} - 60000).toISOString(),
@@ -49,6 +53,14 @@ Listener.prototype.start = async function () {
     return { stdout, blocked: delivery.contains("inbound", "911"), staged };
   } finally { delivery.close(); }
 }
+
+test("restart reviews preserve the channel guild and emit all five strike links and reasons", async () => {
+  const result = await intake(true);
+  const review = result.stdout.split("\n").find((line) => line.startsWith("INBOUND_BLACKLIST_REVIEW "));
+  expect(review).toBeDefined();
+  expect(JSON.parse(review!.slice("INBOUND_BLACKLIST_REVIEW ".length)).strikes).toEqual(
+    Array.from({ length: 5 }, (_, i) => ({ link: "https://discord.com/channels/300/104/" + (900 + i), reason: "Off topic " + i })));
+});
 
 test("a blacklisted sender's message is dropped before its content is read or staged", async () => {
   const result = await intake();
