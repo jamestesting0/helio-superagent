@@ -60,3 +60,5 @@ Tests: `scripts/test/helio-host.test.ts`.
 | `scripts/src/registry.ts` | Closed lanes move to `lanes/archive/`; hot loops read active records only. |
 | `scripts/src/reap.ts` | `stale` and `reap-worktrees`: worktrees go 3 days after the lane's PR settles, never with unpushed work or without a lane record. Replaces "never delete worktrees automatically" (owner decision). |
 | `scripts/test/lifecycle.test.ts` | Cover the cap and queue, fail-closed admission, job identity, session wake, hibernation guards, cleanup-pending, the archive, stale review and the reaper. |
+
+- `dori abandon <key> --reason TEXT [--with-unpushed]` (`done-flow.ts`, `cli.ts`): the owner's way to retire a lane whose Done line can never pass. It shares the failed-launch retirement checks (no live agent in the pane; tab closed; worktree kept), refuses unpushed work unless `--with-unpushed`, records the receipt as abandoned with the reason, and never runs the thread-done hook. Covered by `scripts/test/lifecycle.test.ts`.

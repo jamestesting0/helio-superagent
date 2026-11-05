@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { FlowDeps } from "./done-flow.ts";
 import { sampleHost } from "./host-guard.ts";
+import { listPanes } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { canLaunch } from "./routing.ts";
 
@@ -51,15 +52,23 @@ export const dequeue = async (deps: FlowDeps, key: string): Promise<void> => {
   await writeQueue(deps, (await readQueue(deps)).filter((queued) => queued.key !== key));
 };
 
-export const occupiesSlot = (lane: Lane): boolean => {
+/** A lane holds a worker slot while it has (or is about to get) a running agent; a failed lane only while its pane survives. */
+export const occupiesSlot = (lane: Lane, livePanes: ReadonlySet<string>): boolean => {
   const status = statusOf(lane);
-  return status !== "closed" && status !== "hibernated" && lane.launchState !== "failed" &&
-    (lane.pane !== undefined || lane.launchState === "reserved");
+  if (status === "closed" || status === "hibernated") return false;
+  if (lane.launchState === "failed") return lane.pane !== undefined && livePanes.has(lane.pane);
+  return lane.pane !== undefined || lane.launchState === "reserved";
 };
+
+export const livePaneIds = async (deps: FlowDeps): Promise<Set<string>> => new Set((await listPanes(deps.run)).map((pane) => pane.pane_id));
 
 /** Why a new worker may not start now; empty when it may. Fails closed when the host cannot be sampled. */
 export const capacityReasons = async (deps: FlowDeps): Promise<string[]> => {
-  const running = (await deps.registry.list()).filter(occupiesSlot).length;
+  let live: Set<string>;
+  try { live = await livePaneIds(deps); } catch (error) {
+    return [`pane list unavailable: ${error instanceof Error ? error.message : String(error)}`];
+  }
+  const running = (await deps.registry.list()).filter((lane) => occupiesSlot(lane, live)).length;
   const reasons = running >= deps.config.maxWorkers ? [`workers ${running} >= ${deps.config.maxWorkers}`] : [];
   try {
     reasons.push(...canLaunch(await (deps.sample ?? (() => sampleHost(deps.run)))(), deps.config.guard).reasons);

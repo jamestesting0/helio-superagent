@@ -39,7 +39,7 @@ export const resolveSession = async (pane: string, cwd: string, table: readonly 
   const agent = shellPid ? descendants(table, shellPid).find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd)) : undefined;
   if (!agent) return { id: "", via: "none" };
   const argv = agent.cmd.split(/\s+/);
-  const flagAt = argv.indexOf("--session");
+  const flagAt = argv.indexOf("--session") >= 0 ? argv.indexOf("--session") : argv.indexOf("--session-id");
   const fromFlag = flagAt >= 0 ? (argv[flagAt + 1] ?? "") : "";
   if (fromFlag) return { id: fromFlag, via: "argv", pid: agent.pid };
   for (const child of descendants(table, agent.pid).slice(0, 40)) {

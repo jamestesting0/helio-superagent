@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { capacityReasons, dequeue, enqueue, readQueue, type Priority } from "./admission.ts";
+import { capacityReasons, dequeue, enqueue, livePaneIds, readQueue, type Priority } from "./admission.ts";
 import { fill } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, statusLookup } from "./panes.ts";
@@ -128,17 +129,29 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   const cwd = isolated ? join(deps.config.stateDir, "worktrees", input.key) : sourceCwd;
   const generated = join(deps.config.stateDir, "briefs", `${input.key}.md`);
   const at = iso(deps.clock);
-  const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model, ...(input.job ? { job: input.job } : {}), ...(isolated ? { worktrees: [cwd] } : {}) };
+  const prompt = `${deps.config.launchKeywords}. Before work, start a persistent monitor for helio question watch --lane ${input.key} with filter ^QUESTION; do not use terminal question tools. Read and execute the lane brief at ${generated} in full. You are the ${input.key} lane; report as the brief's footer says.`;
+  const argv = fill(deps.config.agentCommand, { model, prompt });
+  // Like the lead, an omo worker is started with a session id chosen and recorded first, so it can always be resumed.
+  const omo = omoIndex(argv);
+  const session = omo >= 0 ? randomUUID() : undefined;
+  if (session) argv.splice(omo + 1, 0, "--session-id", session);
+  const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model, ...(input.job ? { job: input.job } : {}), ...(isolated ? { worktrees: [cwd] } : {}), ...(session ? { session, sessionVia: "assigned" } : {}) };
   // Job identity is decided under the same lock as the reservation, so two launches cannot both find the job free.
   const admitted = await withLaunchLock(deps, async () => {
     const sameJob = (await deps.registry.listAll()).filter((lane) => jobOf(lane) === job);
     const busy = sameJob.find((lane) => !["closed", "hibernated"].includes(statusOf(lane)) && lane.launchState !== "failed");
     if (busy) throw new LaunchError(`LANE_EXISTS key=${busy.key} status=${statusOf(busy)}: send the new work to that lane`);
+    const failed = sameJob.find((lane) => lane.launchState === "failed" && statusOf(lane) !== "closed");
+    if (failed?.pane && (await livePaneIds(deps)).has(failed.pane)) {
+      throw new LaunchError(`LANE_EXISTS key=${failed.key} status=failed: its pane ${failed.pane} is still open; retire it first (dori close ${failed.key})`);
+    }
+    // One record per job: a retry relaunches the failed attempt's record and keeps its history.
+    if (failed && failed.key !== input.key) return { kind: "retry" as const, retryAs: failed.key };
     const queuedJob = (await readQueue(deps)).find((entry) => entry.key !== input.key && (entry.job ?? entry.key) === job);
     if (queuedJob) throw new LaunchError(`LANE_EXISTS key=${queuedJob.key} status=queued: send the new work to that lane`);
     const resumable = sameJob.filter((lane) => lane.session && ["closed", "hibernated"].includes(statusOf(lane)))
       .sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0];
-    if (resumable) return { wake: resumable };
+    if (resumable) return { kind: "wake" as const, wake: resumable };
     const existing = await deps.registry.read(input.key);
     if (existing && existing.launchState !== "failed") {
       throw new LaunchError(`lane ${input.key} is already registered (${statusOf(existing)}) without a session to resume; launch with a new key and --job ${job}`);
@@ -146,16 +159,20 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
       const position = await enqueue(deps, { key: input.key, ...(input.job ? { job: input.job } : {}), title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at });
-      return { queued: true as const, position, reasons };
+      return { kind: "queued" as const, queued: true as const, position, reasons };
     }
     const draft: Lane = existing
       ? withStatus(existing, "working", "relaunched after a failed attempt", at, { ...fields, openedAt: at, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined })
       : { key: input.key, ...fields, openedAt: at, launchState: "reserved" };
     await deps.registry.write(draft);
     await dequeue(deps, input.key);
-    return { queued: false as const, draft };
+    return { kind: "reserved" as const, queued: false as const, draft };
   });
-  if (admitted.wake) return wakeLane(deps, admitted.wake, { briefText, priority: input.priority, note: `reopened for job ${job}` });
+  if (admitted.kind === "retry") return launchLane(deps, { ...input, key: admitted.retryAs }, briefText);
+  if (admitted.kind === "wake") {
+    const attempt = { title: input.title, done: input.done, ...(input.thread ? { thread: input.thread } : {}), ...(input.model ? { model: input.model } : {}) };
+    return wakeLane(deps, admitted.wake, { briefText, priority: input.priority, note: `reopened for job ${job}`, attempt });
+  }
   if (admitted.queued) return { startup: queuedLine(input.key, admitted.position, admitted.reasons) };
   let lane = admitted.draft;
   try {
@@ -183,8 +200,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     }
     const opened = await openTab(deps, cwd, input.key);
     lane = { ...lane, ...opened, launchState: "pane-created" }; await deps.registry.write(lane);
-    const prompt = `${deps.config.launchKeywords}. Before work, start a persistent monitor for helio question watch --lane ${input.key} with filter ^QUESTION; do not use terminal question tools. Read and execute the lane brief at ${generated} in full. You are the ${input.key} lane; report as the brief's footer says.`;
-    const launched = await deps.run(["herdr", "pane", "run", opened.pane, fill(deps.config.agentCommand, { model, prompt }).map(quoteForPane).join(" ")]);
+    const launched = await deps.run(["herdr", "pane", "run", opened.pane, argv.map(quoteForPane).join(" ")]);
     if (launched.code !== 0) throw new LaunchError(`herdr pane run failed: ${launched.err || launched.out}`);
     lane = { ...lane, launchState: "started" }; await deps.registry.write(lane);
   } catch (error) {
@@ -220,7 +236,7 @@ const confirmStartup = async (deps: FlowDeps, started: Lane, okLine: (lane: Lane
 
 export const sessionFile = (deps: FlowDeps, lane: Lane): string | undefined => {
   if (!lane.session) return undefined;
-  if (lane.session.includes("/")) return existsSync(lane.session) ? lane.session : undefined;
+  if (lane.session.includes("/")) return existsSync(lane.session) ? lane.session : restoreArchived(deps, lane.session);
   const dir = sessionDirFor(deps.config.sessionsDir, lane.cwd ?? deps.config.defaultCwd);
   let names: string[];
   try { names = readdirSync(dir); } catch { return undefined; }
@@ -228,13 +244,13 @@ export const sessionFile = (deps: FlowDeps, lane: Lane): string | undefined => {
   return name ? join(dir, name) : restoreArchived(deps, lane.session);
 };
 
-/** Housekeeping archives idle sessions to sessions-archive; resuming one puts it back where Omo expects it. */
+/** Housekeeping archives idle sessions to sessions-archive; resuming one puts it back where Omo expects it. `session` is an id or the recorded original path. */
 const restoreArchived = (deps: FlowDeps, session: string): string | undefined => {
   const archive = join(dirname(deps.config.sessionsDir), "sessions-archive");
   let index: string;
   try { index = readFileSync(join(archive, "index.jsonl"), "utf8"); } catch { return undefined; }
   const entry = index.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { session?: string; path?: string; original?: string })
-    .reverse().find((row) => row.session === session && row.path && row.original && existsSync(row.path));
+    .reverse().find((row) => (row.session === session || row.original === session) && row.path && row.original && existsSync(row.path));
   if (!entry?.path || !entry.original) return undefined;
   if (existsSync(entry.original)) return entry.original;
   mkdirSync(dirname(entry.original), { recursive: true });
@@ -252,7 +268,10 @@ const restoreArchived = (deps: FlowDeps, session: string): string | undefined =>
 };
 
 /** Resumes a hibernated or closed lane's recorded session in a new tab; it counts against the worker cap like a launch. */
-export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly briefText?: string; readonly priority?: Priority; readonly note: string }): Promise<LaunchResult> => {
+/** What a new launch for a resumed job changes: its own completion criterion and metadata, never the session or worktree. */
+export type Attempt = { readonly title: string; readonly done: string; readonly thread?: string; readonly model?: string };
+
+export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly briefText?: string; readonly priority?: Priority; readonly note: string; readonly attempt?: Attempt }): Promise<LaunchResult> => {
   const file = sessionFile(deps, lane);
   if (!file) throw new LaunchError(`lane ${lane.key} has no resumable session file (${lane.session ?? "none recorded"}); launch with a new key and --job ${jobOf(lane)}`);
   const at = iso(deps.clock);
@@ -264,10 +283,14 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
     }
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
-      const position = await enqueue(deps, { key: lane.key, ...(lane.job ? { job: lane.job } : {}), title: lane.title, done: lane.done, thread: lane.thread, briefText: options.briefText ?? "", priority: options.priority ?? "normal", queuedAt: at, wake: true });
+      const next = options.attempt;
+      const position = await enqueue(deps, { key: lane.key, ...(lane.job ? { job: lane.job } : {}), title: next?.title ?? current.title, done: next?.done ?? current.done, thread: next?.thread ?? current.thread, ...((next?.model ?? current.model) ? { model: next?.model ?? current.model } : {}), briefText: options.briefText ?? "", priority: options.priority ?? "normal", queuedAt: at, wake: true });
       return { queued: true as const, position, reasons };
     }
-    const reserved = withStatus(current, "working", options.note, at, { closedAt: undefined, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined, idleSince: undefined, lastReplyAt: deps.clock.now() });
+    const next = options.attempt;
+    const changedDone = next && next.done !== current.done ? `; previous Done: ${current.done}` : "";
+    const adopted = next ? { title: next.title, done: next.done, thread: next.thread ?? current.thread, ...((next.model ?? current.model) ? { model: next.model ?? current.model } : {}) } : {};
+    const reserved = withStatus(current, "working", options.note + changedDone, at, { ...adopted, closedAt: undefined, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined, idleSince: undefined, lastReplyAt: deps.clock.now() });
     await deps.registry.write(reserved);
     await dequeue(deps, lane.key);
     return { queued: false as const, reserved };
@@ -284,8 +307,7 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
       ? `You are the ${woke.key} lane again. Read and execute the new brief at ${woke.brief} in full; report as its footer says.`
       : `You are the ${woke.key} lane, resumed after a pause for inactivity. Continue where you left off; report as your brief's footer says.`;
     const argv = fill(deps.config.agentCommand, { model: woke.model ?? deps.config.defaultModel, prompt });
-    // The installed command wraps omo in a shell; the resume flag belongs to omo, wherever it sits in the command.
-    const omo = argv.findIndex((part) => part === "omo" || part.endsWith("/omo"));
+    const omo = omoIndex(argv);
     if (omo < 0) throw new LaunchError("the agent command has no omo invocation to resume");
     argv.splice(omo + 1, 0, "--session", file);
     const launched = await deps.run(["herdr", "pane", "run", opened.pane, argv.map(quoteForPane).join(" ")]);
@@ -298,6 +320,9 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
   }
   return confirmStartup(deps, woke, (ready) => `LANE_WOKEN ${ready.key} pane=${ready.pane}`);
 };
+
+/** The installed command wraps omo in a shell; session flags belong to omo, wherever it sits in the command. */
+const omoIndex = (argv: readonly string[]): number => argv.findIndex((part) => part === "omo" || part.endsWith("/omo"));
 
 const lastLines = (screen: string): string =>
   screen.split("\n").map((s) => s.trim()).filter(Boolean).slice(-3).join(" / ").replace(/\/(Users|home|Volumes|private)\/\S+/g, "(local path)").slice(0, 240) || "(blank)";

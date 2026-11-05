@@ -4,7 +4,7 @@ import { type DoriConfig, fill } from "./config.ts";
 import type { HostSample } from "./host-guard.ts";
 import { type Lane, type Registry, statusOf, withStatus } from "./registry.ts";
 import { type Clock, iso, type Runner } from "./run.ts";
-import { sendVerified, statusLookup } from "./panes.ts";
+import { ALIVE_STATUSES, listPanes, sendVerified, statusLookup } from "./panes.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
 import { monitorLine } from "./monitor.ts";
 
@@ -78,22 +78,45 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
  * them, but only once no agent can still be running in its pane: the failure is detected from screen text, and an agent
  * that printed such text and recovered must not be closed. The worktree is kept and the work thread is not told "done".
  */
-const retireFailedLaunch = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+const retireFailedLaunch = (deps: FlowDeps, lane: Lane, note: string) =>
+  retire(deps, lane, note, { retired: `launch failed (${lane.launchError ?? "no detail"}); no Done signals checked` }, "CLOSED");
+
+/**
+ * The owner's way to drop a lane that will never finish (its Done signals can never pass). Like a failed launch it is
+ * retired only with no live agent in its pane; unpushed work is refused unless the owner accepts leaving it in the kept
+ * worktree. It is recorded as abandoned, never done, and its work thread is not told it finished.
+ */
+export const abandonLane = async (deps: FlowDeps, lane: Lane, reason: string, withUnpushed: boolean): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+  if (!reason.trim()) throw new Error("abandon needs a reason");
+  const unsafe = await unpushedWork(deps, lane);
+  if (unsafe.length && !withUnpushed) {
+    return { closed: false, lines: [`REFUSED ${lane.key}: ${unsafe.join("; ")}; add --with-unpushed only if the owner accepts leaving it in the kept worktree`] };
+  }
+  return retire(deps, lane, `abandoned: ${reason.trim()}`,
+    { abandoned: `abandoned by the owner: ${reason.trim()}`, ...(unsafe.length ? { unpushed: unsafe } : {}) }, "ABANDONED");
+};
+
+const retire = async (deps: FlowDeps, lane: Lane, note: string, why: Record<string, unknown>, verb: "CLOSED" | "ABANDONED"): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   const cleanup: string[] = [];
   if (lane.pane) {
     const { status, error } = await statusLookup(deps.run, lane.pane);
     if (error) return { closed: false, lines: [`REFUSED ${lane.key}: cannot confirm pane ${lane.pane} is no longer running an agent: ${error.slice(0, 160)}`] };
-    if (status === "working" || status === "idle") {
-      return { closed: false, lines: [`REFUSED ${lane.key}: an agent is still ${status} in pane ${lane.pane}; check its screen, and if the launch really failed close the tab first (herdr tab close ${lane.tab ?? "<tab>"})`] };
+    if (status !== undefined && ALIVE_STATUSES.has(status)) {
+      return { closed: false, lines: [`REFUSED ${lane.key}: an agent is still ${status} in pane ${lane.pane}; check its screen, and if the agent should stop close the tab first (herdr tab close ${lane.tab ?? "<tab>"})`] };
     }
-    if (status !== undefined && lane.tab) cleanup.push((await deps.run(["herdr", "tab", "close", lane.tab])).code === 0 ? `tab ${lane.tab} closed` : `tab ${lane.tab} not closed`);
+    if (lane.tab && (await listPanes(deps.run)).some((pane) => pane.pane_id === lane.pane)) {
+      if ((await deps.run(["herdr", "tab", "close", lane.tab])).code !== 0) {
+        return { closed: false, lines: [`REFUSED ${lane.key}: tab ${lane.tab} did not close; retry the ${verb === "ABANDONED" ? "abandon" : "close"}`] };
+      }
+      cleanup.push(`tab ${lane.tab} closed`);
+    }
   }
   const exists = deps.exists ?? existsSync;
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) cleanup.push(`worktree ${wt} retained for manual review`);
   const at = iso(deps.clock);
-  const receipt = { checks: [], note, cleanup, retired: `launch failed (${lane.launchError ?? "no detail"}); no Done signals checked` };
+  const receipt = { checks: [], note, cleanup, ...why };
   await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
-  return { closed: true, lines: [`CLOSED ${lane.key} ${JSON.stringify(receipt)}`] };
+  return { closed: true, lines: [`${verb} ${lane.key} ${JSON.stringify(receipt)}`] };
 };
 
 export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {

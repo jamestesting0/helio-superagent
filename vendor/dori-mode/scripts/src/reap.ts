@@ -25,10 +25,10 @@ export const staleLanes = async (deps: FlowDeps, hours: number): Promise<StaleLa
   return out;
 };
 
-export type ReapRow = { readonly key: string; readonly path: string; readonly action: "removed" | "kept" | "would_remove"; readonly reason: string };
+export type ReapRow = { readonly key: string; readonly path: string; readonly action: "removed" | "kept" | "would_remove"; readonly reason: string; readonly evidence?: string };
 
 /** When the lane's PR (its `merged owner/repo#N` Done signal) was merged or closed; anything unknown keeps the worktree. */
-const prSettledAt = async (deps: FlowDeps, lane: Lane): Promise<{ readonly at?: number; readonly reason: string }> => {
+const prSettledAt = async (deps: FlowDeps, lane: Lane): Promise<{ readonly at?: number; readonly reason: string; readonly evidence?: string }> => {
   const signal = /\bmerged\s+([\w.-]+\/[\w.-]+)#(\d+)/.exec(lane.done);
   if (!signal?.[1] || !signal[2]) return { reason: "PR state unknown: the Done line names no merged PR" };
   const view = await deps.run(["gh", "pr", "view", signal[2], "--repo", signal[1], "--json", "state,mergedAt,closedAt"]);
@@ -36,7 +36,9 @@ const prSettledAt = async (deps: FlowDeps, lane: Lane): Promise<{ readonly at?: 
   const pr = JSON.parse(view.out) as { state?: string; mergedAt?: string | null; closedAt?: string | null };
   if (pr.state !== "MERGED" && pr.state !== "CLOSED") return { reason: `PR ${signal[1]}#${signal[2]} is ${pr.state ?? "unknown"}` };
   const at = Date.parse(pr.mergedAt ?? pr.closedAt ?? "");
-  return Number.isFinite(at) ? { at, reason: `PR ${signal[1]}#${signal[2]} ${pr.state.toLowerCase()}` } : { reason: "PR settle time unknown" };
+  return Number.isFinite(at)
+    ? { at, reason: `PR ${signal[1]}#${signal[2]} ${pr.state.toLowerCase()}`, evidence: `https://github.com/${signal[1]}/pull/${signal[2]}` }
+    : { reason: "PR settle time unknown" };
 };
 
 export const reapWorktrees = async (deps: FlowDeps, apply: boolean): Promise<ReapRow[]> => {
@@ -64,8 +66,8 @@ export const reapWorktrees = async (deps: FlowDeps, apply: boolean): Promise<Rea
     const removed = await deps.run(["git", "-C", main, "worktree", "remove", path]);
     if (removed.code !== 0) { keep(`git worktree remove failed: ${(removed.err || removed.out).slice(0, 160)}`); continue; }
     await deps.run(["git", "-C", main, "worktree", "prune"]);
-    await deps.registry.write({ ...lane, worktreeRemoved: { at: iso(deps.clock), path, branch: `helio/${key}`, head } });
-    rows.push({ key, path, action: "removed", reason });
+    await deps.registry.write({ ...lane, worktreeRemoved: { at: iso(deps.clock), path, branch: `helio/${key}`, head, evidence: pr.evidence } });
+    rows.push({ key, path, action: "removed", reason, ...(pr.evidence ? { evidence: pr.evidence } : {}) });
   }
   return rows;
 };

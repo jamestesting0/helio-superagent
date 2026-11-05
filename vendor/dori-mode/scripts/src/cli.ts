@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 
 import { loadConfig } from "./config.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
-import { acknowledgeClaim, claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
+import { abandonLane, acknowledgeClaim, claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
 import { every, monitorLine } from "./monitor.ts";
 import { freshnessTick } from "./freshness.ts";
 import { acquireSlot, pidAlive, releaseSlot } from "./heavy-slot.ts";
@@ -37,6 +37,7 @@ const USAGE = `dori <command> [options]
   show <key>                          full lane evidence, claim, history and receipt (read-only)
   claim-ack <key>                     acknowledge receipt and start the 5-minute close window
   object-done <key> --reason TEXT [--reason TEXT ...]
+  abandon <key> --reason TEXT [--with-unpushed]   owner only: retire a lane that will never finish (kept worktree, never "done")
   close  <key> [--note TEXT]           close now (Done signals must read back live)
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
   resume <key> [--note TEXT] [--brief FILE]   undo pause; or wake a hibernated or closed lane in its recorded session
@@ -71,7 +72,7 @@ const flags = parseArgs({
   options: {
     title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
-    reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, loop: { type: "string" },
+    reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, "with-unpushed": { type: "boolean" }, loop: { type: "string" },
     job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" },
     to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" },
   },
@@ -131,6 +132,12 @@ try {
       if (!reasons.length) die("--reason is required");
       console.log(await objectDone(deps, await lane(key ?? die("object-done needs a lane key")), reasons));
       break;
+    }
+    case "abandon": {
+      const reason = ((flags.values.reason as string[] | undefined) ?? []).join("; ");
+      const r = await abandonLane(deps, await lane(key ?? die("abandon needs a lane key")), reason || die("--reason is required"), Boolean(flags.values["with-unpushed"]));
+      for (const line of r.lines) console.log(line);
+      process.exit(r.closed ? 0 : 2);
     }
     case "close": {
       const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead");

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 
 import { readQueue } from "../src/admission.ts";
-import { closeLane } from "../src/done-flow.ts";
+import { abandonLane, closeLane } from "../src/done-flow.ts";
 import { launchLane } from "../src/launch.ts";
 import { lifecycleTick } from "../src/lifecycle.ts";
 import { reapWorktrees, staleLanes } from "../src/reap.ts";
@@ -187,7 +187,7 @@ test("worktrees are removed only for closed lanes whose PR settled 3+ days ago w
   const applied = await reapWorktrees(s.deps, true);
   expect(applied.filter((row) => row.action === "removed").map((row) => row.key)).toEqual(["old"]);
   expect(removed).toEqual([join(root, "old")]);
-  expect((await s.deps.registry.read("old"))?.worktreeRemoved).toMatchObject({ branch: "helio/old", head: "abc123" });
+  expect((await s.deps.registry.read("old"))?.worktreeRemoved).toMatchObject({ branch: "helio/old", head: "abc123", evidence: "https://github.com/acme/app/pull/11" });
 });
 
 const hibernated = (s: ReturnType<typeof setup>, key: string, session: string) => {
@@ -217,12 +217,23 @@ test("the installed worker command resumes with --session at the omo invocation,
   expect((await launch(quiet, "issue-7-again", { job: "issue-7" })).startup).toStartWith("STARTUP_UNCONFIRMED issue-7");
 });
 
-test("the one-lane-per-job check is made under the launch lock, so a concurrent launch cannot add a second lane", async () => {
+test("an omo worker gets its session id before it starts, so a ready launch always has a resumable session", async () => {
+  const template = JSON.parse(readFileSync(join(import.meta.dir, "../../../../agent/config.template.json"), "utf8").replace(/\{\{[A-Z_]+\}\}/g, "1"));
+  const s = setup({ agentCommand: template.agentCommand });
+  expect((await launch(s, "issue-10")).startup).toBe("STARTUP_OK issue-10 w:p1");
+  const stored = (await s.deps.registry.read("issue-10"))!;
+  expect([stored.session ?? "", stored.sessionVia]).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/), "assigned"]);
+  expect(paneCommand(s)).toContain(`omo --session-id ${stored.session} --no-ask-user`);
+});
+
+test("simultaneous launches for one job create at most one live lane", async () => {
   const s = setup();
-  await launch(s, "issue-8-facts", { job: "issue-8" });
-  const real = s.deps.registry.listAll.bind(s.deps.registry);
-  s.deps.registry.listAll = async () => existsSync(join(s.deps.registry.dir, ".launch.lock")) ? real() : [];
-  await expect(launch(s, "issue-8-retry", { job: "issue-8" })).rejects.toThrow("LANE_EXISTS key=issue-8-facts");
+  const results = await Promise.allSettled([
+    launch(s, "issue-8-facts", { job: "issue-8" }), launch(s, "issue-8-retry", { job: "issue-8" }),
+  ]);
+  expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+  expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+  expect((await s.deps.registry.listAll()).filter((row) => row.job === "issue-8")).toHaveLength(1);
   expect(s.terminal.tabs).toBe(1);
 });
 
@@ -243,10 +254,11 @@ test("queued work survives a launch lock held by another process and starts once
   expect(await readQueue(s.deps)).toEqual([]);
 });
 
-test("a lane whose session housekeeping archived is restored from the archive and resumed", async () => {
+test.each(["session id", "recorded path"])("a lane whose session housekeeping archived is restored from the archive and resumed (%s)", async (form) => {
   const s = setup();
-  const h = hibernated(s, "issue-6", "sid-6");
-  const original = join(h.dir, "2026-11-05T10-00-00-000Z_sid-6.jsonl");
+  const dir = hibernated(s, "issue-6", "sid-6").dir;
+  const original = join(dir, "2026-11-05T10-00-00-000Z_sid-6.jsonl");
+  const h = hibernated(s, "issue-6", form === "session id" ? "sid-6" : original);
   const archive = join(dirname(s.deps.config.sessionsDir), "sessions-archive");
   const packed = join(archive, "project", "2026-11-05T10-00-00-000Z_sid-6.jsonl.gz");
   mkdirSync(join(archive, "project"), { recursive: true });
@@ -257,4 +269,79 @@ test("a lane whose session housekeeping archived is restored from the archive an
   expect(readFileSync(original, "utf8")).toBe('{"type":"session","id":"sid-6"}\n');
   expect(existsSync(packed)).toBe(false);
   expect(paneCommand(s)).toContain(`--session ${original}`);
+});
+
+test("an owner can abandon a lane that will never finish: never with a live agent, never silently with unpushed work", async () => {
+  const s = setup({ hooks: { threadDone: ["notify", "{thread}", "{text}"] } });
+  const wt = join(s.state.dir, "worktrees", "stale-qa");
+  mkdirSync(wt, { recursive: true });
+  writeFileSync(join(wt, "unpublished.txt"), "keep this work");
+  s.world.panes.push({ pane_id: "w:p7", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  await s.deps.registry.write(lane("stale-qa", { status: "paused", pane: "w:p7", tab: "w:t7", thread: "thread-1", worktrees: [wt],
+    done: "file .omo/evidence/stale/report.json json:.passed=true" }));
+  const read = async () => (await s.deps.registry.read("stale-qa"))!;
+  expect((await abandonLane(s.deps, await read(), "QA plan dropped", false)).lines[0]).toStartWith("REFUSED stale-qa: an agent is still idle");
+  s.world.panes = [];
+  s.world.aheadCount = "2";
+  expect((await abandonLane(s.deps, await read(), "QA plan dropped", false)).lines[0]).toStartWith("REFUSED stale-qa: unpushed work");
+  expect(statusOf(await read())).toBe("paused");
+  const done = await abandonLane(s.deps, await read(), "QA plan dropped", true);
+  expect(done.closed).toBe(true);
+  const closed = await read();
+  expect([statusOf(closed), (closed.receipt as { abandoned?: string }).abandoned]).toEqual(["closed", "abandoned by the owner: QA plan dropped"]);
+  expect(readFileSync(join(wt, "unpublished.txt"), "utf8")).toBe("keep this work");
+  expect(s.world.calls.some((call) => call[0] === "notify")).toBe(false);
+  await expect(abandonLane(s.deps, lane("x"), " ", false)).rejects.toThrow("reason");
+});
+
+test("abandoning refuses any live agent state and never closes a lane whose tab is still open", async () => {
+  for (const status of ["blocked", "done"]) {
+    const s = setup();
+    s.world.panes.push({ pane_id: "w:p8", workspace_id: "w", agent: "pi", agent_status: status });
+    await s.deps.registry.write(lane("live-qa", { status: "paused", pane: "w:p8", tab: "w:t8" }));
+    expect((await abandonLane(s.deps, (await s.deps.registry.read("live-qa"))!, "dropped", false)).lines[0]).toStartWith(`REFUSED live-qa: an agent is still ${status}`);
+  }
+  const s = setup();
+  s.world.panes.push({ pane_id: "w:p9", workspace_id: "w" });
+  s.terminal.closeFails = true;
+  await s.deps.registry.write(lane("shell-qa", { status: "paused", pane: "w:p9", tab: "w:t9" }));
+  const r = await abandonLane(s.deps, (await s.deps.registry.read("shell-qa"))!, "dropped", false);
+  expect([r.closed, r.lines[0]]).toEqual([false, "REFUSED shell-qa: tab w:t9 did not close; retry the abandon"]);
+  expect(statusOf((await s.deps.registry.read("shell-qa"))!)).toBe("paused");
+});
+
+test("a failed lane whose pane survives keeps its slot and its job; once gone, a retry reuses its record", async () => {
+  const s = setup({ maxWorkers: 1 });
+  s.world.panes.push({ pane_id: "w:p5", workspace_id: "w", agent: "pi", agent_status: "working" });
+  await s.deps.registry.write(lane("job-a", { job: "issue-5", pane: "w:p5", tab: "w:t5", status: "not-done", launchState: "failed" }));
+  expect((await launch(s, "other")).startup).toStartWith("LAUNCH_QUEUED key=other");
+  await expect(launch(s, "job-a-retry", { job: "issue-5" })).rejects.toThrow("LANE_EXISTS key=job-a");
+  s.world.panes = [];
+  const retried = await launch(s, "job-a-retry", { job: "issue-5" });
+  expect(retried.startup).toStartWith("STARTUP_OK job-a ");
+  expect(await s.deps.registry.read("job-a-retry")).toBeNull();
+  expect((await s.deps.registry.read("job-a"))?.history?.some((h) => h.note.includes("relaunched"))).toBe(true);
+});
+
+test("a job resumed by a new launch takes that attempt's Done line, title, thread and model, directly or from the queue", async () => {
+  for (const queued of [false, true]) {
+    const s = setup({ maxWorkers: 1 });
+    const h = hibernated(s, "issue-11", "sid-11");
+    writeFileSync(join(h.dir, "2026-11-05T10-00-00-000Z_sid-11.jsonl"), "{}\n");
+    await h.write();
+    await s.deps.registry.write({ ...(await s.deps.registry.read("issue-11"))!, done: "merged acme/app#11", thread: "thread-11" });
+    if (queued) await s.deps.registry.write(lane("busy", { pane: "w:p3", status: "working" }));
+    const attempt = { job: "issue-11", title: "follow-up", done: "merged acme/app#22", thread: "thread-22", model: "m-2" };
+    const first = (await launch(s, "issue-11-followup", attempt)).startup;
+    if (queued) {
+      expect(first).toStartWith("LAUNCH_QUEUED key=issue-11");
+      await s.deps.registry.write({ ...(await s.deps.registry.read("busy"))!, status: "closed" });
+      expect((await lifecycleTick(s.deps)).some((line) => line.includes("LANE_DEQUEUED issue-11 LANE_WOKEN issue-11"))).toBe(true);
+    } else expect(first).toBe("LANE_WOKEN issue-11 pane=w:p1");
+    const woke = (await s.deps.registry.read("issue-11"))!;
+    expect([woke.done, woke.title, woke.thread, woke.model]).toEqual(["merged acme/app#22", "follow-up", "thread-22", "m-2"]);
+    expect(woke.history?.some((entry) => entry.note.includes("previous Done: merged acme/app#11"))).toBe(true);
+    const brief = readFileSync(woke.brief, "utf8");
+    expect([brief.includes("acme/app#22"), brief.includes("acme/app#11")]).toEqual([true, false]);
+  }
 });

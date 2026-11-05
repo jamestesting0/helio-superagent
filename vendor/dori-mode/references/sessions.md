@@ -10,7 +10,7 @@ dori launch fix-login --title "Fix the login redirect loop" \
   --thread "telegram:<chat>/<topic>" --model anthropic/claude-opus-5-5
 ```
 
-`launch` checks the key and the `Done =` line, appends a footer to the brief, opens a tab in `laneWorkspace`, starts the agent, and after 20 seconds checks the start: `STARTUP_ERROR` on a known failure (missing module, no API key, rate limit, quota), `STARTUP_OK` only when herdr reports the agent idle or working, `STARTUP_UNCONFIRMED` otherwise. On `STARTUP_ERROR`, relaunch on another model; on `STARTUP_UNCONFIRMED`, look at the pane before doing anything else. After a `STARTUP_ERROR`, fix the cause (for a model error, use one the allowlist permits) and relaunch under a new key; then retire the failed lane with `dori close <key> --note "launch failed: <cause>"`. That close skips the Done signals but refuses while an agent is still working or idle in its pane: check the screen, and close the tab first only if the launch really failed.
+`launch` validates the key and Done line, reserves a worker slot, prepares its brief/worktree and starts the agent. After 20 seconds it reports `STARTUP_OK` for a ready agent, `STARTUP_ERROR` for a known failure, or `STARTUP_UNCONFIRMED` otherwise. Inspect retained resources before retrying. A failed lane with a surviving pane holds its slot and job; retire the pane safely with `dori close KEY --note "launch failed"` after no agent is live. Retry the same key/job in place; history is preserved. Owner-requested abandonment uses `dori abandon`, never a fabricated Done signal.
 
 Write the brief like a careful prompt:
 
@@ -50,14 +50,16 @@ One JSON file per lane under `<stateDir>/lanes/`, written atomically (temp file 
 | `thread` | where its updates go, as `platform:thread` (or `none`) |
 | `pane`, `tab` | its herdr location |
 | `session` | the agent's own session id, so a closed job can be reopened later |
-| `status` | `working`, `done-claimed`, `verified-done`, `not-done`, `closed` |
+| `status` | `working`, `done-claimed`, `verified-done`, `not-done`, `paused`, `hibernated`, `cleanup-pending`, `closed` |
 | `claim`, `objection`, `history` | what was claimed, what was objected, every status change |
+
+Closed records live under `lanes/archive/`; active listing reads only hot records, while `show` also reads archives.
 
 `dori sync` compares the registry with live panes and prints drift (a pane that is gone, a session id that changed, an empty `Done =` line). It never deletes anything. With `--write` it stores the session ids it found.
 
 How the session id is found for a pane, in order:
 
-1. the agent process's `--session <id>` argument;
+1. the agent process's `--session <path>` or preassigned `--session-id <id>` argument;
 2. `PI_SESSION_ID` in the environment of one of its child processes;
 3. the session file whose timestamp falls within three minutes after the agent process started.
 

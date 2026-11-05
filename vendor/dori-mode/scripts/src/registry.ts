@@ -49,7 +49,7 @@ export type Lane = {
   /** When the lane's agent was first seen idle in the current idle stretch (hibernation timer). */
   readonly idleSince?: number;
   readonly receipt?: unknown;
-  readonly worktreeRemoved?: { readonly at: string; readonly path: string; readonly branch: string; readonly head: string };
+  readonly worktreeRemoved?: { readonly at: string; readonly path: string; readonly branch: string; readonly head: string; readonly evidence?: string };
 };
 
 export const jobOf = (lane: Lane): string => lane.job ?? lane.key;

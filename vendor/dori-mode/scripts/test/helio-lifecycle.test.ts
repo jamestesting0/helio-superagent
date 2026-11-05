@@ -23,6 +23,7 @@ test("isolated lanes preserve input brief and recover failed pane launch", async
    calls.push([...argv]); if(argv[0]==="git") return run(argv);
    if(argv.slice(0,3).join(" ")==="herdr tab create") return {code:0,out:JSON.stringify({result:{root_pane:{pane_id:"pane"},tab_id:"tab"}}),err:""};
    if(argv.slice(0,3).join(" ")==="herdr pane run") return {code:1,out:"",err:"simulated failure"};
+   if(argv.slice(0,3).join(" ")==="herdr pane list") return {code:0,out:JSON.stringify({result:{panes:[]}}),err:""};
    return {code:0,out:"",err:""};
   }};
   await expect(launchLane(deps,{key:"lane-one",title:"test",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");

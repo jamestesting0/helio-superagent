@@ -5,7 +5,7 @@ description: Runs an always-on Telegram or Discord agent with tracked herdr lane
 
 # Dori mode
 
-A Dori is one agent session that stays up, listens to its owner on a messenger, and gets work done by handing it to other agent sessions and following them to the end. The owner talks to one bot. The Dori opens a herdr tab per job, keeps a registry of every session it runs, and closes a session only after the work is proven done.
+A Dori is one agent session that stays up, listens to its owner on a messenger, and gets work done by handing it to other agent sessions and following them to the end. The owner talks to one bot. The Dori opens a herdr tab per job, keeps a registry of every session it runs, and closes a session after proven completion, or records owner-requested abandonment without marking its thread done.
 
 This file is the operating contract. Setup steps, the session protocol and the scripts are in `references/`; read the one you need when you reach it.
 
@@ -103,6 +103,7 @@ Real work runs in its own herdr tab, called a lane. The protocol, with the reaso
 | `dori guard` | host load, memory, disk and pane-count alerts |
 | `dori heavy <label> -- <cmd>` | run a heavy command only when a slot is free and load is low |
 | `dori can-launch` | is there room for a new lane? exit 4 with the reasons if not |
+| `dori abandon KEY --reason TEXT [--with-unpushed]` | owner-requested retirement; refuses live agents, keeps the worktree, never marks the thread done |
 | `dori stale --hours 24` | lanes paused, not done, failed or awaiting cleanup that need a decision |
 | `dori reap-worktrees [--apply]` | list, then remove, worktrees whose PR settled 3+ days ago with nothing unpushed |
 | `dori send` / `dori presence` / `dori transcribe` | messenger utilities: post or edit on Slack, Telegram or Discord; stay shown online; voice note to text |

@@ -53,7 +53,7 @@ The CLI is a thin layer over typed modules you can import in your own scripts:
 | `src/messenger/thread-ledger.ts` | `ThreadLedger`: every thread the Dori posts in, persisted; given to `Slack`, it records each `chat.postMessage` (also raw `call`s) |
 | `src/messenger/slack-inbound.ts` | `pollSlackInbound`: threads view, the ledger's threads and unread counts, deduplicated, own messages filtered |
 | `src/messenger/slack-presence.ts` | `slackPresence`: hold a user account active |
-| `src/routing.ts` | `canLaunch`, `idleLaneFor`: the routing checks |
+| `src/routing.ts` | `canLaunch`, `idleLaneFor`: supported external routing API (the job-based CLI does not call `idleLaneFor`) |
 
 Every module takes its HTTP, clock and timers as arguments. That is how the tests run without the network.
 
@@ -61,8 +61,8 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 
 ### `dori launch <key> --title T --brief FILE --done "..." [--job J] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]`
 
-Admission and the lane reservation happen under one lock. Over `maxWorkers`, or when the guard holds (memory, disk, unknown or excess pane count, unreadable host sample), the launch is queued: `LAUNCH_QUEUED key=K position=N reasons="..."` (owner priority first). `watch` starts queued launches as slots free (`LANE_DEQUEUED`). An open lane for the same job refuses with `LANE_EXISTS key=K`; a hibernated or closed lane of the job with a recorded session is resumed (`LANE_WOKEN`). A key whose previous attempt failed is relaunched in place. `STARTUP_OK` records the agent's session id, or ends with `session=unknown`.
-Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and after 20 seconds checks it: `STARTUP_ERROR` on a known failure in the pane, `STARTUP_OK` only when herdr reports the agent idle or working, and `STARTUP_UNCONFIRMED` (with the last lines) otherwise. Exit 3 on anything but `STARTUP_OK`.
+Admission and the lane reservation happen under one lock. Over `maxWorkers`, or when the guard holds (memory, disk, unknown or excess pane count, unreadable host sample), the launch is queued: `LAUNCH_QUEUED key=K position=N reasons="..."` (owner priority first). `watch` starts queued launches as slots free (`LANE_DEQUEUED`). An open lane for the same job refuses with `LANE_EXISTS key=K`; a hibernated or closed lane of the job with a recorded session is resumed (`LANE_WOKEN`). A key whose previous attempt failed is relaunched in place. Omo workers get a recorded `--session-id` before starting; custom commands use discovery (`session=unknown` when unavailable).
+Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and after 20 seconds checks it: `STARTUP_ERROR` on a known failure in the pane, `STARTUP_OK` only when herdr reports the agent idle or working, and `STARTUP_UNCONFIRMED` (with the last lines) otherwise. Exit 0 for `STARTUP_OK`, `LANE_WOKEN` or `LAUNCH_QUEUED`; exit 3 for error/unconfirmed startup.
 
 ### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF]`
 Registers a lane that is already running.
@@ -76,8 +76,11 @@ The two halves of the done flow. Both message the lane's pane and check that Ent
 ### `dori show <key>` / `dori claim-ack <key>`
 `show` prints the complete stored lane, including evidence, claim, history and closure receipt, without writing. It also works on closed lanes. `claim-ack` records receipt of the current claim and starts its full `closeAfterMin` window; repeating acknowledgement preserves the first deadline. A new claim requires a fresh acknowledgement. Legacy `emitted` flags do not acknowledge receipt.
 
+### `dori abandon <key> --reason TEXT [--with-unpushed]`
+Retires a lane that will never finish, on the owner's request. Refuses (exit 2) while an agent is still running in its pane, or when its worktree holds unpushed work unless `--with-unpushed` is given. Closes the tab, keeps the worktree, and records the lane as abandoned with the reason; it is never reported as done and its thread is not marked done.
+
 ### `dori close <key> [--note TEXT]`
-Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, closes the tab, and retains the lane's worktrees for manual review. A failed launch can be retired only when its pane has no live agent and no work is unpushed; retirement does not announce completion.
+Closes a lane now. Refuses (exit 2) unless every `Done =` signal reads back live. On success it marks the thread done through `hooks.threadDone`, closes the tab, and keeps worktrees until safe reaping (PR settled at least three days, no uncommitted/unpushed work). A failed tab close leaves `cleanup-pending`, not false closure. A failed launch can be retired only when its pane has no live agent and no work is unpushed; retirement does not announce completion.
 
 ### `dori pause <key> [--note TEXT]` / `dori resume <key> [--note TEXT]`
 `pause` is for when the owner said wait. It works on a `working` or `not-done` lane. It sends `/goal pause` to the lane's pane, then reads the screen back until the goal command's own line appears on a line of its own: `Goal paused`, or `cannot update goal: no goal exists`, since a lane with no goal has nothing to continue. Only then does it mark the lane `paused` (recorded in its history) and send Escape if a turn is running. The goal is paused first, so stopping the turn cannot hand off to a goal continuation. If the line does not appear, or the send fails, the lane is left as it was and the command prints `PAUSE_UNVERIFIED` and exits 3.
