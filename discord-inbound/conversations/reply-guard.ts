@@ -2,6 +2,8 @@ import type { Conversations, ConversationEntry } from "./conversations.ts";
 import type { Delivery } from "../delivery/delivery.ts";
 import { DiscordRestError, type Rest } from "../discord/rest.ts";
 import { finishWorking } from "./working.ts";
+import { snowflakeTime } from "./working-store.ts";
+import { issueUrls, recordDiscussion } from "./issue-review.ts";
 import { RecoveryRequiredError } from "../delivery/recovery-store.ts";
 
 const gone = (error: unknown) => error instanceof DiscordRestError && error.status === 404;
@@ -116,6 +118,7 @@ export async function guardedReply(o: {
   readonly cleanup: (messageId: string) => Promise<void>;
   readonly replyEntry?: Omit<ConversationEntry, "message_id" | "sent_at">;
   readonly now: () => number; readonly warn: (message: string) => void; readonly owner?: string;
+  readonly issues?: { readonly text: string; readonly path: string };
 }): Promise<{ readonly code: 0 | 3 | 4; readonly lines: readonly string[] }> {
   const known = new Set([...o.covers, ...o.seen]);
   const check = await checkBeforeReply({ ...o, known, now: o.now() });
@@ -161,6 +164,25 @@ export async function guardedReply(o: {
       o.store.append(o.channel, author, {
         ...o.replyEntry, message_id: replyId, sent_at: new Date(o.now()).toISOString(),
       }, o.now());
+    }
+  }
+  if (o.issues) {
+    const named = issueUrls(o.issues.text);
+    const issues = new Set(named);
+    for (const author of authors) {
+      const conversation = o.store.get(o.channel, author);
+      const issue = conversation?.issue ?? (named.length === 1 ? named[0] : undefined);
+      if (!conversation || !issue) continue;
+      o.store.linkIssue(o.channel, author, issue);
+      issues.add(issue);
+    }
+    const discussedAt = Math.floor(Math.max(...[o.target, ...covered].map(snowflakeTime)) / 1000);
+    for (const issue of issues) {
+      try {
+        if (recordDiscussion(o.issues.path, issue, discussedAt)) {
+          lines.push(`ISSUE_REVIEW_DUE issue=${issue} read="helio issue show ${issue.split("/").at(-1)}"`);
+        }
+      } catch (error) { o.warn(`issue review for ${issue} not recorded: ${String(error)}`); }
     }
   }
   for (const id of covered) {

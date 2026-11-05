@@ -80,6 +80,7 @@ INBOUND_FILES = (
     "conversations/conversation-context.ts", "conversations/conversation-db.test.ts",
     "conversations/conversation-db.ts", "conversations/conversation-upkeep.test.ts",
     "conversations/conversation-upkeep.ts", "conversations/conversations.test.ts", "conversations/conversations.ts",
+    "conversations/issue-review.ts",
     "conversations/question-answer.test.ts", "conversations/question-answer.ts", "conversations/receipts.test.ts",
     "conversations/reply-guard.ts", "conversations/reply-once.test.ts", "conversations/reply-once.ts",
     "conversations/working-store.ts", "conversations/working.test.ts", "conversations/working.ts",

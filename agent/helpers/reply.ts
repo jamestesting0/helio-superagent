@@ -95,7 +95,7 @@ if (import.meta.main) {
           covers: args.covers, seen: args.seen, send: once,
           cleanup: (id) => cleanupAttachments(id, `${state}/attachments/inbound`),
           now: () => Date.now(), warn: (message) => console.log(`REPLY_WARN ${message}`),
-          owner: process.env.DORI_DISCORD_OWNER_ID,
+          owner: process.env.DORI_DISCORD_OWNER_ID, issues: { text: content, path: `${state}/issue-sync.sqlite` },
           ...(bot ? { replyEntry: {
             author_id: bot.id, author: "Helio", bot: true, content: discordText(args.text), attachment_count: 0,
           } } : {}),

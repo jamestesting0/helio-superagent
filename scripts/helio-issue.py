@@ -15,6 +15,7 @@ from typing import TypedDict
 HERE = Path(__file__).resolve().parent
 ISSUES = runpy.run_path(str(HERE / "helio_issues.py"))
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
+SYNC = runpy.run_path(str(HERE / "helio_issue_sync.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 STATE = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
 
@@ -24,6 +25,18 @@ class Projection(TypedDict):
     summary: str
     links: list[str]
     warnings: list[str]
+    events: list[tuple[str, str, float]]
+    discussed: int
+
+
+def timestamp(value: str | None) -> float:
+    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() if value else 0.0
+
+
+def human_comments(info: dict, login: str, since: float = 0) -> list[dict]:
+    """Discussion by people; Helio's own log, plan and status comments are never decision input."""
+    return [item for item in info.get("comments", [])
+            if (item.get("author") or {}).get("login") != login and timestamp(item.get("createdAt")) > since]
 
 
 def projection(issue: int, gh) -> Projection:
@@ -39,6 +52,8 @@ def projection(issue: int, gh) -> Projection:
     summary = info.get("title") or "See current scope below."
     links = [f"https://github.com/{REPO}/issues/{issue}"]
     warnings = []
+    events: list[tuple[str, str, float]] = []
+    discussed = int(max((timestamp(item.get("createdAt")) for item in human_comments(info, login)), default=0))
     if plans:
         data = plans[-1]
         if data:
@@ -55,7 +70,12 @@ def projection(issue: int, gh) -> Projection:
                 pulls.add(source["number"])
     for number in sorted(pulls)[:20]:
         pr = {"number": number}
-        detail = json.loads(gh.command(["gh", "pr", "view", str(pr["number"]), "--repo", REPO, "--json", "state,url,statusCheckRollup,mergeCommit,body,closingIssuesReferences"]))
+        detail = json.loads(gh.command(["gh", "pr", "view", str(pr["number"]), "--repo", REPO, "--json", "state,url,statusCheckRollup,mergeCommit,body,closingIssuesReferences,createdAt,mergedAt,closedAt"]))
+        events.append((f"pr{number}:opened", f"PR #{number} opened {detail.get('url', '')}".strip(), timestamp(detail.get("createdAt"))))
+        if detail["state"] == "MERGED":
+            events.append((f"pr{number}:merged", f"PR #{number} merged", timestamp(detail.get("mergedAt"))))
+        elif detail["state"] == "CLOSED":
+            events.append((f"pr{number}:closed", f"PR #{number} closed without merging", timestamp(detail.get("closedAt"))))
         checks = [item.get("conclusion") or item.get("state") or item.get("status") for item in detail.get("statusCheckRollup") or []]
         parts.append(f"PR #{pr['number']}: {detail['state']} ({', '.join(checks) or 'checks unavailable'})")
         if detail.get("url"):
@@ -77,12 +97,14 @@ def projection(issue: int, gh) -> Projection:
                 exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='oracle_observations'").fetchone()
                 row = db.execute("SELECT data FROM oracle_observations WHERE singleton=1").fetchone() if exists else None
             observation = json.loads(row[0]) if row else {}
-            timestamp = observation.get("observed_at")
-            age = (datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(timestamp)).total_seconds() if timestamp else None
+            observed_at = observation.get("observed_at")
+            age_at = timestamp(observed_at)
+            age = (datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(observed_at)).total_seconds() if observed_at else None
             if age is not None and 0 <= age <= 300 and observation.get("active") and observation.get("login_evidence") == "observed" and observation.get("running_revision"):
                 comparison = gh.api(f"compare/{detail['mergeCommit']['oid']}...{observation['running_revision']}")
                 if comparison.get("status") in ("ahead", "identical"):
-                    parts.append(f"PR #{pr['number']} live revision observed at {timestamp}; gateway health unverified")
+                    parts.append(f"PR #{pr['number']} live revision observed at {observed_at}; gateway health unverified")
+                    events.append((f"pr{number}:live", f"PR #{number} observed running in production", age_at))
     ledger_path = STATE / "decisions.sqlite"
     if ledger_path.exists():
         ledger = runpy.run_path(str(HERE / "helio_decisions.py"))
@@ -100,7 +122,7 @@ def projection(issue: int, gh) -> Projection:
         if holds:
             parts.append("On hold: owner/author review required")
     return {"status": " · ".join(parts + warnings + ([] if any("live revision observed" in part for part in parts) else ["live state unverified"])),
-            "summary": summary, "links": links, "warnings": warnings}
+            "summary": summary, "links": links, "warnings": warnings, "events": events, "discussed": discussed}
 
 
 def main() -> int:
@@ -115,6 +137,11 @@ def main() -> int:
         command.add_argument("--close", choices=("not_planned", "completed"))
         command.add_argument("--reopen", action="store_true")
         command.add_argument("--labels", nargs="+")
+    show = sub.add_parser("show")
+    show.add_argument("issue", type=int)
+    reviewed = sub.add_parser("reviewed")
+    reviewed.add_argument("--issue", type=int, required=True)
+    reviewed.add_argument("--reason-file", type=Path, required=True)
     resume = sub.add_parser("resume")
     resume.add_argument("--operation", required=True)
     cancel = sub.add_parser("cancel")
@@ -124,6 +151,25 @@ def main() -> int:
         parser.error("--issue must be positive")
     try:
         gh = ISSUES["Issues"](REPO, STATE)
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        if args.command == "reviewed":
+            reason = args.reason_file.read_text().strip()
+            if not reason:
+                raise ISSUES["Refused"]("A review reason is required.")
+            SYNC["mark_reviewed"](STATE, REPO, args.issue, now, reason[:500])
+            print(f"ISSUE_REVIEWED issue={args.issue}: description unchanged")
+            return 0
+        if args.command == "show":
+            info = json.loads(gh.command(["gh", "issue", "view", str(args.issue), "--repo", REPO, "--json", "title,state,url,body,comments"]))
+            login = gh.command(["gh", "api", "user", "--jq", ".login"]).strip()
+            since = SYNC["reviewed_at"](STATE, REPO, args.issue)
+            people = human_comments(info, login, since)
+            print(f"{info.get('url')} [{info.get('state')}] {info.get('title')}\n\n{info.get('body') or ''}\n")
+            print(f"== Comments by people since the last description review: {len(people)}")
+            for item in people:
+                print(f"- {(item.get('author') or {}).get('login')} at {item.get('createdAt')}: {item.get('body', '')[:2000]}")
+            print("Helio's own comments are omitted: the description is the current truth.")
+            return 0
         if args.command in ("resume", "cancel"):
             with closing(sqlite3.connect(STATE / "issue-updates.sqlite")) as db, db:
                 row = db.execute("SELECT issue,change FROM operations WHERE id=? AND repo=?", (args.operation, REPO)).fetchone()
@@ -147,6 +193,14 @@ def main() -> int:
             current = gh.get(args.issue)
             change["labels"] = [item["name"] for item in current.get("labels", []) if item["name"] != "needs-owner-review"]
         operation = gh.update(args.issue, change)
+        if facts["discussed"]:
+            SYNC["mark_discussed"](STATE, REPO, args.issue, facts["discussed"])
+        if args.command == "update":
+            SYNC["mark_reviewed"](STATE, REPO, args.issue, now)
+        try:
+            gh.log_milestones(args.issue, facts["events"])
+        except ISSUES["Refused"] as error:
+            print(f"ISSUE_LOG_PENDING issue={args.issue}: progress comment retries on the next sync: {error}")
         for warning in facts["warnings"]:
             print(f"ISSUE_LINK_REVIEW issue={args.issue}: {warning}")
         if args.command == "update":

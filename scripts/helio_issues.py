@@ -100,6 +100,8 @@ class Issues:
                     if expected and expected != digest(body):
                         raise Refused("Reviewed body changed; read it again.")
                     if change.get("body") is not None:
+                        if change["body"].strip() != content.strip() and not change.get("note"):
+                            raise Refused("ISSUE_NOTE_REQUIRED: a description change needs --note-file with a short public summary of what changed")
                         content = change["body"]
                     observed = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
                     closed = change.get("close")
@@ -132,8 +134,31 @@ class Issues:
                     comments = json.loads(self.command(["gh", "api", "--paginate", f"repos/{self.repo}/issues/{issue}/comments", "--slurp"]))
                     seen = any(marker in (comment.get("body") or "") for page in comments for comment in page)
                     if not seen:
-                        text = f"Description updated: {change['note']}\n{marker}"
+                        text = f"**Issue updated:** {change['note']}\n<!-- helio-issue-log -->\n{marker}"
                         self.command(["gh", "api", f"repos/{self.repo}/issues/{issue}/comments", "--method", "POST", "--input", "-"], json.dumps({"body": text}))
                     db.execute("UPDATE operations SET commented=1 WHERE id=?", (operation,));db.commit()
                 db.execute("UPDATE operations SET completed=1 WHERE id=?", (operation,));db.commit()
                 return operation
+
+    def log_milestones(self, issue: int, events: list[tuple[str, str, float]], now: float | None = None) -> list[str]:
+        """Post one public progress comment for milestones that happened after this log began."""
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp() if now is None else now
+        self.state.mkdir(parents=True, exist_ok=True)
+        path = self.state / "issue-updates.sqlite"
+        with closing(sqlite3.connect(path)) as db, db:
+            path.chmod(0o600)
+            db.execute("CREATE TABLE IF NOT EXISTS milestones (repo TEXT, issue INTEGER, key TEXT, PRIMARY KEY(repo,issue,key))")
+            db.execute("CREATE TABLE IF NOT EXISTS meta (name TEXT PRIMARY KEY, value REAL)")
+            db.execute("INSERT OR IGNORE INTO meta VALUES ('milestones_since', ?)", (now,))
+            since = db.execute("SELECT value FROM meta WHERE name='milestones_since'").fetchone()[0]
+            new = [event for event in events if not db.execute(
+                "SELECT 1 FROM milestones WHERE repo=? AND issue=? AND key=?", (self.repo, issue, event[0])).fetchone()]
+            fresh = [text for _, text, at in new if at >= since]
+            if fresh:
+                marker = f"<!-- helio-issue-log:{digest(json.dumps([self.repo, issue, [key for key, _, _ in new]]))} -->"
+                comments = json.loads(self.command(["gh", "api", "--paginate", f"repos/{self.repo}/issues/{issue}/comments", "--slurp"]))
+                if not any(marker in (comment.get("body") or "") for page in comments for comment in page):
+                    text = "**Progress:** " + "; ".join(fresh) + f"\n{marker}"
+                    self.command(["gh", "api", f"repos/{self.repo}/issues/{issue}/comments", "--method", "POST", "--input", "-"], json.dumps({"body": text}))
+            db.executemany("INSERT OR IGNORE INTO milestones VALUES (?,?,?)", [(self.repo, issue, key) for key, _, _ in new])
+        return fresh

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Conversations } from "./conversations.ts";
 import { Delivery } from "../delivery/delivery.ts";
 import { describeMessage } from "../messages/reply-context.ts";
@@ -158,6 +158,34 @@ test("a reply sent without any 👀 shown says so, so the skipped first step is 
     const { rest } = fakeRest({ [anchor]: "help" });
     const { result } = reply(delivery, store, rest, anchor, T0 + 10_000);
     expect((await result).lines).toEqual(["SENT 900", "REPLY_NOTE no claim was recorded for this turn; run ack working first when you pick a turn up"]);
+  });
+});
+
+test("a reply naming an issue links the conversation, and later discussion keeps the issue due until reviewed", async () => {
+  await withStores(async (delivery, store, path) => {
+    const reviews = join(dirname(path), "issue-sync.sqlite");
+    const url = "https://github.com/o/r/issues/8";
+    const due = `ISSUE_REVIEW_DUE issue=${url} read="helio issue show 8"`;
+    const first = idAt(T0 - MIN), second = idAt(T0), third = idAt(T0, 1);
+    const { rest } = fakeRest({ [first]: "help", [second]: "help", [third]: "help" });
+    const send = (target: string, text: string) => guardedReply({
+      delivery, store, rest, channel: normal, target, covers: [], seen: [], send: async () => "900",
+      cleanup: async () => {}, now: () => T0, warn: () => {}, issues: { text, path: reviews },
+    });
+    const reviewed = (seconds: number) => {
+      const db = new Database(reviews);
+      try { db.query("UPDATE reviews SET reviewed_at=?").run(seconds); } finally { db.close(); }
+    };
+    stage(delivery, first);
+    store.open(normal, "66", first, "season rules", T0 - MIN);
+    expect((await send(first, `Noted for <${url}>.`)).lines).toContain(due);
+    expect(store.get(normal, "66")?.issue).toBe(url);
+    reviewed(Math.floor((T0 - MIN / 2) / 1000));
+    stage(delivery, second);
+    expect((await send(second, "Thanks, confirmed.")).lines).toContain(due);
+    reviewed(Math.floor(T0 / 1000) + 1);
+    stage(delivery, third);
+    expect((await send(third, "Thanks.")).lines).not.toContain(due);
   });
 });
 

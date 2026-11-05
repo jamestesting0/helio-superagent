@@ -1,10 +1,14 @@
 # Current issue descriptions
 
-The body describes the request as it stands now. Comments remain discussion and the history of substantive changes; a decision or scope change must also update the body.
+The body describes the request as it stands now: request, confirmed requirements (with who confirmed them), open questions and decisions. Unverified claims belong under open questions. Updating it needs nobody's confirmation; only closing and reopening need the owner or a current trusted user.
 
-Read the body before changing it. Use `helio issue update --issue N --body-file FILE --note-file NOTE`. Use the request-intake issue template for the rewritten prose; preserve unrelated human details. Files keep Discord text out of shell command strings. For a close add `--close completed` or `--close not_planned`; for reopen add `--reopen`. Only the owner/current trusted user's explicit issue decision authorizes closing/reopening.
+When a discussion about an issue adds, corrects or confirms facts, update the body in that turn, before telling anyone the facts are noted. Replies that name an issue link the conversation to it; later requester messages in that conversation, and new GitHub comments by people, make the issue due. `ISSUE_REVIEW_DUE` appears after such a reply and repeats from the follow-up watcher until you run `helio issue update`, or `helio issue reviewed --issue N --reason-file FILE` when nothing changes the description.
 
-The command manages the status block from GitHub plan/PR facts, preserves prose, and removes `needs-owner-review` after a verified approved plan. Labels supplied by `--labels` are the full desired set; preserve unrelated labels. Routine `helio issue sync --issue N` updates facts without notification comments.
+Read an issue with `helio issue show N`: the body plus comments by people since the last review. Helio's own comments are a public change log for people and are never decision input; the body is the truth.
+
+Read the body before changing it. Use `helio issue update --issue N --body-file FILE --note-file NOTE`; a description change requires the note, a short public summary posted once as an "Issue updated" comment. Use the request-intake issue template for the rewritten prose; preserve unrelated human details. Files keep Discord text out of shell command strings. For a close add `--close completed` or `--close not_planned`; for reopen add `--reopen`. Only the owner/current trusted user's explicit issue decision authorizes closing/reopening.
+
+The command manages the status block from GitHub plan/PR facts, preserves prose, and removes `needs-owner-review` after a verified approved plan. Labels supplied by `--labels` are the full desired set; preserve unrelated labels. Routine `helio issue sync --issue N` updates facts silently except for one "Progress" comment per new milestone: PR opened, merged or closed, and live revision observed.
 
 On `ISSUE_EDITED_OUTSIDE_HELIO`, read the new body, merge its changes into the proposed text and pass `--adopt` with the reported SHA256 of that exact reviewed body. This detects earlier edits and narrows concurrent races; GitHub does not provide an atomic body compare-and-swap here. Never claim human edits cannot race.
 

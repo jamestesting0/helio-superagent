@@ -66,6 +66,15 @@ export class Conversations extends WorkingStore {
     }).immediate();
   }
 
+  /** Links an open conversation to the issue it is about; an existing link is kept. */
+  linkIssue(channel: string, user: string, issue: string): void {
+    const row = this.get(channel, user);
+    if (row && !row.issue) {
+      this.db.query("UPDATE conversations SET issue=? WHERE channel_id=? AND user_id=? AND opened_at=?")
+        .run(issue, channel, user, row.opened_at);
+    }
+  }
+
   get(channel: string, user: string): Conversation | null {
     return this.db.query<Conversation, [string, string]>(
       "SELECT * FROM conversations WHERE channel_id=? AND user_id=? AND status IN ('open','on_hold')",

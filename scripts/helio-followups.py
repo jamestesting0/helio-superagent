@@ -259,6 +259,8 @@ def main() -> int:
                 print(f'FOLLOWUP_ORACLE_PENDING count={len(events)} oldest={events[0]} read="helio followups oracle --event {events[0]}" audience=owner', flush=True)
             for warning in issue_sync["reconcile"](STATE, REPO):
                 print(f"FOLLOWUP_WARN issue sync pending: {warning}"[:1000], flush=True)
+            for line in issue_sync["reminders"](STATE, REPO, int(time.time())):
+                print(line, flush=True)
             first = False
             deadline = time.monotonic() + args.interval
             while True:
