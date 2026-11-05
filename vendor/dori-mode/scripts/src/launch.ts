@@ -141,7 +141,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     const sameJob = (await deps.registry.listAll()).filter((lane) => jobOf(lane) === job);
     const busy = sameJob.find((lane) => !["closed", "hibernated"].includes(statusOf(lane)) && lane.launchState !== "failed");
     if (busy) throw new LaunchError(`LANE_EXISTS key=${busy.key} status=${statusOf(busy)}: send the new work to that lane`);
-    const failed = sameJob.find((lane) => lane.launchState === "failed" && statusOf(lane) !== "closed");
+    const failed = sameJob.find((lane) => lane.launchState === "failed" && (statusOf(lane) !== "closed" || !sessionFile(deps, lane)));
     if (failed?.pane && (await livePaneIds(deps)).has(failed.pane)) {
       throw new LaunchError(`LANE_EXISTS key=${failed.key} status=failed: its pane ${failed.pane} is still open; retire it first (dori close ${failed.key})`);
     }
@@ -149,7 +149,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     if (failed && failed.key !== input.key) return { kind: "retry" as const, retryAs: failed.key };
     const queuedJob = (await readQueue(deps)).find((entry) => entry.key !== input.key && (entry.job ?? entry.key) === job);
     if (queuedJob) throw new LaunchError(`LANE_EXISTS key=${queuedJob.key} status=queued: send the new work to that lane`);
-    const resumable = sameJob.filter((lane) => lane.session && ["closed", "hibernated"].includes(statusOf(lane)))
+    const resumable = sameJob.filter((lane) => lane !== failed && lane.session && ["closed", "hibernated"].includes(statusOf(lane)))
       .sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0];
     if (resumable) return { kind: "wake" as const, wake: resumable };
     const existing = await deps.registry.read(input.key);
@@ -162,7 +162,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
       return { kind: "queued" as const, queued: true as const, position, reasons };
     }
     const draft: Lane = existing
-      ? withStatus(existing, "working", "relaunched after a failed attempt", at, { ...fields, openedAt: at, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined })
+      ? withStatus(existing, "working", "relaunched after a failed attempt", at, { ...fields, openedAt: at, closedAt: undefined, receipt: undefined, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined })
       : { key: input.key, ...fields, openedAt: at, launchState: "reserved" };
     await deps.registry.write(draft);
     await dequeue(deps, input.key);

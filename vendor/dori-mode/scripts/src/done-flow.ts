@@ -104,11 +104,12 @@ const retire = async (deps: FlowDeps, lane: Lane, note: string, why: Record<stri
     if (status !== undefined && ALIVE_STATUSES.has(status)) {
       return { closed: false, lines: [`REFUSED ${lane.key}: an agent is still ${status} in pane ${lane.pane}; check its screen, and if the agent should stop close the tab first (herdr tab close ${lane.tab ?? "<tab>"})`] };
     }
-    if (lane.tab && (await listPanes(deps.run)).some((pane) => pane.pane_id === lane.pane)) {
-      if ((await deps.run(["herdr", "tab", "close", lane.tab])).code !== 0) {
-        return { closed: false, lines: [`REFUSED ${lane.key}: tab ${lane.tab} did not close; retry the ${verb === "ABANDONED" ? "abandon" : "close"}`] };
+    if ((await listPanes(deps.run)).some((pane) => pane.pane_id === lane.pane)) {
+      const [kind, target] = lane.tab ? ["tab", lane.tab] as const : ["pane", lane.pane] as const;
+      if ((await deps.run(["herdr", kind, "close", target])).code !== 0) {
+        return { closed: false, lines: [`REFUSED ${lane.key}: ${kind} ${target} did not close; retry the ${verb === "ABANDONED" ? "abandon" : "close"}`] };
       }
-      cleanup.push(`tab ${lane.tab} closed`);
+      cleanup.push(`${kind} ${target} closed`);
     }
   }
   const exists = deps.exists ?? existsSync;

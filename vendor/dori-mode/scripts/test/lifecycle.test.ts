@@ -33,7 +33,7 @@ function setup(patch: Record<string, unknown> = {}) {
       world.panes.push({ pane_id: `w:p${n}`, workspace_id: "w", ...(terminal.noAgent ? {} : { agent: "pi", agent_status: "working" }) });
       return ok(JSON.stringify({ result: { root_pane: { pane_id: `w:p${n}` }, tab_id: `w:t${n}` } }));
     }
-    if (cmd === "herdr" && a1 === "tab" && a2 === "close") {
+    if (cmd === "herdr" && (a1 === "tab" || a1 === "pane") && a2 === "close") {
       if (terminal.closeFails) return { code: 1, out: "", err: "tab busy" };
       world.panes = world.panes.filter((p) => p.pane_id !== (argv[3] ?? "").replace(":t", ":p"));
       return ok();
@@ -50,6 +50,53 @@ const launch = (s: ReturnType<typeof setup>, key: string, extra: Record<string, 
 
 const lane = (key: string, patch: Partial<Lane> = {}): Lane =>
   ({ key, title: key, thread: "none", brief: "/b", done: "closed acme/app#3", cwd: "/repo", openedAt: new Date(T0).toISOString(), ...patch });
+
+test("an adopted pane-only lane closes its shell before abandonment, and refuses failed closure", async () => {
+  const s = setup();
+  const adopted = lane("adopted", { pane: "w:p9", status: "paused" });
+  s.world.panes.push({ pane_id: "w:p9", workspace_id: "w" });
+  await s.deps.registry.write(adopted);
+  s.terminal.closeFails = true;
+  expect((await abandonLane(s.deps, adopted, "owner cancelled", false)).closed).toBe(false);
+  expect((await s.deps.registry.read("adopted"))?.closedAt).toBeUndefined();
+  s.terminal.closeFails = false;
+  expect((await abandonLane(s.deps, adopted, "owner cancelled", false)).closed).toBe(true);
+  expect(s.world.panes).toHaveLength(0);
+});
+
+test("a failed wake's surviving pane keeps the last worker slot", async () => {
+  const s = setup({ maxWorkers: 1 });
+  const dir = sessionDirFor(s.deps.config.sessionsDir, s.state.dir);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "2026-11-05T10-00-00-000Z_sid.jsonl"), "{}\n");
+  await s.deps.registry.write(lane("wake-failed", { session: "sid", status: "hibernated", cwd: s.state.dir, brief: s.brief }));
+  const run = s.deps.run;
+  s.deps.run = async (argv, opts) => argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "run"
+    ? { code: 1, out: "", err: "transport failed after starting" } : run(argv, opts);
+  await expect(launch(s, "same-job", { job: "wake-failed" })).rejects.toThrow("transport failed after starting");
+  expect(s.world.panes).toHaveLength(1);
+  expect((await launch(s, "unrelated")).startup).toContain("workers 1 >= 1");
+  expect(s.terminal.tabs).toBe(1);
+});
+
+test("a retired failed launch without a created transcript retries in its original record", async () => {
+  const s = setup({ agentCommand: ["omo", "{prompt}"] });
+  const run = s.deps.run;
+  let refuse = true;
+  s.deps.run = async (argv, opts) => refuse && argv[0] === "herdr" && argv[1] === "tab" && argv[2] === "create"
+    ? { code: 1, out: "", err: "create refused" } : run(argv, opts);
+  await expect(launch(s, "failed-job")).rejects.toThrow("create refused");
+  const failed = (await s.deps.registry.read("failed-job"))!;
+  expect(failed.sessionVia).toBe("assigned");
+  expect((await closeLane(s.deps, failed, "retire failed launch")).closed).toBe(true);
+  refuse = false;
+  expect((await launch(s, "new-key", { job: "failed-job" })).startup).toStartWith("STARTUP_OK failed-job");
+  const retried = (await s.deps.registry.read("failed-job"))!;
+  expect(retried.session).not.toBe(failed.session);
+  expect(retried.closedAt).toBeUndefined();
+  expect(retried.history?.length).toBeGreaterThan(1);
+  expect(await s.deps.registry.read("new-key")).toBeNull();
+});
 
 test("launches over the worker cap queue durably, owner work first, and start when a slot frees", async () => {
   const s = setup({ maxWorkers: 1 });

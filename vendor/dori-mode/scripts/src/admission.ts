@@ -55,8 +55,9 @@ export const dequeue = async (deps: FlowDeps, key: string): Promise<void> => {
 /** A lane holds a worker slot while it has (or is about to get) a running agent; a failed lane only while its pane survives. */
 export const occupiesSlot = (lane: Lane, livePanes: ReadonlySet<string>): boolean => {
   const status = statusOf(lane);
-  if (status === "closed" || status === "hibernated") return false;
+  if (status === "closed") return false;
   if (lane.launchState === "failed") return lane.pane !== undefined && livePanes.has(lane.pane);
+  if (status === "hibernated") return false;
   return lane.pane !== undefined || lane.launchState === "reserved";
 };
 
