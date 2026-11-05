@@ -166,6 +166,15 @@ class RetentionRules(Fixture):
         self.assertEqual(result["worktrees"]["kept"], [{"key": "a", "reason": "lane is working"}])
         self.assertEqual(result["worktrees"]["removed"], [{"key": "b", "reason": "PR acme/app#2 merged 4 days ago", "evidence": "https://github.com/acme/app/pull/2"}])
         self.assertIn("worktrees_removed=1 worktrees_kept=1 ", HK["summary"](result))
+        import io
+        from contextlib import redirect_stdout
+        followups = runpy.run_path(str(ROOT / "scripts/helio-followups.py"))
+        followups["daily_upkeep"].__globals__["run"] = lambda args: "[]"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            followups["daily_upkeep"]({**HK, "run": lambda *args: result})
+        self.assertIn("FOLLOWUP_HOUSEKEEPING", output.getvalue())
+        self.assertIn('read="helio housekeeping --last"', output.getvalue())
 
 class Preview(Fixture):
     def seed_everything(self):

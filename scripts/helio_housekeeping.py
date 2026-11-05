@@ -348,11 +348,11 @@ def summary(result: dict) -> str:
 
 
 def notable(result: dict) -> bool:
-    """Routine applied cleanup stays quiet; problems and a pending first-run approval are reported."""
+    """Report approval requests, problems and retained worktrees; quiet cleanup needs no notice."""
     trees = result["worktrees"]
     pending = result["mode"] == "dry-run" and (result["rows"] or trees.get("would_remove") or result["sessions"]["archived"]
                                               or result.get("logs_to_rotate"))
-    return bool(pending or result["uncovered"] or result.get("skipped") or "error" in trees or "backup_error" in result)
+    return bool(pending or trees.get("kept") or result["uncovered"] or result.get("skipped") or "error" in trees or "backup_error" in result)
 
 
 def due(state: Path, now: float) -> bool:

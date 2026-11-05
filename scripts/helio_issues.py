@@ -164,10 +164,10 @@ class Issues:
 
     def resume(self, operation: str) -> tuple[int, str]:
         with self._operations() as db:
-            row = db.execute("SELECT issue,change FROM operations WHERE id=? AND repo=?", (operation, self.repo)).fetchone()
+            row = db.execute("SELECT issue,change,completed FROM operations WHERE id=? AND repo=?", (operation, self.repo)).fetchone()
             if row is None:
                 raise Refused("Unknown operation.")
-            return row[0], self._finish(db, row[0], operation, json.loads(row[1]))
+            return row[0], self._finish(db, row[0], operation, json.loads(row[1]) if row[2] == 0 else {})
 
     def cancel(self, operation: str) -> None:
         """Waits for any update in flight, so a cancel is never reported for an operation that then completes."""

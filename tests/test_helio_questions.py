@@ -407,6 +407,7 @@ class QuestionChoiceTests(unittest.TestCase):
   q=self.m['create_question'](self.db,'lead','owner','','Anything else?')
   body=self.bodies[0]
   self.assertIn('Anything else?', body['content'])
+  self.assertRegex(body['content'], r'(?i)reply')
   self.assertEqual(body.get('components',[]),[])
   self.assertEqual(self.db.execute('SELECT options FROM questions WHERE id=?',(q['id'],)).fetchone()[0],'[]')
  def test_menu_only_questions_need_options(self):

@@ -185,8 +185,8 @@ Only the owner adds or removes blacklist entries. A blacklisted user's messages,
 
 ## Lanes, gaps and upkeep
 
-- Launch with `dori launch KEY --job JOB` (for example `--job issue-8`; owner work adds `--priority owner`). `LANE_EXISTS key=K`: send the work to that lane. `LANE_WOKEN`: the job's earlier lane resumed in its session. `LAUNCH_QUEUED position=N`: tell the requester it is queued and at which position.
+- Launch with `dori launch KEY --job JOB` (for example `--job issue-8`; owner work adds `--priority owner`). `LANE_EXISTS key=K`: send the work to that lane. `LANE_WOKEN`: the job's earlier lane resumed in its session. `LAUNCH_QUEUED key=K position=N reasons=...`: tell the requester it is queued and at which position.
 - `FOLLOWUP_LANE_REVIEW`: ask the owner `--option Resume --option Retire`. Resume: `dori resume KEY`. Retire (the owner's request): `dori abandon KEY --reason "retired in the stale-lane review"`. If it refuses because an agent is still live, report the pane instead of closing it yourself; if it refuses over unpushed work, ask the owner whether to keep that work in the worktree (`--with-unpushed`).
-- `FOLLOWUP_HOUSEKEEPING ... approve=...`: the first cleanup only reported what it would remove. Send the owner `helio housekeeping --last` in short form once and ask to approve; on yes run `helio housekeeping --approve-first-run`. Later runs report only problems.
+- `FOLLOWUP_HOUSEKEEPING ... approve=...`: the first cleanup only reported what it would remove. Send the owner `helio housekeeping --last` in short form once and ask to approve; on yes run `helio housekeeping --approve-first-run`. Later runs report problems and retained worktrees, with a pointer to their reasons.
 - A lane that will never finish (its Done line can no longer pass, such as abandoned QA) is retired only on the owner's request: `dori abandon KEY --reason TEXT`. Add `--with-unpushed` only if the owner accepts leaving unpushed work in the kept worktree. It is recorded as abandoned, never done; `dori close` stays for finished work.
 - `helio health` lists problems only (backlog age, gaps, stuck lanes, worktrees, upkeep); include them in the greeting.
