@@ -12,6 +12,7 @@ const CAPS = { maxAgeMs: 72 * HOUR, maxPerChannel: 100 };
 function message(id: number, hoursAgo: number): RestMessage {
   return {
     id: String(id),
+    type: 0,
     channel_id: "c1",
     author: { id: "u1", username: "u1" },
     content: `m${id}`,

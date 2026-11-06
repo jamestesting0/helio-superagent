@@ -1,5 +1,6 @@
 from pathlib import Path
-import json,runpy,tempfile,unittest
+import json,os,runpy,sys,tempfile,unittest
+from unittest.mock import patch
 from contextlib import redirect_stdout
 from io import StringIO
 ROOT=Path(__file__).resolve().parent.parent
@@ -19,12 +20,41 @@ class SyncTests(unittest.TestCase):
   launcher=self.home/'.local/bin/helio'; launcher.parent.mkdir(parents=True); launcher.write_bytes((ROOT/'scripts/helio-wsl').read_bytes())
   (self.dst/'env').write_text('private'); (self.dst/'trusted-users').write_text('123'); (self.dst/'report-channels').write_text('456')
  def snapshot(self): return {p.relative_to(self.home):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+ def test_apply_installs_locked_dependencies_offline_and_propagates_failure(self):
+  quiet(SYNC['run'],self.home,'adopt')
+  inbound=self.home/'.dori/discord-inbound'; (inbound/'node_modules').mkdir()
+  tools=self.home/'tools'; tools.mkdir(); log=self.home/'dependencies.jsonl'
+  bun=tools/'bun'
+  bun.write_text(f'#!{sys.executable}\n'
+                 'import json,os,sys\n'
+                 'with open(os.environ["DEPENDENCY_LOG"],"a") as f: f.write(json.dumps({"argv":sys.argv[1:],"cwd":os.getcwd(),"home":os.environ["HOME"]})+"\\n")\n'
+                 'sys.exit(int(os.environ.get("DEPENDENCY_FAIL","0")))\n')
+  bun.chmod(0o700)
+  state=self.dst/'state/accepted'; state.parent.mkdir(exist_ok=True); state.write_text('keep accepted work')
+  with patch.dict(os.environ,{'PATH':str(tools)+os.pathsep+os.environ['PATH'],'DEPENDENCY_LOG':str(log)}):
+   quiet(SYNC['run'],self.home,'preview')
+   self.assertFalse(log.exists())
+   quiet(SYNC['run'],self.home,'apply')
+   row=json.loads(log.read_text().splitlines()[-1])
+   self.assertEqual(row,{'argv':['install','--offline','--frozen-lockfile','--ignore-scripts'],
+                         'cwd':str(inbound),'home':str(self.home)})
+   with patch.dict(os.environ,{'DEPENDENCY_FAIL':'17'}), redirect_stdout(StringIO()), self.assertRaisesRegex(SystemExit,'dependency'):
+    SYNC['run'](self.home,'apply')
+   self.assertEqual(state.read_text(),'keep accepted work')
  def test_update_applies_worker_cap_and_hibernation_from_helio_env(self):
   settings=self.home/'.config/helio/helio.env'; settings.parent.mkdir(parents=True,exist_ok=True)
   settings.write_text('HELIO_MAX_WORKERS=2\nHELIO_HIBERNATE_AFTER_MIN=45\n'); settings.chmod(0o600)
   quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
   config=json.loads((self.dst/'config.json').read_text())
   self.assertEqual((config['maxWorkers'],config['hibernateAfterMin'],config['leadPane']),(2,45,'test-pane'))
+ def test_update_adds_source_inspector_to_legacy_config_and_preserves_other_hooks(self):
+  path=self.dst/'config.json'; config=json.loads(path.read_text())
+  config['hooks'].pop('inspectJobSource',None); previous=dict(config['hooks'])
+  path.write_text(json.dumps(config,indent=2)+'\n')
+  quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
+  hooks=json.loads(path.read_text())['hooks']
+  self.assertEqual(hooks.get('inspectJobSource'),['helio','recovery','source','{source}','--job','{job}'])
+  self.assertEqual({k:v for k,v in hooks.items() if k!='inspectJobSource'},previous)
  def test_install_writes_a_baseline_that_updates_cleanly(self):
   home=self.home/'fresh'; (home/'project').mkdir(parents=True)
   quiet(INSTALL['install'],home,True,home/'project')

@@ -89,7 +89,7 @@ test("incomplete preparation stays private on ack replay and recovers evidence s
     queue.stage("inbound", "10", JSON.stringify({
       message_id: "10", channel_id: "100", content: "unprepared private evidence", sent_at: "2026-11-02T12:00:00Z",
       discord_origin: authorizationMetadata({
-        id: "10", channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
+        id: "10", type: 0, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
         content: "<@88> request", timestamp: "2026-11-02T12:00:00Z",
       }),
     }));

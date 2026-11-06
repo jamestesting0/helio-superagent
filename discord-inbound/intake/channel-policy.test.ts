@@ -6,6 +6,7 @@ import { authorizationMetadata, filterConfig, reauthorize, validateChannelPolicy
 import { classify, insideCategory, type IncomingMessage } from "./filter.ts";
 import { Delivery } from "../delivery/delivery.ts";
 import { Conversations } from "../conversations/conversations.ts";
+import { discordRest } from "../discord/rest.ts";
 
 const helper = "1218071208197623880";
 const normal = "1199770187738644652";
@@ -20,11 +21,50 @@ const cfg = filterConfig({
 });
 cfg.botId = "88";
 const message: IncomingMessage = {
-  id: "10", channel_id: normal, guild_id: "300",
+  id: "10", type: 0, channel_id: normal, guild_id: "300",
   author: { id: "66", username: "staff" }, content: "<@88> unrelated",
   timestamp: "2026-11-02T12:00:00.000Z", mentions: [{ id: "88" }],
 };
-const parentOf = async (id: string) => id === "101" ? helper : id === "102" ? normal : undefined;
+const parentOf = async (id: string) => id === "101" ? { type: 11, parent_id: helper } :
+  id === "102" ? { type: 11, parent_id: normal } : undefined;
+
+test("unavailable deny ancestry withholds even a directly allowlisted owner request", async () => {
+  await expect(classify({ ...message, author: { id: "99", username: "owner" } },
+    { ...cfg, ignoredChannels: new Set(["500"]) }, async () => undefined)).rejects.toThrow("ancestry");
+});
+
+test("replay in a directly ignored channel neither reads Discord nor returns its content", async () => {
+  const original = Object.assign({ ...message }, { type: 0 });
+  const inbound = await classify(original, cfg, parentOf);
+  const payload = JSON.stringify({ ...inbound, preparation_complete: true, discord_origin: authorizationMetadata(original) });
+  const reads: string[] = [];
+  const fetcher = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+    reads.push(new URL(String(input)).pathname);
+    return Response.json({ id: normal, guild_id: "300", type: 0 });
+  }, { preconnect: fetch.preconnect }));
+  try {
+    expect(await reauthorize(payload, { ...cfg, ignoredChannels: new Set([normal]) }, discordRest("fixture"))).toBeNull();
+    expect(reads).toEqual([]);
+  } finally { fetcher.mockRestore(); }
+});
+
+test("legacy replay resolves the original type before treating a saved heading as a request", async () => {
+  const original = Object.assign({ ...message, author: { id: "99", username: "owner" }, content: "Base Storage" }, { type: 0 });
+  const inbound = await classify(original, cfg, parentOf);
+  const origin = Object.fromEntries(Object.entries(authorizationMetadata(original)).filter(([key]) => key !== "message_type"));
+  const payload = JSON.stringify({ ...inbound, preparation_complete: true, discord_origin: origin });
+  const reads: string[] = [];
+  const fetcher = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+    const path = new URL(String(input)).pathname;
+    reads.push(path);
+    return Response.json(path.endsWith("/messages/10") ? { ...original, type: 4 } :
+      { id: normal, guild_id: "300", type: 0 });
+  }, { preconnect: fetch.preconnect }));
+  try {
+    expect(await reauthorize(payload, cfg, discordRest("fixture"))).toBeNull();
+    expect(reads).toContain(`/api/v10/channels/${normal}/messages/10`);
+  } finally { fetcher.mockRestore(); }
+});
 
 test("conversation follow-ups preserve authority, require an exact owner/channel match, and revoke on replay after close", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-policy-"));

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classify, type FilterConfig, type IncomingMessage } from "./filter.ts";
+import { classify, countsTowardCatchUp, type FilterConfig, type IncomingMessage } from "./filter.ts";
 
 const OWNER = "100";
 const STAFF = "200";
@@ -21,7 +21,10 @@ const parentsById: Record<string, string | undefined> = {
   [PUBLIC_CHANNEL]: PUBLIC_CATEGORY,
   [PUBLIC_CATEGORY]: undefined,
 };
-const parentOf = async (id: string) => parentsById[id];
+const parentOf = async (id: string) => {
+  const parent_id = parentsById[id];
+  return parent_id ? { parent_id, type: [STAFF_THREAD, PUBLIC_THREAD].includes(id) ? 11 : 0 } : undefined;
+};
 
 const cfg: FilterConfig = {
   ownerId: OWNER, botId: "300", allowed: new Set([STAFF_CATEGORY]), trustedChannels: new Set([STAFF_CHANNEL]),
@@ -36,6 +39,7 @@ function msg(over: Partial<IncomingMessage> & { authorId?: string; bot?: boolean
   const { authorId = STAFF, bot, ...rest } = over;
   return {
     id: "m1",
+    type: 0,
     channel_id: STAFF_CHANNEL,
     guild_id: GUILD,
     author: { id: authorId, username: `user${authorId}`, bot },
@@ -46,6 +50,16 @@ function msg(over: Partial<IncomingMessage> & { authorId?: string; bot?: boolean
 }
 
 describe("classify", () => {
+  test.each([4, 6, 18])("system event type %i is never an owner work request", async (type) => {
+    const event = Object.assign(msg({ authorId: OWNER, content: "Base Storage" }), { type });
+    expect(await classify(event, cfg, parentOf)).toBeNull();
+  });
+
+  test.each([4, 6, 18])("system event type %i cannot consume a catch-up request slot", (type) => {
+    const event = Object.assign(msg({ authorId: OWNER }), { type });
+    expect(countsTowardCatchUp(event, cfg, "trusted")).toBe(false);
+  });
+
   test("owner in the staff channel may request work", async () => {
     const out = await classify(msg({ authorId: OWNER }), cfg, parentOf);
     expect(out?.role).toBe("OWNER_REQUEST");

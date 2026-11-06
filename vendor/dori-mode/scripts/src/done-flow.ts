@@ -7,6 +7,7 @@ import { type Clock, iso, type Runner } from "./run.ts";
 import { ALIVE_STATUSES, listPanes, sendVerified, statusLookup } from "./panes.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
 import { monitorLine } from "./monitor.ts";
+import { completionFileChecks, recordCompletion } from "./completion.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -73,6 +74,21 @@ export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]
   return reasons;
 };
 
+/** A planned path is absent safely only when failure preceded worktree creation and Git confirms no resource. */
+export const failedLaunchWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
+  const unsafe = await unpushedWork(deps, lane);
+  const topology = await deps.run(["git", "-C", deps.config.defaultCwd, "worktree", "list", "--porcelain"]);
+  if (topology.code !== 0) return [...unsafe, "worktree inventory unreadable; inspect before retiring"];
+  const missing = (lane.worktrees ?? []).filter(path => !(deps.exists ?? existsSync)(path));
+  if (!missing.length) return unsafe;
+  if (!["reserved", "brief-written"].includes(lane.failedAfter ?? "")) return unsafe;
+  const branch = await deps.run(["git", "-C", deps.config.defaultCwd, "show-ref", "--verify", "--quiet", `refs/heads/helio/${lane.key}`]);
+  if (topology.code !== 0 || branch.code !== 1) return unsafe;
+  const registered = new Set(topology.out.split("\n").filter(line => line.startsWith("worktree ")).map(line => line.slice(9)));
+  return unsafe.filter(reason => !missing.some(path =>
+    !registered.has(path) && reason === `worktree missing: ${path}; inspect before closing`));
+};
+
 /**
  * A launch that failed never did its work, so its Done signals can never read back live. It may be retired without
  * them, but only once no agent can still be running in its pane: the failure is detected from screen text, and an agent
@@ -116,18 +132,24 @@ const retire = async (deps: FlowDeps, lane: Lane, note: string, why: Record<stri
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) cleanup.push(`worktree ${wt} retained for manual review`);
   const at = iso(deps.clock);
   const receipt = { checks: [], note, cleanup, ...why };
-  await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+  await deps.registry.write(withStatus(lane, "closed", note, at, {
+    closedAt: at, receipt, ...(lane.launchState === "failed" ? { retiredAt: at } : {}),
+  }));
   return { closed: true, lines: [`${verb} ${lane.key} ${JSON.stringify(receipt)}`] };
 };
 
 export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   const exists = deps.exists ?? existsSync;
-  const unsafe = await unpushedWork(deps, lane);
+  const unsafe = lane.launchState === "failed" ? await failedLaunchWork(deps, lane) : await unpushedWork(deps, lane);
   if (unsafe.length) return { closed: false, lines: [`REFUSED ${lane.key}: ${unsafe.join("; ")}`] };
   if (lane.launchState === "failed") return retireFailedLaunch(deps, lane, note);
+  const fileChecks = await completionFileChecks(deps, lane);
+  if (fileChecks.some(check => !check.ok)) return { closed: false,
+    lines: fileChecks.map(check => `SIGNAL ${check.ok ? "OK " : "NOT"} ${check.signal} -> ${check.detail}`) };
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
+  const completion = await recordCompletion(deps, lane, checks);
   const cleanup: string[] = [];
   const hook = deps.config.hooks.threadDone;
   if (hook && lane.thread !== "none") {
@@ -141,7 +163,7 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
     cleanup.push(`worktree ${wt} retained until its PR has been merged or closed for 3 days`);
   }
   const at = iso(deps.clock);
-  const receipt = { checks, note, cleanup };
+  const receipt = { checks, note, cleanup, completion };
   // The work is finished, but a surviving tab keeps the lane open until the watcher confirms it is gone.
   if (!terminalClosed) {
     await deps.registry.write(withStatus(lane, "cleanup-pending", note, at, { receipt }));

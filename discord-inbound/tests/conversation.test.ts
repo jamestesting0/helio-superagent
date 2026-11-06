@@ -29,7 +29,7 @@ test("CLI opens, lists and closes conversations with machine consumed prefixes",
     const listed = await invoke(dir, "list");
     expect([listed.code, listed.stderr]).toEqual([0, ""]);
     expect(JSON.parse(listed.stdout.slice("CONVERSATION ".length))).toEqual({
-      ...row, summary: row.topic, state: "waiting_on_requester", age_ms: 0, idle_ms: 0,
+      ...row, summary: row.topic, state: "waiting_on_helio", age_ms: 0, idle_ms: 0,
     });
     const second = await invoke(dir, "open", "100", "99", "11", "another", "topic");
     expect([second.code, second.stdout.startsWith("CONVERSATION_OPEN ")]).toEqual([0, true]);
@@ -98,7 +98,7 @@ test("show, note, hold, resume and explicit reopen preserve a request through th
     expect((await invoke(dir, "resume", "100", "99")).code).toBe(0);
     const shown = await invoke(dir, "show", "100", "99");
     const page = JSON.parse(shown.stdout.slice("CONVERSATION_SHOW ".length));
-    expect([JSON.parse(page.content).state, page.truncated]).toEqual(["waiting_on_requester", false]);
+    expect([JSON.parse(page.content).state, page.truncated]).toEqual(["waiting_on_helio", false]);
     const closed = await invoke(dir, "close", "100", "99", "issue", "--issue", "https://github.com/o/r/issues/3");
     expect(closed.code).toBe(0);
     const reopened = await invoke(dir, "reopen", "100", "99");
@@ -180,8 +180,8 @@ test.each(["old", "fresh", "rest"])("intake excludes unclaimed chatter and retai
       expect([first.topic, first.opened_at, first.anchor_message_id, first.transcript])
         .toEqual(["Match timeout", new Date(opened).toISOString(), "9", []]);
       expect(first.recent.map((entry) => entry.message_id)).toEqual(["67", "68", "69", "70", "71"]);
-      expect(next.transcript).toEqual([]);
-      expect(next.recent.map((entry) => entry.message_id)).toEqual(["69", "70", "71", "80", "81"]);
+      // 81 replies to unclaimed 80, so 82's explicit reply to 81 has no known source topic.
+      expect(next).toBeUndefined();
       expect(stdout.includes("TEST_CONVERSATION_HISTORY")).toBe(mode === "rest");
       expect(store.transcript("100", "99").map((entry) => entry.message_id)).toEqual(["83"]);
       expect(store.get("100", "99")?.last_activity).toBe(Date.parse("2026-11-02T12:00:00Z"));
@@ -220,7 +220,9 @@ test("startup sweep reports a stale conversation once after catch-up", async () 
   const dir = await mkdtemp(join(tmpdir(), "conversation-startup-timeout-"));
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));
   try {
-    store.open("100", "55", "9", "stale", Date.parse("2026-10-29T12:00:00Z"));
+    const opened = Date.parse("2026-10-29T12:00:00Z");
+    const row = store.open("100", "55", "9", "stale", opened);
+    store.applyReply(row, { disposition: "question", waiting_on: "Which error?" }, opened);
     const stdout = await intake(dir, "old");
     const notices = stdout.split("\n").filter((line) => line.startsWith("INBOUND_CONVERSATION_TIMEOUT "))
       .map((line) => JSON.parse(line.slice("INBOUND_CONVERSATION_TIMEOUT ".length)));

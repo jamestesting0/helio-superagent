@@ -118,7 +118,7 @@ test("a message replayed after its channel stops being trusted loses its linked 
     message_id: "700", channel_id: "100", content: "x", sent_at: new Date().toISOString(), preparation_complete: true,
     attachments: [upload, linked], blocked_attachments: [{ name: "linked-image-1", reason: "r", source: "link" }],
     forwarded: [{ attachments: [linked], blocked_attachments: [] }],
-    discord_origin: { version: 1, message_id: "700", channel_id: "100", guild_id: "5", author_id: "1", bot: false,
+    discord_origin: { version: 1, message_type: 0, message_id: "700", channel_id: "100", guild_id: "5", author_id: "1", bot: false,
       webhook_id: null, mention_ids: ["9"], reply_to: null, reply_author_id: null },
   });
   const current = await reauthorize(payload, cfg, rest) as Record<string, unknown> | null;

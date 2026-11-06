@@ -1,10 +1,11 @@
 import type { Conversations, ConversationEntry } from "./conversations.ts";
 import type { Delivery } from "../delivery/delivery.ts";
-import { DiscordRestError, type Rest } from "../discord/rest.ts";
+import { DiscordRestError, IgnoredChannelError, type Rest } from "../discord/rest.ts";
 import { finishWorking } from "./working.ts";
 import { snowflakeTime } from "./working-store.ts";
 import { issueUrls, recordDiscussion } from "./issue-review.ts";
 import { RecoveryRequiredError } from "../delivery/recovery-store.ts";
+import { ReplySettlements, type ReplyMeaning } from "./reply-settlement.ts";
 
 const gone = (error: unknown) => error instanceof DiscordRestError && error.status === 404;
 
@@ -40,7 +41,7 @@ export function newerPending(delivery: Delivery, channel: string, target: string
 }
 
 export type ReplyCheck =
-  | { readonly action: "send"; readonly leftover: readonly string[] }
+  | { readonly action: "send"; readonly leftover: readonly string[]; readonly author_id?: string }
   | { readonly action: "hold"; readonly newer: readonly NewerMessage[]; readonly edited?: string }
   | { readonly action: "withhold"; readonly reason: string }
   | { readonly action: "skip"; readonly reason: string; readonly gone?: true };
@@ -70,12 +71,18 @@ export async function checkBeforeReply(options: {
     }
   }
   let edited: string | undefined;
+  let author_id: string | undefined;
   try {
-    const current = await rest<{ content: string }>(`/channels/${channel}/messages/${target}`);
+    const current = await rest<{ content: string; author?: { id: string } }>(`/channels/${channel}/messages/${target}`);
+    author_id = current.author?.id;
+    if (payload?.author_id && author_id && payload.author_id !== author_id) {
+      return { action: "withhold", reason: "Original author does not match the saved source" };
+    }
     if (payload && !known.has(target) && typeof payload.content === "string" && current.content !== payload.content) {
       edited = clip(current.content, 1500);
     }
   } catch (error) {
+    if (error instanceof IgnoredChannelError) return { action: "withhold", reason: error.message };
     if (gone(error)) return { action: "skip", reason: "the original message was deleted", gone: true };
     if (!(error instanceof Error)) throw error;
     warn(`could not re-read message_id=${target}; reply retained pending: ${error.message}`);
@@ -93,11 +100,11 @@ export async function checkBeforeReply(options: {
     }
   }
   const newer = newerPending(delivery, channel, target, known);
-  if (!newer.length && edited === undefined) return { action: "send", leftover: [] };
+  if (!newer.length && edited === undefined) return { action: "send", leftover: [], ...(author_id ? { author_id } : {}) };
   if (store.holdReply(channel, payload?.author_id ?? "", target, now)) {
     return { action: "hold", newer, ...(edited !== undefined ? { edited } : {}) };
   }
-  return { action: "send", leftover: newer.map((message) => message.message_id) };
+  return { action: "send", leftover: newer.map((message) => message.message_id), ...(author_id ? { author_id } : {}) };
 }
 
 const HELD_HINT = "REPLY_HELD_HINT Nothing was sent. Fold in the same person's additions, mention others only if directly related, " +
@@ -119,7 +126,15 @@ export async function guardedReply(o: {
   readonly replyEntry?: Omit<ConversationEntry, "message_id" | "sent_at">;
   readonly now: () => number; readonly warn: (message: string) => void; readonly owner?: string;
   readonly issues?: { readonly text: string; readonly path: string };
+  readonly settlement?: { readonly path: string; readonly event: string; readonly meaning: ReplyMeaning };
 }): Promise<{ readonly code: 0 | 3 | 4; readonly lines: readonly string[] }> {
+  const settlements = o.settlement ? new ReplySettlements(o.settlement.path) : undefined;
+  const settlementKey = o.settlement ? `${o.channel}:${o.target}:${o.settlement.event}` : undefined;
+  try {
+  if (settlements && settlementKey) {
+    const recovered = settlements.recover(settlementKey, o.store, o.now());
+    if (recovered) return { code: 0, lines: [`REPLY_SETTLED ${recovered.join(",")}; existing delivery retained`] };
+  }
   const known = new Set([...o.covers, ...o.seen]);
   const check = await checkBeforeReply({ ...o, known, now: o.now() });
   if (check.action === "withhold") {
@@ -147,33 +162,40 @@ export async function guardedReply(o: {
   const covered = [...new Set(o.covers)].filter((id) => id !== o.target && pending.get(id)?.channel_id === o.channel &&
     o.delivery.status("inbound", id).disposition === "pending");
   const notCovered = o.covers.filter((id) => id !== o.target && !covered.includes(id));
-  const targetAuthor = pending.get(o.target)?.author_id ?? o.store.working(o.target)?.user_id;
+  const targetAuthor = pending.get(o.target)?.author_id ?? o.store.working(o.target)?.user_id ?? check.author_id;
   const authors = new Set(covered.map((id) => pending.get(id)?.author_id).filter((id): id is string => !!id));
   const mentions = [...authors].filter((id) => id !== targetAuthor);
   if (targetAuthor) authors.add(targetAuthor);
   const claimed = [o.target, ...covered].some((id) => o.store.working(id)?.claimed_at != null);
 
+  const topics = [...authors].flatMap(author => {
+    const ids = [o.target, ...covered].filter(id =>
+      (pending.get(id)?.author_id ?? o.store.working(id)?.user_id ?? (id === o.target ? targetAuthor : undefined)) === author);
+    return ids.flatMap(id => {
+      const row = o.store.forReply(o.channel, author, id);
+      return row ? [row] : [];
+    });
+  }).filter((row, index, rows) => rows.findIndex(other =>
+    other.user_id === row.user_id && other.opened_at === row.opened_at) === index);
+  if (settlements && settlementKey && o.settlement) {
+    settlements.prepare(settlementKey, topics.map(row => ({ ...row, covered: [o.target, ...covered] })), o.settlement.meaning,
+      [{ target: o.target, event: `${o.channel}:${o.settlement.event}` }]);
+  }
   const replyId = await o.send(mentions);
   const lines = [`SENT ${replyId}`];
   if (o.replyEntry) {
-    for (const author of authors) {
-      const conversation = o.store.get(o.channel, author);
-      const answered = new Set([o.target, ...covered]);
-      if (!conversation || (!answered.has(conversation.anchor_message_id) &&
-          !o.store.transcript(o.channel, author).some((entry) => answered.has(entry.message_id)))) continue;
-      o.store.append(o.channel, author, {
-        ...o.replyEntry, message_id: replyId, sent_at: new Date(o.now()).toISOString(),
+    for (const conversation of topics) {
+      o.store.append(o.channel, conversation.user_id, {
+        ...o.replyEntry, reply_to: conversation.anchor_message_id, message_id: replyId, sent_at: new Date(o.now()).toISOString(),
       }, o.now());
     }
   }
   if (o.issues) {
     const named = issueUrls(o.issues.text);
     const issues = new Set(named);
-    for (const author of authors) {
-      const conversation = o.store.get(o.channel, author);
-      const issue = conversation?.issue ?? (named.length === 1 ? named[0] : undefined);
-      if (!conversation || !issue) continue;
-      o.store.linkIssue(o.channel, author, issue);
+    for (const conversation of topics) {
+      const issue = conversation.issue ?? o.settlement?.meaning.issue;
+      if (!issue) continue;
       issues.add(issue);
     }
     const discussedAt = Math.floor(Math.max(...[o.target, ...covered].map(snowflakeTime)) / 1000);
@@ -185,6 +207,10 @@ export async function guardedReply(o: {
       } catch (error) { o.warn(`issue review for ${issue} not recorded: ${String(error)}`); }
     }
   }
+  if (settlements && settlementKey) {
+    settlements.delivered(settlementKey);
+    lines.push(`REPLY_SETTLED ${settlements.settle(settlementKey, o.store, o.now()).join(",")}`);
+  }
   for (const id of covered) {
     try { o.delivery.acknowledge("inbound", id); await o.cleanup(id); }
     catch (error) { o.warn(`could not mark covered message_id=${id} handled: ${String(error)}`); }
@@ -195,4 +221,5 @@ export async function guardedReply(o: {
   if (check.leftover.length) lines.push(`REPLY_NOTE newer messages left as their own turns: ${check.leftover.join(",")}`);
   if (!claimed) lines.push("REPLY_NOTE no claim was recorded for this turn; run ack working first when you pick a turn up");
   return { code: 0, lines };
+  } finally { settlements?.close(); }
 }

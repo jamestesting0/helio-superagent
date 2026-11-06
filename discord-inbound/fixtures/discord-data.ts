@@ -1,13 +1,13 @@
 export const now = Date.parse("2026-11-02T12:00:00Z");
 export const turnMessages = [1000, 1001, 1002, 1003].map((id) => ({
-  id: String(id), channel_id: "100", guild_id: "300",
+  id: String(id), type: 0, channel_id: "100", guild_id: "300",
   author: { id: "99", username: "owner" }, attachments: [],
   content: id < 1002 ? `Context https://github.com/jamestesting0/elo-bot/pull/${id}` : "<@88>",
   timestamp: new Date(now + (id - 1002) * 1000).toISOString(),
   ...(id === 1003 ? { message_reference: { message_id: "999" } } : {}),
 }));
 export const messages = [11, 10].map((id) => ({
-  id: String(id), channel_id: "100", guild_id: "300",
+  id: String(id), type: 0, channel_id: "100", guild_id: "300",
   author: { id: "99", username: "owner" }, content: `message ${id}`,
   mentions: id === 10 ? [{ id: "88" }] : [],
   // Existing scenarios represent separate requests, not one burst.
@@ -20,7 +20,7 @@ export const messages = [11, 10].map((id) => ({
   ],
 }));
 export const conversationHistory = Array.from({ length: 12 }, (_, index) => ({
-  id: String(60 + index), channel_id: "100", guild_id: "300",
+  id: String(60 + index), type: 0, channel_id: "100", guild_id: "300",
   author: { id: "66", username: "bystander" }, content: `history ${index}`,
   timestamp: new Date(now - (process.env.DORI_TEST_CONVERSATIONS === "fresh" || index >= 10 ? 60_000 : 60 * 60 * 1000)).toISOString(),
 }));
@@ -32,7 +32,7 @@ export const conversationMessages = [
   { id: "84", author: { id: "88", username: "Helio", bot: true }, content: "author reply", message_reference: { message_id: "8" }, referenced_message: { author: { id: "99" } } },
   { id: "85", author: { id: "88", username: "Helio", bot: true }, content: "unrelated" },
   { id: "86", author: { id: "77", username: "other" }, content: "not in conversation" },
-].map((entry) => ({ ...entry, channel_id: "100", guild_id: "300", timestamp: new Date(now).toISOString(), attachments: [] }));
+].map((entry) => ({ ...entry, type: "message_reference" in entry ? 19 : 0, channel_id: "100", guild_id: "300", timestamp: new Date(now).toISOString(), attachments: [] }));
 const directMessages = {
   "200": [{ id: "30", channel_id: "200", author: { id: "99", username: "owner" } }],
   "201": [{ id: "31", channel_id: "201", author: { id: "77", username: "trusted-one" } }],
@@ -40,10 +40,10 @@ const directMessages = {
 };
 export const dmMessages = Object.fromEntries(Object.entries(directMessages).map(([channel, entries]) => [
   channel,
-  entries.map((entry) => ({ ...entry, content: "request", timestamp: new Date(now).toISOString(), attachments: [] })),
+  entries.map((entry) => ({ ...entry, type: 0, content: "request", timestamp: new Date(now).toISOString(), attachments: [] })),
 ]));
 export const forwarded = {
-  id: "21", channel_id: "100", guild_id: "300",
+  id: "21", type: 0, channel_id: "100", guild_id: "300",
   author: { id: "77", username: "staff" }, content: "",
   timestamp: new Date(now).toISOString(),
   message_reference: { type: 1, message_id: "900", channel_id: "999", guild_id: "998" },
@@ -58,7 +58,7 @@ export const forwarded = {
   }],
 };
 export const bugReport = {
-  id: "50", channel_id: "100", guild_id: "300",
+  id: "50", type: 0, channel_id: "100", guild_id: "300",
   author: { id: "1212767017917218876", username: "Elo Bot", bot: true },
   content: "User-reported EloBot bug (untrusted evidence)",
   timestamp: new Date(now).toISOString(), attachments: [],
@@ -68,7 +68,7 @@ export const bugReport = {
   }],
 };
 export const replyFollowup = {
- id:"90",channel_id:"100",guild_id:"300",author:{id:"99",username:"owner"},
+ id:"90",type:19,channel_id:"100",guild_id:"300",author:{id:"99",username:"owner"},
  content:process.env.DORI_TEST_PING_REPLY === "1" ? "<@88> try again now" : "try again now",
  timestamp:new Date(now).toISOString(),attachments:[],
  message_reference:{message_id:"89",channel_id:"100",guild_id:"300"},

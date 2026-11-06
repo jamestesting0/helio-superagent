@@ -29,7 +29,7 @@ test("user_version guards a table rebuild that preserves followups and terminal 
     INSERT INTO working VALUES ('10','100','99',1,NULL,1,0,0,NULL);`);
   let store = new Conversations(path, NOW);
   try {
-    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 5 });
     expect(db.query("SELECT user_id,status,outcome FROM conversations ORDER BY user_id").all()).toEqual([
       { user_id: "65", status: "resolved", outcome: "other" },
       { user_id: "66", status: "resolved", outcome: "timed_out" },

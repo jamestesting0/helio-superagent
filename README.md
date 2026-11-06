@@ -24,10 +24,10 @@ foundation:
 | Capability | What changes in practice |
 |---|---|
 | **A shared-server Discord workflow** | Owner, trusted-user, ordinary-member and evidence-only bot roles have distinct scopes. Channel/thread policy, reply context, attachments and burst handling let Helio participate without treating every message as an instruction. |
-| **Conversations that retain the work** | Separate topics and structured request, decision, waiting-on and result fields preserve context beyond a short transcript window. Claims, holds, replies and requester follow-ups have explicit lifecycles. |
+| **Conversations that finish the right request** | Separate topics retain context. Final answers, progress reports and requester questions have distinct states, so an old bot reply does not leave a completed request waiting or start an inappropriate reminder. |
 | **GitHub issues that stay current** | Helio clarifies reports, checks existing work and maintains the issue body as the current scope. Public comments record changes without becoming new instructions to the bot. |
 | **Fewer repeated approvals** | An authorized implementation request includes the verified PR. A clearly scoped merge-and-restart request can be one decision. Choices use Discord buttons; custom answers come through ordinary replies. |
-| **Bounded coding sessions** | Worker caps, host guards and a durable priority queue control concurrency. Job identity reuses a lane; idle sessions can hibernate and resume. Safe worktree cleanup and explicit abandonment keep unfinished work distinguishable from completion. |
+| **Bounded coding sessions** | Worker caps, host guards and a durable priority queue control concurrency. Explicit stable jobs prevent differently named duplicate workers across retries and resumes. Verified completion and guarded retirement preserve unfinished work. |
 | **Recovery and long-run upkeep** | Durable delivery, catch-up gaps, reply receipts, startup reconciliation, retention rules, session archives and coordinated backups keep interrupted work inspectable. |
 | **Controlled application operations** | The isolated profile separates the agent from host credentials. Beta maintenance and production restart use narrowly scoped services, with conflict checks, protected preimages and approval checks. |
 | **Direct operational diagnostics** | `helio doctor --json` exposes versions, queues, monitor processes, recovery and lane failures from either shell. Intake writes its own readiness receipt, tied to its process identity. |
@@ -64,11 +64,22 @@ before acting on recovered messages.
 
 - Messages are staged before slow enrichment. Reaction and conversation upkeep
   run separately from the delivery queue.
+- System events, currently ignored channels and fully unsupported-only input
+  settle quietly without strikes, replies or owner reports. Short human
+  requests and readable parts of mixed input remain eligible; operational
+  failures and accepted work are not silently discarded.
 - Catch-up counts eligible messages and records unread gaps when limits cut a
-  scan short. Blacklisted senders and excluded channels/threads are filtered
-  from the relevant intake and learning paths.
-- Reply receipts suppress duplicate sends. A restart does not turn an old
-  request into fresh approval.
+  scan short. Live intake, replay, source reads, replies and reactions share
+  current channel boundaries. Unavailable policy evidence withholds work;
+  learning retains its separate allowlist.
+- Durable reply receipts recover interrupted delivery and local completion.
+  Final delivery closes only the covered topic revision after every required
+  route succeeds; newer input and explicit holds remain protected. A restart
+  does not turn an old request into fresh approval.
+- Only an explicit outstanding requester question starts the courtesy timer.
+  Durable notice ownership and nonce readback handle concurrent upkeep,
+  restarts and Gateway events arriving before the send response. Notices do
+  not advance conversation activity, and an unknown send is not blindly retried.
 - Owner-managed and automatic blacklist policies retain moderation evidence.
   Durable ping limits bound repeated requests.
 - Retention distinguishes raw conversation content, unresolved work and
@@ -76,10 +87,23 @@ before acting on recovered messages.
   why a worktree must be kept.
 - Housekeeping begins with a preview. An abandoned lane retains its worktree
   and an explicit reason, without announcing that its work was completed.
+- Bounded lifecycle repair previews exact records, then rechecks evidence
+  before applying changes through their existing owners. Repeated apply uses
+  durable receipts; accepted or changed work is preserved. Historical replies
+  and closed issues alone do not prove a mixed topic or live worker is complete.
 
 The regression suites exercise these failure boundaries: interrupted updates,
-store reopen/replay, concurrent admission, failed wakes, retained open file
-descriptors, missing installation payloads and stale readiness evidence.
+store reopen/replay, concurrent admission, notice and completion races, failed
+wakes, retained open file descriptors, missing installation payloads and stale
+readiness evidence. Local receipts do not make Discord and separate databases
+one atomic transaction. See the
+[startup recovery runbook](agent/runbooks/startup-recovery-workflow.md) for
+bounded repair procedures.
+
+The instructions keep authorization and privacy explicit while leaving routine
+implementation choices to the agent. Applicable runbooks and passing checks
+are reused until relevant evidence changes, rather than becoming repeated
+reading, approval or verification steps.
 
 ## Clear boundaries for consequential work
 

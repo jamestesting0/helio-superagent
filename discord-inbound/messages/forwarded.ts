@@ -12,6 +12,8 @@ interface Snapshot {
 
 export interface MessageBody {
   readonly id: string;
+  readonly type?: number;
+  readonly nonce?: string | number;
   readonly content: string;
   readonly attachments?: readonly Attachment[];
   readonly embeds?: readonly Embed[];

@@ -18,7 +18,7 @@ test.each([
       { channel_id: "200", bot: true, human_verified: true, content: "bot report" },
       { channel_id: "200", webhook_id: "300", bot: false, human_verified: true, content: "webhook" },
       { channel_id: "200", author: { bot: true }, human_verified: true, content: "nested bot metadata" },
-      { channel_id: "104", parent_id: "400", bot: false, human_verified: true, content: "allowed human learning" },
+      { channel_id: "104", message_type: 0, parent_id: "400", bot: false, human_verified: true, content: "allowed human learning" },
       { channel_id: "104", bot: false, content: "legacy unverified provenance" },
     ];
     for (const [index, value] of values.entries()) queue.stage("context", String(index + 10), JSON.stringify(value));

@@ -94,7 +94,10 @@ class ButtonConfirmationTests(unittest.TestCase):
   self.row={'id':self.pid,'kind':'confirm','action':'merge','target':self.target,'revision':self.sha,'status':'confirmed','channel_id':'50',
    'message_id':self.prompt['id'],'result_message_id':self.result['id']}
   self.pr={'state':'OPEN','headRefOid':self.sha,'headRefName':'fix','baseRefName':'main','body':'',
+   'mergeable':'MERGEABLE','mergeStateStatus':'CLEAN',
    'statusCheckRollup':[{'name':'Unit tests','status':'COMPLETED','conclusion':'SUCCESS'}]}
+  self.base_sha='b'*40
+  self.common=self.base_sha
  def run_cli(self,*extra):
   db=sqlite3.connect(self.state/'discord-prompts.sqlite'); db.execute('DROP TABLE IF EXISTS prompts')
   db.execute('CREATE TABLE prompts('+','.join(self.row)+')'); db.execute('INSERT INTO prompts VALUES('+','.join('?'*len(self.row))+')',tuple(self.row.values())); db.commit(); db.close()
@@ -105,6 +108,8 @@ class ButtonConfirmationTests(unittest.TestCase):
    return {'id':'50','type':0}
   def run(argv,**kw):
    class R: returncode=0; stdout=json.dumps(self.pr)
+   if argv[:2]==['gh','api']:
+    R.stdout=self.base_sha if '/branches/' in argv[2] else self.common
    return R()
   g=m['main'].__globals__; env={'DORI_DISCORD_TOKEN':'fake','DORI_DISCORD_OWNER_ID':'1','DORI_DISCORD_ALLOWED':'50'}
   argv=['release-check',*(extra or ('--confirmation',self.pid)),'--action','merge','--target',self.target,'--revision',self.sha]
@@ -127,6 +132,18 @@ class ButtonConfirmationTests(unittest.TestCase):
  def test_preflight_checks_github_without_any_approval(self):
   code,out=self.run_cli('--preflight'); self.assertEqual(code,0,out); self.assertIn('PREFLIGHT_OK',out)
   self.pr['state']='MERGED'; code,out=self.run_cli('--preflight'); self.assertEqual(code,4); self.assertIn('RELEASE_ALREADY_MERGED',out)
+ def test_green_head_checks_do_not_override_merge_conflicts_or_unknown_readiness(self):
+  for mergeable,status in [('CONFLICTING','DIRTY'),('UNKNOWN','UNKNOWN'),('MERGEABLE','BEHIND'),('MERGEABLE','BLOCKED')]:
+   with self.subTest(mergeable=mergeable,status=status):
+    self.pr.update(mergeable=mergeable,mergeStateStatus=status)
+    code,out=self.run_cli('--preflight')
+    self.assertEqual(code,2,out)
+    self.assertNotIn('PREFLIGHT_OK',out)
+ def test_clean_merge_status_cannot_hide_a_head_behind_the_current_base(self):
+  self.common='c'*40
+  code,out=self.run_cli('--preflight')
+  self.assertEqual(code,2,out)
+  self.assertNotIn('PREFLIGHT_OK',out)
 class ReleaseCliTests(unittest.TestCase):
  def test_fresh_reply_to_expired_release_prompt_keeps_its_pinned_revision(self):
   sha='a'*40;changed='c'*40
@@ -144,13 +161,18 @@ class ReleaseCliTests(unittest.TestCase):
     argv=['release-check','--message','60','--action',action,'--target',target,'--revision',sha]
     current=[sha]
     def pr_view(*a):
-     return {'state':'OPEN','headRefOid':current[0],'headRefName':'fix','statusCheckRollup':[
+     return {'state':'OPEN','headRefOid':current[0],'headRefName':'fix','baseRefName':'main','mergeable':'MERGEABLE','mergeStateStatus':'CLEAN','statusCheckRollup':[
       {'name':'unit','status':'COMPLETED','conclusion':'SUCCESS'}]}
+    def read_base(argv,**kwargs):
+     class R:
+      returncode=0
+      stdout='b'*40
+     return R()
     approval=g['APPROVAL']['check_revision'].__globals__
     # A newer main/branch push happened before the reply; the old prompt still pins its old SHA.
     activity=lambda *a:[{'after':current[0],'timestamp':stamp(5)}]
-    with patch.dict(g,{'STATE':Path(temp),'load':lambda _:loaded,'pr_view':pr_view}),patch.object(sys,'argv',argv),patch.dict(
-      approval,{'github_activity':activity}):
+    with patch.dict(g,{'STATE':Path(temp),'load':lambda _:loaded,'pr_view':pr_view}),patch.object(g['subprocess'],'run',read_base),patch.object(sys,'argv',argv),patch.dict(
+     approval,{'github_activity':activity}):
      original=approval['check_revision'].__defaults__
      approval['check_revision'].__defaults__=(activity,*original[1:])
      try:
@@ -197,8 +219,10 @@ class ReleaseCliTests(unittest.TestCase):
    live={'id':'60','channel_id':'50','author':{'id':'42','bot':False},'content':text,'timestamp':stamp()}
    def api(path,token): return {'id':'7'} if path=='/users/@me' else live if '/messages/' in path else {'id':'50','type':0}
    def run(argv,**kw):
-    class R: returncode=0; stdout=json.dumps({'state':'OPEN','headRefOid':sha,'headRefName':'fix',
+    class R: returncode=0; stdout=json.dumps({'state':'OPEN','headRefOid':sha,'headRefName':'fix','baseRefName':'main','mergeable':'MERGEABLE','mergeStateStatus':'CLEAN',
      'statusCheckRollup':[{'__typename':'CheckRun','name':'Unit tests','status':'COMPLETED','conclusion':'SUCCESS'}]})
+    if argv[:2]==['gh','api']:
+     R.stdout='b'*40
     return R()
    g=m['main'].__globals__; env={'DORI_DISCORD_TOKEN':'fake','DORI_DISCORD_OWNER_ID':'1','DORI_DISCORD_ALLOWED':'50'}
    argv=['release-check','--message','60','--action','merge','--target',target,'--revision',sha]

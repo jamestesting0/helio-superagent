@@ -1,4 +1,4 @@
-import { insideAllowed } from "../intake/filter.ts";
+import { insideAllowed, requestMessage } from "../intake/filter.ts";
 import { MESSAGE_CHANNEL_TYPES, type ApiChannel, type Rest } from "../discord/rest.ts";
 
 /** No payload body is exposed until current ancestry and persisted human provenance are known. */
@@ -16,6 +16,12 @@ export async function contextReplayAllowed(
       ("webhook_id" in payload && payload.webhook_id != null) ||
       ("author" in payload && typeof payload.author === "object" && payload.author !== null &&
         "bot" in payload.author && payload.author.bot === true)) return false;
+  let type: number | undefined;
+  if ("message_type" in payload) {
+    if (typeof payload.message_type !== "number" || !Number.isInteger(payload.message_type)) return false;
+    type = payload.message_type;
+    if (!requestMessage({ type })) return false;
+  }
   const ids = (name: string) => {
     const values = (settings[name] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
     if (values.some((id) => !/^\d+$/.test(id))) throw new TypeError(`Invalid ${name}`);
@@ -35,6 +41,17 @@ export async function contextReplayAllowed(
     await rest<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined;
   if (!(await insideAllowed(channel.id, learning, parentOf))) return false;
   if (await insideAllowed(channel.id, normal, parentOf) || await insideAllowed(channel.id, excluded, parentOf)) return false;
-  return !(await insideAllowed(channel.id, allowed, parentOf)) ||
-    await insideAllowed(channel.id, trusted, parentOf);
+  if (await insideAllowed(channel.id, allowed, parentOf) &&
+      !await insideAllowed(channel.id, trusted, parentOf)) return false;
+  if (type === undefined) {
+    if (!("message_id" in payload) || typeof payload.message_id !== "string" || !/^\d+$/.test(payload.message_id) ||
+        !("author_id" in payload) || typeof payload.author_id !== "string" || !/^\d+$/.test(payload.author_id)) return false;
+    const original = await rest<{ id: string; channel_id: string; type: number; author: { id: string; bot?: boolean }; webhook_id?: string }>(
+      `/channels/${channel.id}/messages/${payload.message_id}`);
+    if (original.id !== payload.message_id || original.channel_id !== channel.id ||
+        original.author.id !== payload.author_id || original.author.bot || original.webhook_id) return false;
+    if (typeof original.type !== "number" || !Number.isInteger(original.type)) return false;
+    return requestMessage(original);
+  }
+  return true;
 }

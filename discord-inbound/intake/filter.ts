@@ -41,6 +41,7 @@ export async function insideCategory(channelId: string, category: string, lookup
 }
 
 export interface IncomingMessage extends MessageBody {
+  readonly type: number;
   channel_id: string;
   guild_id?: string;
   author: { id: string; username: string; global_name?: string | null; bot?: boolean };
@@ -73,19 +74,41 @@ export interface Inbound {
   readonly for_owner?: true;
 }
 
+export function requestMessage(message: Pick<MessageBody, "type">, botReport = false): boolean {
+  if (message.type === undefined) throw new TypeError("Discord message type is unavailable");
+  return message.type === 0 || message.type === 19 || (botReport && (message.type === 20 || message.type === 23));
+}
+
+/** Live intake and replay share the same current channel boundary. */
+export async function guildChannelAllowed(channelId: string, cfg: FilterConfig, lookup: ChannelLookup): Promise<boolean> {
+  if (cfg.ignoredChannels?.has(channelId) || cfg.blockedChannels?.has(channelId)) return false;
+  if (cfg.scopeCategory && !await insideCategory(channelId, cfg.scopeCategory, lookup)) return false;
+  const parentOf = async (id: string) => {
+    const channel = await lookup(id);
+    if (!channel && (cfg.ignoredChannels?.size || cfg.blockedChannels?.size)) {
+      throw new TypeError("Current channel ancestry is unavailable; retained pending");
+    }
+    return channel?.parent_id ?? undefined;
+  };
+  if (cfg.ignoredChannels?.size && await insideAllowed(channelId, cfg.ignoredChannels, parentOf)) return false;
+  if (cfg.blockedChannels?.size && await insideAllowed(channelId, cfg.blockedChannels, parentOf)) return false;
+  return insideAllowed(channelId, cfg.allowed, parentOf);
+}
+
 export async function classify(
   msg: IncomingMessage,
   cfg: FilterConfig,
-  parentOf: ParentLookup,
+  lookup: ChannelLookup,
   onIneligible?: () => void,
 ): Promise<Inbound | null> {
   if (msg.author.id === cfg.botId || msg.webhook_id !== undefined) return null;
-  if (msg.guild_id !== undefined && cfg.blockedChannels?.size &&
-      await insideAllowed(msg.channel_id, cfg.blockedChannels, parentOf)) return null;
 
   const isBugReport = bugReport(msg, cfg);
   if (msg.author.id === cfg.bugReportSource?.authorId && !isBugReport) return null;
   if (msg.author.bot && !isBugReport) return null;
+  if (!requestMessage(msg, isBugReport)) return null;
+  if (msg.guild_id !== undefined && !await guildChannelAllowed(msg.channel_id, cfg, lookup)) return null;
+  const parentOf = async (id: string) => (await lookup(id))?.parent_id ?? undefined;
 
   const isOwner = msg.author.id === cfg.ownerId;
   const isTrusted = cfg.trustedIds?.has(msg.author.id) ?? false;
@@ -93,9 +116,6 @@ export async function classify(
 
   if (msg.guild_id === undefined) {
     if (!isOwner && !isTrusted) return null;
-  } else {
-    // Channel IDs are globally unique, so the allowlist alone pins the server.
-    if (!(await insideAllowed(msg.channel_id, cfg.allowed, parentOf))) return null;
   }
 
   const channelPolicy: ChannelPolicy = msg.guild_id === undefined ? "trusted" :
@@ -163,6 +183,7 @@ export function countsTowardCatchUp(msg: IncomingMessage, cfg: FilterConfig, cha
   if (msg.author.id === cfg.botId || msg.webhook_id !== undefined) return false;
   const isBugReport = bugReport(msg, cfg);
   if (msg.author.bot && !isBugReport) return false;
+  if (!requestMessage(msg, isBugReport)) return false;
   if (channelPolicy === "trusted" || isBugReport || cfg.botId === undefined) return true;
   const { mentioned, conversationFollowup, forOwner } = addressing(msg, cfg, channelPolicy, false);
   return mentioned || conversationFollowup || forOwner;

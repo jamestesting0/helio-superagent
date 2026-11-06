@@ -9,24 +9,29 @@ export interface SendOnce {
   readonly path: string;
   readonly target: string;
   readonly text: string;
+  /** The request's logical delivery event, independent of a producer's wording. */
+  readonly event?: string;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly send: () => Promise<string>;
   /** A reply Discord already has for this target with this text, after a send whose outcome is unknown. */
-  readonly findSent: () => Promise<string | undefined>;
+  readonly findSent: (text: string, otherReplyIds: readonly string[]) => Promise<string | undefined>;
 }
 
-type Claim = { kind: "mine" | "wait" } | { kind: "sent"; id: string } | { kind: "stale"; since: number };
+type Claim = { kind: "mine" | "wait" } | { kind: "sent"; id: string } | { kind: "stale"; since: number; text: string };
 
 /** Find a previously accepted reply before an uncertain send is retried. */
-export async function findSentReply(rest: Rest, target: { readonly channel_id: string; readonly message_id: string },
+export async function findSentReply(rest: Rest, target: {
+  readonly channel_id: string; readonly message_id: string; readonly referenced?: boolean; readonly otherReplyIds?: readonly string[];
+},
   text: string): Promise<string | undefined> {
   const me = await rest<{ id: string }>("/users/@me");
   let after = target.message_id;
   for (let page = 0; page < 50; page++) {
     const messages = await rest<{ id: string; content: string; author: { id: string }; message_reference?: { message_id?: string } }[]>(
       `/channels/${target.channel_id}/messages?after=${after}&limit=100`);
-    const found = messages.find((message) => message.author.id === me.id && message.message_reference?.message_id === target.message_id &&
+    const found = messages.find((message) => !target.otherReplyIds?.includes(message.id) && message.author.id === me.id &&
+      (target.referenced === false || message.message_reference?.message_id === target.message_id) &&
       message.content === text);
     if (found) return found.id;
     if (messages.length < 100) return undefined;
@@ -36,7 +41,7 @@ export async function findSentReply(rest: Rest, target: { readonly channel_id: s
 }
 
 /**
- * Sends one reply per (target message, exact text), across processes. A second identical send waits for the
+ * Sends one reply per (target, event or exact text), across processes. A second producer waits for the
  * first and returns its reply instead of posting again. A send that failed or never finished leaves a stale
  * claim, so the next attempt first asks Discord whether that reply went out.
  */
@@ -48,24 +53,33 @@ export async function sendOnce(o: SendOnce): Promise<{ id: string; duplicate: bo
     db.exec(`CREATE TABLE IF NOT EXISTS reply_sends (
       target TEXT NOT NULL, text_hash TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('sending', 'sent')),
       reply_id TEXT, started_at INTEGER NOT NULL, PRIMARY KEY (target, text_hash))`);
+    db.transaction(() => {
+      const columns = db.query<{ name: string }, []>("PRAGMA table_info(reply_sends)").all();
+      if (!columns.some((column) => column.name === "pending_text")) {
+        db.exec("ALTER TABLE reply_sends ADD COLUMN pending_text TEXT");
+      }
+    }).immediate();
     db.run("DELETE FROM reply_sends WHERE started_at < ? AND state = 'sent'", [o.now() - RETAIN_MS]);
-    const hash = new Bun.CryptoHasher("sha256").update(o.text).digest("hex");
+    const hash = o.event ? `event:${o.event}` : new Bun.CryptoHasher("sha256").update(o.text).digest("hex");
     const key = [o.target, hash] as const;
     const claim = db.transaction((): Claim => {
-      const row = db.query<{ state: string; reply_id: string | null; started_at: number }, [string, string]>(
-        "SELECT state, reply_id, started_at FROM reply_sends WHERE target = ? AND text_hash = ?").get(...key);
+      const row = db.query<{ state: string; reply_id: string | null; started_at: number; pending_text: string | null }, [string, string]>(
+        "SELECT state, reply_id, started_at, pending_text FROM reply_sends WHERE target = ? AND text_hash = ?").get(...key);
       if (!row) {
-        db.run("INSERT INTO reply_sends VALUES (?, ?, 'sending', NULL, ?)", [...key, o.now()]);
+        db.run("INSERT INTO reply_sends(target,text_hash,state,reply_id,started_at,pending_text) VALUES (?, ?, 'sending', NULL, ?, ?)",
+          [...key, o.now(), o.text]);
         return { kind: "mine" };
       }
       if (row.state === "sent" && row.reply_id) return { kind: "sent", id: row.reply_id };
-      return o.now() - row.started_at < STALE_SEND_MS ? { kind: "wait" } : { kind: "stale", since: row.started_at };
+      return o.now() - row.started_at < STALE_SEND_MS ? { kind: "wait" } :
+        { kind: "stale", since: row.started_at, text: row.pending_text ?? o.text };
     });
     const takeOver = db.transaction((since: number) =>
-      db.run("UPDATE reply_sends SET started_at = ? WHERE target = ? AND text_hash = ? AND state = 'sending' AND started_at = ?",
-        [o.now(), ...key, since]).changes === 1);
+      db.run("UPDATE reply_sends SET started_at = ?, pending_text = ? WHERE target = ? AND text_hash = ? AND state = 'sending' AND started_at = ?",
+        [o.now(), o.text, ...key, since]).changes === 1);
     const record = (id: string) =>
-      db.run("UPDATE reply_sends SET state = 'sent', reply_id = ? WHERE target = ? AND text_hash = ?", [id, ...key]);
+      db.run("UPDATE reply_sends SET state = 'sent', reply_id = ?, started_at = ?, pending_text = NULL WHERE target = ? AND text_hash = ?",
+        [id, o.now(), ...key]);
     for (;;) {
       const current = claim.immediate();
       if (current.kind === "sent") return { id: current.id, duplicate: true };
@@ -74,7 +88,10 @@ export async function sendOnce(o: SendOnce): Promise<{ id: string; duplicate: bo
         continue;
       }
       if (current.kind === "stale") {
-        const existing = await o.findSent();
+        const otherReplies = db.query<{ reply_id: string }, [string, string]>(
+          "SELECT reply_id FROM reply_sends WHERE target=? AND state='sent' AND reply_id IS NOT NULL AND text_hash != ?")
+          .all(o.target, hash).map((row) => row.reply_id);
+        const existing = await o.findSent(current.text, otherReplies);
         if (existing) {
           record(existing);
           return { id: existing, duplicate: true };

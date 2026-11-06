@@ -5,10 +5,10 @@ import { dirname, join } from "node:path";
 
 import { readQueue } from "../src/admission.ts";
 import { abandonLane, closeLane } from "../src/done-flow.ts";
-import { launchLane } from "../src/launch.ts";
+import { adoptLane, launchLane } from "../src/launch.ts";
 import { lifecycleTick } from "../src/lifecycle.ts";
 import { reapWorktrees, staleLanes } from "../src/reap.ts";
-import { type Lane, statusOf, withStatus } from "../src/registry.ts";
+import { type Lane, requestJob, statusOf, withStatus } from "../src/registry.ts";
 import type { Ran, RunOptions } from "../src/run.ts";
 import { sessionDirFor } from "../src/session-id.ts";
 import { depsFor, fakeClock, HEALTHY, newWorld, withState } from "./fakes.ts";
@@ -46,10 +46,16 @@ function setup(patch: Record<string, unknown> = {}) {
 }
 
 const launch = (s: ReturnType<typeof setup>, key: string, extra: Record<string, unknown> = {}) =>
-  launchLane(s.deps, { key, title: key, brief: s.brief, done: "closed acme/app#3", ...extra });
+  launchLane(s.deps, { key, job: key, title: key, brief: s.brief, done: "closed acme/app#3", ...extra });
 
 const lane = (key: string, patch: Partial<Lane> = {}): Lane =>
-  ({ key, title: key, thread: "none", brief: "/b", done: "closed acme/app#3", cwd: "/repo", openedAt: new Date(T0).toISOString(), ...patch });
+  ({ key, job: key, title: key, thread: "none", brief: "/b", done: "closed acme/app#3", cwd: "/repo", openedAt: new Date(T0).toISOString(), ...patch });
+
+test("a non-issue request has a stable job independent of a lane display name", () => {
+  expect(requestJob("owner/repo", "100", "500")).toBe("request-84838f43fb356a72b0ff49df");
+  expect(requestJob("owner/repo", "100", "501")).not.toBe(requestJob("owner/repo", "100", "500"));
+  expect(() => requestJob("owner/repo", "100", "forwarded text")).toThrow("original top-level");
+});
 
 test("an adopted pane-only lane closes its shell before abandonment, and refuses failed closure", async () => {
   const s = setup();
@@ -79,7 +85,7 @@ test("a failed wake's surviving pane keeps the last worker slot", async () => {
   expect(s.terminal.tabs).toBe(1);
 });
 
-test("a retired failed launch without a created transcript retries in its original record", async () => {
+test("a retired failed launch remains historical when another key starts the job", async () => {
   const s = setup({ agentCommand: ["omo", "{prompt}"] });
   const run = s.deps.run;
   let refuse = true;
@@ -90,12 +96,12 @@ test("a retired failed launch without a created transcript retries in its origin
   expect(failed.sessionVia).toBe("assigned");
   expect((await closeLane(s.deps, failed, "retire failed launch")).closed).toBe(true);
   refuse = false;
-  expect((await launch(s, "new-key", { job: "failed-job" })).startup).toStartWith("STARTUP_OK failed-job");
-  const retried = (await s.deps.registry.read("failed-job"))!;
-  expect(retried.session).not.toBe(failed.session);
-  expect(retried.closedAt).toBeUndefined();
-  expect(retried.history?.length).toBeGreaterThan(1);
-  expect(await s.deps.registry.read("new-key")).toBeNull();
+  expect((await launch(s, "new-key", { job: "failed-job" })).startup).toStartWith("STARTUP_OK new-key");
+  const historical = (await s.deps.registry.read("failed-job"))!;
+  expect(historical.session).toBe(failed.session);
+  expect(historical.closedAt).toBeDefined();
+  expect(historical.retiredAt).toBeDefined();
+  expect((await s.deps.registry.read("new-key"))?.job).toBe("failed-job");
 });
 
 test("launches over the worker cap queue durably, owner work first, and start when a slot frees", async () => {
@@ -129,6 +135,48 @@ test("one open lane per job: a second launch for the same job is refused", async
   expect(s.terminal.tabs).toBe(1);
 });
 
+test("new launches require an explicit job and competing adoptions reserve one job under the launch lock", async () => {
+  const s = setup();
+  await expect(launch(s, "missing-job", { job: "" })).rejects.toThrow("--job is required");
+  const outcomes = await Promise.allSettled(["adopt-first", "adopt-second"].map(key =>
+    adoptLane(s.deps, { key, job: "issue-8", title: key, brief: s.brief, done: "closed acme/app#3", pane: "w:p9" })));
+  expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
+  expect((await s.deps.registry.open()).filter(row => row.job === "issue-8")).toHaveLength(1);
+});
+
+test("a retired failed record cannot capture a job with a valid resumable replacement", async () => {
+  const s = setup();
+  const dir = sessionDirFor(s.deps.config.sessionsDir, s.state.dir);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "2026-11-05T10-00-00-000Z_replacement.jsonl"), "{}\n");
+  await s.deps.registry.write(lane("old-failure", { job: "issue-8", launchState: "failed",
+    status: "closed", closedAt: new Date(T0).toISOString() }));
+  await s.deps.registry.write(lane("valid-session", { job: "issue-8", session: "replacement",
+    status: "hibernated", cwd: s.state.dir, brief: s.brief }));
+  expect((await launch(s, "new-display-name", { job: "issue-8" })).startup).toStartWith("LANE_WOKEN valid-session");
+  expect((await s.deps.registry.read("old-failure"))?.closedAt).toBeDefined();
+  expect(await s.deps.registry.read("new-display-name")).toBeNull();
+});
+
+test("pre-worktree failure can retire only after Git proves absence; missing created work stays protected", async () => {
+  const s = setup();
+  const absent = join(s.state.dir, "worktrees", "planned");
+  s.deps.exists = path => path !== absent;
+  const run = s.deps.run;
+  s.deps.run = async (argv, opts) => argv.includes("show-ref") ? { code: 1, out: "", err: "" } : run(argv, opts);
+  const draft = lane("pre-worktree", { launchState: "failed", failedAfter: "brief-written", worktrees: [absent] });
+  await s.deps.registry.write(draft);
+  expect((await closeLane(s.deps, draft, "Retire failed attempt")).closed).toBe(true);
+  expect((await s.deps.registry.read(draft.key))?.retiredAt).toBeDefined();
+  const created = lane("created-worktree", { launchState: "failed", failedAfter: "worktree-created", worktrees: [absent] });
+  await s.deps.registry.write(created);
+  expect((await closeLane(s.deps, created, "Retire failed attempt")).closed).toBe(false);
+  expect((await s.deps.registry.read(created.key))?.retiredAt).toBeUndefined();
+  const unknown = lane("unknown-stage", { launchState: "failed", worktrees: [absent] });
+  await s.deps.registry.write(unknown);
+  expect((await closeLane(s.deps, unknown, "Retire failed attempt")).closed).toBe(false);
+});
+
 test("a job's hibernated lane is resumed in its recorded session instead of a fresh launch", async () => {
   const s = setup();
   const cwd = join(s.state.dir, "work");
@@ -147,9 +195,9 @@ test("a job's hibernated lane is resumed in its recorded session instead of a fr
 
 test("an idle worker hibernates after the idle window, never without a session or while a question waits", async () => {
   const s = setup();
-  for (const [key, pane] of [["quiet", "w:p1"], ["asking", "w:p2"], ["unknown", "w:p3"]] as const) {
+  for (const [key, pane] of [["quiet", "w:p1"], ["asking", "w:p2"], ["unknown", "w:p3"], ["legacy", "w:p4"]] as const) {
     s.world.panes.push({ pane_id: pane, workspace_id: "w", agent: "pi", agent_status: "idle" });
-    await s.deps.registry.write(lane(key, { pane, tab: pane.replace(":p", ":t"), ...(key === "unknown" ? {} : { session: `sid-${key}` }) }));
+    await s.deps.registry.write(lane(key, { job: key === "legacy" ? undefined : key, pane, tab: pane.replace(":p", ":t"), ...(key === "unknown" ? {} : { session: `sid-${key}` }) }));
   }
   const db = new Database(join(s.state.dir, "discord-questions.sqlite"), { create: true });
   db.exec("CREATE TABLE questions (id TEXT, lane TEXT, status TEXT)");
@@ -163,6 +211,7 @@ test("an idle worker hibernates after the idle window, never without a session o
   expect([statusOf(quiet), quiet.session, quiet.pane]).toEqual(["hibernated", "sid-quiet", undefined]);
   expect(statusOf((await s.deps.registry.read("asking"))!)).toBe("working");
   expect(statusOf((await s.deps.registry.read("unknown"))!)).toBe("working");
+  expect(statusOf((await s.deps.registry.read("legacy"))!)).toBe("working");
 });
 
 test("a close whose tab survives stays cleanup-pending until the watcher sees the pane gone", async () => {

@@ -1,6 +1,9 @@
 import type { describeMessage } from "../messages/reply-context.ts";
 import { conversationDatabase } from "./conversation-db.ts";
 import { WorkingStore } from "./working-store.ts";
+import type { ReplyMeaning } from "./reply-settlement.ts";
+import { NoticeStore, type NoticeIntent } from "./notice-store.ts";
+import { TopicReconciliation } from "./reconcile-topic.ts";
 export { WORKING_WINDOW_MS, snowflakeTime, type Working } from "./working-store.ts";
 
 export type ConversationEntry = ReturnType<typeof describeMessage>["entry"];
@@ -30,13 +33,30 @@ export interface Conversation {
   readonly decided: string;
   readonly waiting_on: string;
   readonly result: string;
+  readonly revision: number;
+  readonly job: string | null;
+  readonly reply_disposition: string | null;
+  readonly question_started_at: number | null;
+  readonly question_generation: number;
+  readonly last_reply_key: string | null;
+  readonly latest_input_id: string | null;
 }
+export type TopicRevision = Pick<Conversation,
+  "channel_id" | "user_id" | "opened_at" | "anchor_message_id" | "revision" | "last_activity"> & {
+    readonly covered?: readonly string[];
+  };
 
 export const UNDERSTANDING_FIELDS = ["request", "decided", "waiting_on", "result"] as const;
 export type Understanding = Partial<Record<typeof UNDERSTANDING_FIELDS[number], string>>;
 
 export class Conversations extends WorkingStore {
-  constructor(path: string, now = Date.now(), busyMs = 5000) { super(conversationDatabase(path, now, busyMs)); }
+  readonly notices: NoticeStore;
+  readonly reconciliation: TopicReconciliation;
+  constructor(path: string, now = Date.now(), busyMs = 5000) {
+    super(conversationDatabase(path, now, busyMs));
+    this.notices = new NoticeStore(this.db);
+    this.reconciliation = new TopicReconciliation(this.db);
+  }
 
   open(channel: string, user: string, anchor: string, topic: string, now: number): Conversation {
     if (!topic.trim() || topic.length > 200) throw new TypeError("Topic must be 1-200 characters");
@@ -51,10 +71,12 @@ export class Conversations extends WorkingStore {
         anchor_message_id: anchor, topic, status: "open", outcome: null, closed_at: null,
         summary: "", hold_reason: null, nudged_at: null, resolved_at: null, archived_at: null, issue: null,
         request: "", decided: "", waiting_on: "", result: "",
+        revision: 0, job: null, reply_disposition: null, question_started_at: null, question_generation: 0, last_reply_key: null,
+        latest_input_id: anchor,
       };
       this.db.query(`INSERT INTO conversations
-        (channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status)
-        VALUES (?,?,?,?,?,?,'open')`).run(channel, user, opened_at, now, anchor, topic);
+        (channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status,latest_input_id)
+        VALUES (?,?,?,?,?,?,'open',?)`).run(channel, user, opened_at, now, anchor, topic, anchor);
       // A claim can precede topic selection. The new anchor belongs only to this topic, not the previous default.
       this.db.query("UPDATE transcript SET opened_at=? WHERE channel_id=? AND user_id=? AND message_id=?")
         .run(opened_at, channel, user, anchor);
@@ -68,12 +90,12 @@ export class Conversations extends WorkingStore {
       const row = this.requireOpen(channel, user, topic);
       const summary = row.summary || row.topic;
       this.db.query(`UPDATE conversations SET status='resolved',outcome=?,closed_at=?,resolved_at=?,
-        summary=?,hold_reason=NULL,issue=coalesce(?,issue) WHERE channel_id=? AND user_id=? AND opened_at=?`)
+        summary=?,hold_reason=NULL,issue=coalesce(?,issue),revision=revision+1 WHERE channel_id=? AND user_id=? AND opened_at=?`)
         .run(outcome, now, now, summary, issue ?? null, channel, user, row.opened_at);
       this.db.query("DELETE FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?")
         .run(channel, user, row.opened_at);
       return { ...row, status: "resolved", outcome, closed_at: now, resolved_at: now,
-        summary, hold_reason: null, issue: issue ?? row.issue };
+        summary, hold_reason: null, issue: issue ?? row.issue, revision: row.revision + 1 };
     }).immediate();
   }
 
@@ -94,16 +116,17 @@ export class Conversations extends WorkingStore {
     ).get(channel, user, topic ?? null, topic ?? null);
   }
 
-  /** The conversation a message replying to `replyTo` belongs to, else the most recently active one. */
+  /** Explicit replies never fall through; an unthreaded continuation needs exactly one active topic. */
   forReply(channel: string, user: string, replyTo?: string): Conversation | null {
     if (replyTo) {
       const owner = this.db.query<Conversation, [string, string, string, string]>(`SELECT c.* FROM conversations c
         WHERE c.channel_id=? AND c.user_id=? AND c.status IN ('open','on_hold') AND (c.anchor_message_id=? OR EXISTS (
           SELECT 1 FROM transcript t WHERE t.channel_id=c.channel_id AND t.user_id=c.user_id AND t.opened_at=c.opened_at
             AND t.message_id=?)) ORDER BY c.last_activity DESC LIMIT 1`).get(channel, user, replyTo, replyTo);
-      if (owner) return owner;
+      return owner;
     }
-    return this.get(channel, user);
+    const rows = this.list().filter(row => row.channel_id === channel && row.user_id === user);
+    return rows.length === 1 ? rows[0]! : null;
   }
 
   belongs(row: Conversation, messageId: string): boolean {
@@ -143,22 +166,21 @@ export class Conversations extends WorkingStore {
 
   /**
    * A new message from the requester always needs Helio. Otherwise the structured `waiting_on` decides; a conversation
-   * without structured state falls back to who spoke last.
+   * without a delivered question remains an internal Helio review.
    */
   state(row: Conversation): ConversationState {
     switch (row.status) {
       case "on_hold": case "resolved": case "archived": return row.status;
       case "open": {
-        const last = this.transcriptOf(row).at(-1);
-        if (last?.author_id === row.user_id) return "waiting_on_helio";
-        if (row.waiting_on) return "waiting_on_requester";
-        return row.request ? "waiting_on_helio" : "waiting_on_requester";
+        if (row.reply_disposition === "question" && row.waiting_on && row.question_started_at !== null) return "waiting_on_requester";
+        return "waiting_on_helio";
       }
       default: { const unreachable: never = row.status; return unreachable; }
     }
   }
 
   append(channel: string, user: string, entry: ConversationEntry, now = Date.now()): void {
+    if (this.isNotice(entry.message_id)) return;
     this.db.transaction(() => {
       const row = this.get(channel, user, entry.message_id) ?? this.forReply(channel, user, entry.reply_to);
       if (!row) return;
@@ -168,10 +190,23 @@ export class Conversations extends WorkingStore {
         (message_id,channel_id,user_id,opened_at,author_id,sent_at,entry) VALUES (?,?,?,?,?,?,?)`)
         .run(entry.message_id, channel, user, row.opened_at, entry.author_id, entry.sent_at ?? null, JSON.stringify(entry));
       if (!inserted.changes) return;
+      if (entry.author_id === user) this.observeInput(channel, user, entry.message_id, now, entry.reply_to);
       this.db.query(`UPDATE conversations SET last_activity=max(last_activity,?),nudged_at=NULL,
-        status=CASE WHEN ? THEN 'open' ELSE status END,hold_reason=CASE WHEN ? THEN NULL ELSE hold_reason END
+        waiting_on=CASE WHEN ? THEN '' ELSE waiting_on END,
+        question_started_at=NULL,reply_disposition=NULL
         WHERE channel_id=? AND user_id=? AND opened_at=?`)
-        .run(now, entry.author_id === user ? 1 : 0, entry.author_id === user ? 1 : 0, channel, user, row.opened_at);
+        .run(now, entry.author_id === user ? 1 : 0, channel, user, row.opened_at);
+    }).immediate();
+  }
+
+  /** Authorized, prepared input invalidates a covered revision before the lead claims its turn. */
+  observeInput(channel: string, user: string, messageId: string, now: number, replyTo?: string): void {
+    this.db.transaction(() => {
+      const row = this.get(channel, user, messageId) ?? this.forReply(channel, user, replyTo);
+      if (!row || (row.latest_input_id && BigInt(messageId) <= BigInt(row.latest_input_id))) return;
+      this.db.run(`UPDATE conversations SET latest_input_id=?,revision=revision+1,last_activity=max(last_activity,?),
+        waiting_on='',question_started_at=NULL,reply_disposition=NULL,nudged_at=NULL
+        WHERE channel_id=? AND user_id=? AND opened_at=?`, [messageId, now, channel, user, row.opened_at]);
     }).immediate();
   }
 
@@ -204,25 +239,36 @@ export class Conversations extends WorkingStore {
   }
 
   /** Records what Helio understood; an empty string clears a field. */
-  setState(channel: string, user: string, fields: Understanding, topic?: string): void {
+  setState(channel: string, user: string, fields: Understanding & { readonly job?: string; readonly issue?: string }, topic?: string): void {
     const entries = UNDERSTANDING_FIELDS.flatMap((name) => fields[name] === undefined ? [] : [[name, fields[name]] as const]);
-    if (!entries.length) throw new TypeError("Nothing to set");
+    const task = (["job", "issue"] as const).flatMap(name => fields[name] === undefined ? [] : [[name, fields[name]] as const]);
+    if (fields.job !== undefined && (!/^[a-z0-9][a-z0-9._-]{1,60}$/.test(fields.job) || fields.job.includes(".."))) throw new TypeError("Invalid stable job");
+    if (fields.issue !== undefined && !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*$/.test(fields.issue)) {
+      throw new TypeError("Expected canonical issue URL");
+    }
+    if (!entries.length && !task.length) throw new TypeError("Nothing to set");
     for (const [name, value] of entries) if (value.length > 300) throw new TypeError(`${name} must be at most 300 characters`);
     const row = this.requireOpen(channel, user, topic);
-    this.db.query(`UPDATE conversations SET ${entries.map(([name]) => `${name}=?`).join(",")}
-      WHERE channel_id=? AND user_id=? AND opened_at=?`).run(...entries.map(([, value]) => value), channel, user, row.opened_at);
+    for (const [name, value] of task) {
+      if (row[name] && row[name] !== value) throw new RangeError(`Topic already belongs to another ${name}`);
+    }
+    const updates = [...entries, ...task];
+    this.db.query(`UPDATE conversations SET revision=revision+1,
+      ${fields.waiting_on !== undefined ? "question_started_at=NULL,reply_disposition=NULL," : ""}
+      ${updates.map(([name]) => `${name}=?`).join(",")}
+      WHERE channel_id=? AND user_id=? AND opened_at=?`).run(...updates.map(([, value]) => value), channel, user, row.opened_at);
   }
 
   hold(channel: string, user: string, reason: string, topic?: string): void {
     if (!reason.trim() || reason.length > 600) throw new TypeError("Hold reason must be 1-600 characters");
     const row = this.requireOpen(channel, user, topic);
-    this.db.query("UPDATE conversations SET status='on_hold',hold_reason=? WHERE channel_id=? AND user_id=? AND opened_at=?")
+    this.db.query("UPDATE conversations SET revision=revision+1,status='on_hold',hold_reason=? WHERE channel_id=? AND user_id=? AND opened_at=?")
       .run(reason, channel, user, row.opened_at);
   }
 
   resume(channel: string, user: string, topic?: string): void {
     const row = this.requireOpen(channel, user, topic);
-    this.db.query(`UPDATE conversations SET status='open',hold_reason=NULL
+    this.db.query(`UPDATE conversations SET revision=revision+1,status='open',hold_reason=NULL
       WHERE channel_id=? AND user_id=? AND opened_at=? AND status='on_hold'`).run(channel, user, row.opened_at);
   }
 
@@ -232,10 +278,12 @@ export class Conversations extends WorkingStore {
       const row = this.recentlyResolved(channel, user, now);
       if (!row) throw new RangeError("No conversation resolved in the last 7 days; open a new one");
       this.db.query(`UPDATE conversations SET status='open',outcome=NULL,closed_at=NULL,resolved_at=NULL,
+        revision=revision+1,waiting_on='',question_started_at=NULL,last_reply_key=NULL,reply_disposition=NULL,
         archived_at=NULL,last_activity=?,nudged_at=NULL WHERE channel_id=? AND user_id=? AND opened_at=?`)
         .run(now, channel, user, row.opened_at);
       return { ...row, status: "open", outcome: null, closed_at: null, resolved_at: null,
-        archived_at: null, last_activity: now, nudged_at: null };
+        archived_at: null, last_activity: now, nudged_at: null, revision: row.revision + 1, waiting_on: "",
+        question_started_at: null, last_reply_key: null, reply_disposition: null };
     }).immediate();
   }
 
@@ -252,12 +300,53 @@ export class Conversations extends WorkingStore {
     return this.db.query("SELECT 1 FROM conversation_notices WHERE message_id=?").get(messageId) !== null;
   }
 
+  observeNotice(channel: string, nonce: string | number | undefined, messageId: string, now: number): boolean {
+    return this.notices.observe(channel, nonce, messageId, now) || this.isNotice(messageId);
+  }
+
+  settleNotice(intent: NoticeIntent, now: number): void {
+    this.db.transaction(() => {
+      if (!intent.message_id || intent.settled) return;
+      if (this.notices.current(intent)) {
+        const row = this.db.query<Conversation, [string, string, number]>(
+          "SELECT * FROM conversations WHERE channel_id=? AND user_id=? AND opened_at=?")
+          .get(intent.channel_id, intent.user_id, intent.opened_at)!;
+        if (intent.kind === "timeout") this.resolveIfCurrent(row, "timed_out", now);
+        else this.markNudged(row, now);
+      }
+      this.notices.markSettled(intent);
+    }).immediate();
+  }
+
   resolveIfCurrent(row: Conversation, outcome: ConversationOutcome, now: number): void {
     this.db.transaction(() => {
       const current = this.get(row.channel_id, row.user_id, row.anchor_message_id);
-      if (current?.opened_at === row.opened_at && current.last_activity === row.last_activity) {
+      if (current?.opened_at === row.opened_at && current.revision === row.revision && current.last_activity === row.last_activity) {
         this.close(row.channel_id, row.user_id, outcome, now, undefined, row.anchor_message_id);
       }
+    }).immediate();
+  }
+
+  /** Compare the covered human revision; a retry recognizes its own already-applied receipt. */
+  applyReply(row: TopicRevision, meaning: ReplyMeaning, now: number, key?: string): "applied" | "newer-input" {
+    return this.db.transaction(() => {
+      const current = this.byAnchor(row.channel_id, row.user_id, row.anchor_message_id);
+      if (key && current?.last_reply_key === key) return "applied";
+      if (!current || current.opened_at !== row.opened_at || current.revision !== row.revision ||
+          current.status !== "open") return "newer-input";
+      const lastHuman = this.transcriptOf(current).findLast(entry => entry.author_id === row.user_id);
+      if (row.covered && lastHuman && !row.covered.includes(lastHuman.message_id)) return "newer-input";
+      if (row.covered && current.latest_input_id && !row.covered.includes(current.latest_input_id)) return "newer-input";
+      if (meaning.disposition === "question" && !meaning.waiting_on?.trim()) throw new TypeError("Question requires waiting_on");
+      this.db.run(`UPDATE conversations SET reply_disposition=?,waiting_on=?,question_started_at=?,
+        question_generation=question_generation+?,last_reply_key=?,job=coalesce(job,?),issue=coalesce(issue,?),
+        revision=revision+? WHERE channel_id=? AND user_id=? AND opened_at=?`,
+      [meaning.disposition, meaning.disposition === "question" ? meaning.waiting_on! : "",
+        meaning.disposition === "question" ? now : null, meaning.disposition === "question" ? 1 : 0,
+        key ?? null, meaning.job ?? null, meaning.issue ?? null, meaning.disposition === "final" ? 0 : 1,
+        row.channel_id, row.user_id, row.opened_at]);
+      if (meaning.disposition === "final") this.close(row.channel_id, row.user_id, "answered", now, undefined, row.anchor_message_id);
+      return "applied";
     }).immediate();
   }
 

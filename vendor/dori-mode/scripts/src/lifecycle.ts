@@ -34,7 +34,7 @@ export const hibernateTick = async (deps: FlowDeps, panes: readonly Pane[]): Pro
   const out: string[] = [];
   const now = deps.clock.now();
   for (let lane of await deps.registry.list()) {
-    if (statusOf(lane) !== "working" || !lane.pane) continue;
+    if (statusOf(lane) !== "working" || !lane.pane || !lane.job) continue;
     const pane = panes.find((p) => p.pane_id === lane.pane);
     if (!pane) continue;
     if (pane.agent_status !== "idle") {
@@ -75,6 +75,10 @@ export const retryCleanup = async (deps: FlowDeps, panes: readonly Pane[]): Prom
 export const drainQueue = async (deps: FlowDeps): Promise<string[]> => {
   const out: string[] = [];
   for (const entry of ordered(await readQueue(deps))) {
+    if (!entry.job && !entry.wake) {
+      out.push(monitorLine(`LANE_DEQUEUE_HELD ${entry.key}: legacy queue entry needs verified job binding`));
+      continue;
+    }
     if ((await capacityReasons(deps)).length) break;
     try {
       let startup: string;
@@ -84,7 +88,7 @@ export const drainQueue = async (deps: FlowDeps): Promise<string[]> => {
         startup = (await wakeLane(deps, lane, { ...(entry.briefText ? { briefText: entry.briefText } : {}), priority: entry.priority, note: "woken from the launch queue",
           attempt: { title: entry.title, done: entry.done, ...(entry.thread ? { thread: entry.thread } : {}), ...(entry.model ? { model: entry.model } : {}) } })).startup;
       } else {
-        startup = (await launchLane(deps, { ...entry, brief: "" }, entry.briefText)).startup;
+        startup = (await launchLane(deps, { ...entry, job: entry.job!, brief: "" }, entry.briefText)).startup;
       }
       if (startup.startsWith("LAUNCH_QUEUED")) break;
       out.push(monitorLine(`LANE_DEQUEUED ${entry.key} ${startup}`));

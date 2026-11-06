@@ -26,10 +26,10 @@ globalThis.fetch = Object.assign(async (input, init) => {
 Listener.prototype.start = async function () {
   this.emit("connected", { user: { id: "88", username: "Helio" }, sessionId: "test" });
   const at = new Date(Date.now()).toISOString();
-  this.emit("message_create", { id: "951", channel_id: "104", guild_id: "300", content: "<@88> see notes", timestamp: at,
+  this.emit("message_create", { type: "MESSAGE_CREATE", message_type: 0, id: "951", channel_id: "104", guild_id: "300", content: "<@88> see notes", timestamp: at,
     author: { id: "99", username: "owner" }, mentions: [{ id: "88" }],
     attachments: [{ id: "1", filename: "slow-notes.txt", url: "https://cdn.discordapp.com/attachments/1/2/slow-notes.txt", content_type: "text/plain", size: 5 }] });
-  this.emit("message_create", { id: "952", channel_id: "200", content: "quick question", timestamp: at,
+  this.emit("message_create", { type: "MESSAGE_CREATE", message_type: 0, id: "952", channel_id: "200", content: "quick question", timestamp: at,
     author: { id: "99", username: "owner" }, attachments: [] });
 };
 `);

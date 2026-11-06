@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { RecoveryStore } from "./recovery-store.ts";
 import { Moderation, type Blocked, type BlockRequest } from "./moderation.ts";
+import { IgnoredStore } from "./ignored-store.ts";
 
 export type Stream = "inbound" | "context";
 type Disposition = "done" | "irrelevant";
@@ -37,6 +38,7 @@ export class Delivery {
   private readonly db: Database;
   readonly recovery: RecoveryStore;
   readonly moderation: Moderation;
+  readonly ignored: IgnoredStore;
 
   constructor(path: string, busyMs = 5000) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -78,6 +80,7 @@ export class Delivery {
       attachments_cleaned INTEGER NOT NULL DEFAULT 0 CHECK (attachments_cleaned IN (0, 1)),
       PRIMARY KEY (stream, id)
     )`);
+    this.ignored = new IgnoredStore(this.db);
     this.recovery = new RecoveryStore(this.db);
     this.moderation = new Moderation(this.db);
     this.db.exec(`CREATE TABLE IF NOT EXISTS inbound_gaps (
@@ -227,18 +230,20 @@ export class Delivery {
     const row = this.db.query<{
       payload: string | null; disposition: Disposition | null; reason: string | null; handled_at: string | null;
       expired_reason: string | null; expired_at: string | null; accepted_at: string | null;
+      ignored_reason: string | null; ignored_at: string | null;
     }, [string, string]>(`SELECT d.payload, h.disposition, h.reason, h.handled_at,
-        e.reason AS expired_reason, e.expired_at, a.accepted_at
+        e.reason AS expired_reason, e.expired_at, a.accepted_at, i.reason AS ignored_reason, i.ignored_at
       FROM delivery d LEFT JOIN handling h ON d.stream = h.stream AND d.id = h.id
       LEFT JOIN expiry e ON d.stream = e.stream AND d.id = e.id
       LEFT JOIN acceptance a ON d.stream = a.stream AND d.id = a.id
+      LEFT JOIN ignored i ON d.stream = i.stream AND d.id = i.id
       WHERE d.stream = ? AND d.id = ?`).get(stream, id);
     if (!row) throw new RangeError(`Unknown ${stream} delivery ${id}`);
     return {
-      disposition: row.expired_at !== null ? "expired" :
+      disposition: row.ignored_at !== null ? "ignored" : row.expired_at !== null ? "expired" :
         row.payload !== null ? row.accepted_at !== null ? "accepted" : "pending" : row.disposition ?? "legacy-done",
-      reason: row.expired_reason ?? row.reason,
-      handled_at: row.expired_at ?? row.handled_at,
+      reason: row.ignored_reason ?? row.expired_reason ?? row.reason,
+      handled_at: row.ignored_at ?? row.expired_at ?? row.handled_at,
     };
   }
 

@@ -5,7 +5,7 @@
     "": {
       "name": "dori-discord-inbound",
       "dependencies": {
-        "agent-messenger": "^2.40.0",
+        "agent-messenger": "2.40.0",
         "sharp": "0.35.5",
       },
       "devDependencies": {
@@ -13,6 +13,9 @@
         "typescript": "^7.0.2",
       },
     },
+  },
+  "patchedDependencies": {
+    "agent-messenger@2.40.0": "patches/agent-messenger@2.40.0.patch",
   },
   "packages": {
     "@borewit/text-codec": ["@borewit/text-codec@0.2.3", "", {}, "sha512-49CycTz1aAZmvFcwkeFyhud1HUmRIB5Tabf7ALV+VA4Iu85MTfz2cUwzPagMFAdVBvrWdkCxG67I30tUwwpKsw=="],

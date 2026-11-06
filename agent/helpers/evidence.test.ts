@@ -27,6 +27,6 @@ test("only real screenshot files are sent, and text must come from a file", asyn
     expect(await checkFiles([join(dir, "missing.png")])).toContain("not a regular file");
     expect(await checkFiles(Array(11).fill(png))).toContain("at most 10");
   } finally { await rm(dir, { recursive: true, force: true }); }
-  expect(parseArgs(["1", "2", "--text-file", "t", "--owner-only", "a.png"])).toEqual({ channel: "1", message: "2", textFile: "t", ownerOnly: true, files: ["a.png"] });
+  expect(parseArgs(["1", "2", "--text-file", "t", "--owner-only", "a.png"])).toEqual({ channel: "1", message: "2", textFile: "t", ownerOnly: true, files: ["a.png"], event: "completion" });
   expect(parseArgs(["1", "2", "a.png"])).toBeUndefined();
 });

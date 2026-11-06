@@ -16,7 +16,7 @@ function message(id: string, changes: Record<string, unknown> = {}) {
     role: "OWNER_REQUEST", scope: "may-request-work", attention: "direct", channel_policy: "trusted",
     sent_at: new Date(NOW).toISOString(), preparation_complete: true, backlog: true, content: "request",
     discord_origin: authorizationMetadata({
-      id, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
+      id, type: 0, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
       content: "<@88> request", timestamp: new Date(NOW).toISOString(),
     }), ...changes,
   };
@@ -124,7 +124,7 @@ test.each(["inbound", "context"])("pending %s pages a large backlog within fifty
   try {
     for (let id = 500; id < 700; id++) {
       const payload = stream === "inbound" ? message(String(id), { content: "😃".repeat(50_000) }) :
-        { message_id: String(id), channel_id: "104", human_verified: true, bot: false, content: "😃".repeat(50_000) };
+        { message_id: String(id), message_type: 0, channel_id: "104", human_verified: true, bot: false, content: "😃".repeat(50_000) };
       queue.stage(stream === "inbound" ? "inbound" : "context", String(id), JSON.stringify(payload));
     }
     const seen: string[] = [];
@@ -213,7 +213,7 @@ test("context summaries and authorized detail pages bound hundred-thousand-chara
   const dir = await mkdtemp(join(tmpdir(), "context-details-"));
   const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
   try {
-    const payload = JSON.stringify({ message_id: "500", channel_id: "104", bot: false, human_verified: true, content: "z".repeat(100_000) });
+    const payload = JSON.stringify({ message_id: "500", message_type: 0, channel_id: "104", bot: false, human_verified: true, content: "z".repeat(100_000) });
     queue.stage("context", "500", payload);
     expect(contextSummary("500", payload).length).toBeLessThanOrEqual(1000);
     const first = await invoke(dir, ["show", "context", "500"]);
@@ -248,7 +248,7 @@ test("a blacklisted sender's retained message and quoted history are withheld fr
   try {
     queue.stage("inbound", "777", JSON.stringify(message("777", {
       author_id: "501", author: "spammer", role: "STAFF_QUESTION", scope: "answer-only", content: "<@88> blocked-secret",
-      discord_origin: authorizationMetadata({ id: "777", channel_id: "100", guild_id: "300", author: { id: "501", username: "spammer" },
+      discord_origin: authorizationMetadata({ id: "777", type: 0, channel_id: "100", guild_id: "300", author: { id: "501", username: "spammer" },
         content: "<@88> blocked-secret", timestamp: new Date(NOW).toISOString() }),
     })));
     queue.accept("777", NOW);
@@ -272,7 +272,7 @@ test("ack show keeps the conversation a reply was routed to, not the person's mo
     conversations.open("100", "99", "400", "logs topic", NOW - 2_000);
     conversations.open("100", "99", "450", "roles topic", NOW - 1_000);
     queue.stage("inbound", "500", JSON.stringify(message("500", { reply_to: "400",
-      discord_origin: authorizationMetadata({ id: "500", channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
+      discord_origin: authorizationMetadata({ id: "500", type: 19, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
         content: "<@88> request", timestamp: new Date(NOW).toISOString(), message_reference: { message_id: "400" } }) })));
     const shown = await invoke(dir, ["show", "inbound", "500"]);
     expect(shown.stdout).toContain("logs topic");

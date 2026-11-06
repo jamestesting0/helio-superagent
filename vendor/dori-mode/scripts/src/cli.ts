@@ -12,9 +12,11 @@ import { adoptLane, launchLane, LaunchError, wakeLane } from "./launch.ts";
 import { lifecycleTick } from "./lifecycle.ts";
 import { reapWorktrees, staleLanes } from "./reap.ts";
 import { pauseLane, resumeLane } from "./pause.ts";
-import { Registry, statusOf } from "./registry.ts";
+import { Registry, requestJob, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { syncRegistry } from "./sync.ts";
+import { recordCompletion } from "./completion.ts";
+import { applyLanes, previewLanes } from "./reconcile.ts";
 import { canLaunch } from "./routing.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
 import { Slack } from "./messenger/slack.ts";
@@ -28,10 +30,11 @@ import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
 const USAGE = `dori <command> [options]
 
-  launch <key> --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--job J] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]
+  launch <key> --job J --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--source REF] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]
                                        one open lane per job (LANE_EXISTS); resumes the job's hibernated or closed lane;
                                        over the worker cap or host limits it prints LAUNCH_QUEUED and the watcher starts it later
-  adopt  <key> --pane ID --title T --brief FILE --done "..." [--thread REF]
+  adopt  <key> --job J --pane ID --title T --brief FILE --done "..." [--source REF] [--thread REF]
+  job-id --repository owner/repo --channel ID --source ORIGINAL_MESSAGE_ID
   sync   [--write]                     registry vs live panes; read-only unless --write
   claim-done [<key>] --evidence TEXT  key defaults to the lane registered for $HERDR_PANE_ID
   show <key>                          full lane evidence, claim, history and receipt (read-only)
@@ -39,6 +42,9 @@ const USAGE = `dori <command> [options]
   object-done <key> --reason TEXT [--reason TEXT ...]
   abandon <key> --reason TEXT [--with-unpushed]   owner only: retire a lane that will never finish (kept worktree, never "done")
   close  <key> [--note TEXT]           close now (Done signals must read back live)
+  completion <key>                    record independent passing checks and this attempt's Git revision under durable state
+  reconcile preview --manifest FILE --job issue-N --repository OWNER/REPO [--failed KEY] [--replacement KEY]
+  reconcile apply --manifest FILE     recheck exact records/resources; no public messages
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
   resume <key> [--note TEXT] [--brief FILE]   undo pause; or wake a hibernated or closed lane in its recorded session
   stale [--hours N] [--json]           lanes paused, not done, failed or awaiting cleanup for N hours (default 24)
@@ -74,6 +80,8 @@ const flags = parseArgs({
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, "with-unpushed": { type: "boolean" }, loop: { type: "string" },
     job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" },
+    source: { type: "string" }, repository: { type: "string" }, channel: { type: "string" },
+    manifest: { type: "string" }, failed: { type: "string" }, replacement: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" },
   },
 });
@@ -97,14 +105,21 @@ try {
     case "launch": {
       const priority = opt("priority") ?? "normal";
       if (priority !== "owner" && priority !== "normal") die("--priority must be owner or normal");
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd"), job: opt("job"), priority: priority as "owner" | "normal" });
+      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd"), job: need("job"), source: opt("source"), priority: priority as "owner" | "normal" });
       if (r.lane) console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(/^(STARTUP_OK|LAUNCH_QUEUED|LANE_WOKEN)/.test(r.startup) ? 0 : 3);
     }
     case "adopt": {
-      const l = await adoptLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), pane: need("pane") });
+      const l = await adoptLane(deps, { key: key ?? "", job: need("job"), source: opt("source"),
+        title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), pane: need("pane") });
       console.log(`ADOPTED ${l.key} pane=${l.pane} thread=${l.thread}`);
+      break;
+    }
+    case "job-id": {
+      const repo = need("repository");
+      if (process.env.HELIO_GITHUB_REPO && repo !== process.env.HELIO_GITHUB_REPO) die("Repository differs from HELIO_GITHUB_REPO");
+      console.log(`JOB_ID ${requestJob(repo, need("channel"), need("source"))}`);
       break;
     }
     case "sync": {
@@ -118,6 +133,26 @@ try {
     case "claim-done":
       console.log(await claimDone(deps, await lane(key), need("evidence")));
       break;
+    case "completion":
+      console.log(`COMPLETION_RECORDED ${await recordCompletion(deps, await lane(key))}`);
+      break;
+    case "reconcile": {
+      const allowed = key === "preview" ? ["manifest", "failed", "replacement", "job", "repository"] :
+        key === "apply" ? ["manifest"] : [];
+      if (!allowed.length || flags.positionals.length !== 1 || Object.keys(flags.values).some(name => !allowed.includes(name))) {
+        die("Usage: dori reconcile preview|apply --manifest FILE; preview requires --job issue-N --repository OWNER/REPO and exact --failed/--replacement keys");
+      }
+      const path = need("manifest");
+      if (key === "preview") {
+        await previewLanes(deps, path, { failed: opt("failed"), replacement: opt("replacement"), job: need("job"), repository: need("repository") });
+        console.log(`RECONCILE_PREVIEW manifest=${path}`);
+      } else {
+        const results = await applyLanes(deps, path);
+        for (const result of results) console.log(`RECONCILE_LANE key=${result.key} outcome=${result.outcome}`);
+        if (results.some(result => result.outcome === "changed")) process.exitCode = 3;
+      }
+      break;
+    }
     case "show": {
       const found = await deps.registry.read(key ?? die("show needs a lane key"));
       if (!found) die(`no registered lane "${key}"`);

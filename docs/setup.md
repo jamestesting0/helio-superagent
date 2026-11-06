@@ -172,6 +172,14 @@ uses `--profile isolated`. The installer writes `~/.dori/elobot/` and
 `helio.env`, and records a baseline so `helio update` works immediately. It
 never overwrites an existing file.
 
+Keep the locked inbound dependency patch with its package manifest and lockfile:
+it preserves Discord's numeric message type alongside the Gateway event name.
+Managed updates run an offline frozen dependency install when `node_modules`
+already exists. A missing cache entry or install failure withholds restart;
+resolve the dependency installation before retrying the update. Fresh setup
+still requires the dependency install shown above. Do not hand-edit generated
+files or the installed SDK.
+
 **Check:** `helio update --preview` prints `Generated from helio.env: up to date`
 and `Managed updates: none`.
 

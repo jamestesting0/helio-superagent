@@ -41,7 +41,7 @@ test("only claims and Helio replies join the transcript and reset activity and d
     store.append("100", "99", entry("10"), NOW + 1);
     expect(store.transcript("100", "99")).toEqual([]);
     expect(store.get("100", "99")?.last_activity).toBe(NOW);
-    expect(store.state(opened)).toBe("waiting_on_requester");
+    expect(store.state(opened)).toBe("waiting_on_helio");
     store.claim("100", "99", entry("11"), NOW + 2);
     const claimed = store.get("100", "99");
     if (!claimed) throw new Error("Conversation disappeared");
@@ -51,7 +51,7 @@ test("only claims and Helio replies join the transcript and reset activity and d
     store.append("100", "99", entry("12", "88"), NOW + 4);
     const answered = store.get("100", "99");
     if (!answered) throw new Error("Conversation disappeared");
-    expect([store.state(answered), answered.last_activity]).toEqual(["waiting_on_requester", NOW + 4]);
+    expect([store.state(answered), answered.last_activity]).toEqual(["waiting_on_helio", NOW + 4]);
     expect(store.transcript("100", "99").map((row) => row.message_id)).toEqual(["11", "12"]);
   });
 });
@@ -110,6 +110,8 @@ test("holds have a reason and resume preserves the time of the last real activit
     if (!held) throw new Error("Missing hold");
     expect([store.state(held), held.hold_reason]).toEqual(["on_hold", "beta test"]);
     store.claim("100", "99", entry("10"), NOW + 5 * DAY_MS);
+    expect([store.get("100", "99")?.status, store.get("100", "99")?.hold_reason]).toEqual(["on_hold", "beta test"]);
+    store.resume("100", "99");
     expect([store.get("100", "99")?.status, store.get("100", "99")?.hold_reason]).toEqual(["open", null]);
     store.hold("100", "99", "owner decision");
     store.resume("100", "99");

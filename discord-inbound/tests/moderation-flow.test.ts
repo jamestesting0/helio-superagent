@@ -22,7 +22,7 @@ const getChannel = Client.prototype.getChannel;
 Client.prototype.getChannel = async function (id) { return { ...await getChannel.call(this, id), guild_id: "300" }; };
 Listener.prototype.start = async function () {
   this.emit("connected", { user: { id: "88", username: "Helio" }, sessionId: "test" });
-  const blocked = { id: "911", channel_id: "104", guild_id: "300", timestamp: new Date(${NOW} - 60000).toISOString(),
+  const blocked = { type: "MESSAGE_CREATE", message_type: 0, id: "911", channel_id: "104", guild_id: "300", timestamp: new Date(${NOW} - 60000).toISOString(),
     author: { id: "501", username: "spammer" }, attachments: [], mentions: [{ id: "88" }] };
   Object.defineProperty(blocked, "content", { get() { console.log("TEST_BLOCKED_CONTENT_READ"); return "<@88> spam"; } });
   this.emit("message_create", blocked);
@@ -30,7 +30,7 @@ Listener.prototype.start = async function () {
   Object.defineProperty(click, "type", { get() { console.log("TEST_BLOCKED_CLICK_READ"); return 3; } });
   this.emit("interaction_create", click);
   for (let i = 0; i < 21; i++) {
-    this.emit("message_create", { id: String(920 + i), channel_id: "104", guild_id: "300", content: "<@88> ping " + i,
+    this.emit("message_create", { type: "MESSAGE_CREATE", message_type: 0, id: String(920 + i), channel_id: "104", guild_id: "300", content: "<@88> ping " + i,
       timestamp: new Date(${NOW} - (21 - i) * 1000).toISOString(), author: { id: "502", username: "eager" },
       attachments: [], mentions: [{ id: "88" }] });
   }

@@ -37,7 +37,7 @@ globalThis.fetch = Object.assign(async (input, init) => {
 }, { preconnect: fetch.preconnect });
 Listener.prototype.start = async function () {
   this.emit("connected", { user: { id: "88", username: "Helio" }, sessionId: "test" });
-  this.emit("message_create", { id: "902", channel_id: "104", guild_id: "300", content: "<@88> live request",
+  this.emit("message_create", { type: "MESSAGE_CREATE", message_type: 0, id: "902", channel_id: "104", guild_id: "300", content: "<@88> live request",
     timestamp: new Date().toISOString(), author: { id: "99", username: "owner" }, attachments: [], mentions: [{ id: "88" }] });
 };
 `);

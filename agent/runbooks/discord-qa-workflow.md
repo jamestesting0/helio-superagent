@@ -251,7 +251,14 @@ Save current screenshots, a short test matrix, scoped runtime logs, and before/a
 
 Capture private previews from their owning account. For UI changes include before/after screenshots and the relevant desktop/narrow views. Inspect images for unrelated content, secrets, personal data, and local desktop chrome before sending.
 
-Deliver the screenshots and a concise result summary with `bun ~/.dori/elobot/evidence.ts <request channel_id> <request message_id> --text-file <summary> [--owner-only] <screenshot>...`. It replies where the request was made (trusted chat or owner/trusted DM), or for a normal-chat request sends to the owner's DM, forwards that to a trusted requester's DM and leaves a note in place. Use `--owner-only` for anything only the owner may see (see Evidence and reporting in work-policy.md). Never hand-write an upload. Split mixed results into shareable and owner-only calls; local paths, stale screenshots and "tests passed" messages are not screenshot delivery.
+Workers return results and evidence paths privately to the lead. The lead sends the completion:
+`bun ~/.dori/elobot/evidence.ts <request channel_id> <current request message_id> --event completion
+--text-file <summary> [--owner-only] <screenshot>...`. Use the current request ID, including when
+reusing an older lane. Do not also announce it from the worker or another claim/report callback.
+The event shares a durable receipt with reply.ts; rephrasing cannot create another completion.
+Later substantive facts use distinct events such as `ci:FULL_SHA`. Each routed destination is
+resumable independently; shareable and owner-only parts remain separate. Follow work-policy.md
+for privacy/routing, never hand-write uploads, and never call paths or stale screenshots delivery.
 
 If any required live scenario is blocked, report it as unverified before calling the work fully tested. Passing unit tests do not replace missing browser/account/remote checks.
 

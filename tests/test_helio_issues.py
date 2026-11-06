@@ -11,20 +11,34 @@ CLI = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio
 
 
 class IssueTests(unittest.TestCase):
-    def test_reopen_recovers_an_uncertain_write_without_duplicate_note_or_lifting_labels(self):
+    def test_closed_issue_cannot_be_reopened_by_a_new_update(self):
         self.meta.update(state="closed", state_reason="completed", labels=["human-hold"])
         change = {"body": "New local-only work; no commit or PR.", "adopt": M["digest"](self.body),
                   "reopen": True, "projection": "OPEN: REOPENED", "note": "Resuming local-only work"}
-        self.fail_patch = "after"
         with self.assertRaises(M["Refused"]):
             self.gh.update(4, change)
-        self.gh.update(4, change)
-        self.gh.update(4, change)
-        self.assertEqual(self.patches, 1)
-        self.assertEqual(self.meta["state"], "open")
+        self.assertEqual(self.patches, 0)
+        self.assertEqual(self.meta["state"], "closed")
         self.assertEqual(self.meta["labels"], ["human-hold"])
-        self.assertEqual(len(self.comments), 1)
-        self.assertIn("no commit or PR", self.body)
+        self.assertEqual(self.body, "Human request")
+        self.assertEqual(self.comments, [])
+
+    def test_pending_legacy_reopen_is_retired_without_changing_external_state(self):
+        import sqlite3
+        self.meta.update(state="closed", state_reason="completed", labels=["human-hold"])
+        with self.gh.operations() as db:
+            db.execute("""INSERT INTO operations(id,repo,issue,before_body,after_body,change)
+                          VALUES ('legacy','o/r',4,?,?,?)""",
+                       (self.body, "New scope", json.dumps({"reopen": True, "note": "Old pending reopening"})))
+        self.gh.update(4, {"projection": "Historical PR completed"})
+        self.assertEqual(self.meta, {"state": "closed", "state_reason": "completed", "labels": ["human-hold"]})
+        self.assertEqual(M["split"](self.body)[0], "Human request")
+        self.assertEqual(self.comments, [])
+        with sqlite3.connect(Path(self.temp.name) / "issue-updates.sqlite") as db:
+            completed, saved = db.execute("SELECT completed,change FROM operations WHERE id='legacy'").fetchone()
+        self.assertEqual((completed, json.loads(saved)["reopen"]), (2, True))
+        with self.assertRaises(M["Refused"]):
+            self.gh.resume("legacy")
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -195,7 +209,7 @@ class IssueTests(unittest.TestCase):
 
 
 class ProjectionTests(unittest.TestCase):
-    def test_reopened_work_preserves_old_pr_history_without_false_completion(self):
+    def test_historical_reopen_events_remain_readable_without_false_completion(self):
         class Gh:
             state = "CLOSED"
             timeline = [[]]
@@ -218,10 +232,7 @@ class ProjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch.dict(CLI["projection"].__globals__, STATE=Path(temp), REPO="o/r"):
             historical = CLI["projection"](8, gh)
             self.assertTrue(historical["status"].startswith("CLOSED"))
-            intended = CLI["projection"](8, gh, "reopened")
-            self.assertTrue(intended["status"].startswith("OPEN"))
-            self.assertEqual(intended["warnings"], [])
-            self.assertIn("PR #9", intended["status"])
+            self.assertIn("PR #9", historical["status"])
             gh.state = "OPEN"
             gh.timeline = [[{"event": "reopened", "created_at": "2026-11-05T10:00:00Z"}]]
             synced = CLI["projection"](8, gh)

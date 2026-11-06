@@ -16,6 +16,39 @@ const base = (path: string, over: Partial<SendOnce> = {}): SendOnce => ({
   send: async () => "900", findSent: async () => undefined, ...over,
 });
 
+test("one completion event has one publisher across different wording and reopened connections", async () => {
+  await withDb(async (path) => {
+    let posted = 0;
+    const send = async () => String(++posted);
+    await sendOnce({ ...base(path), event: "completion", text: "The requested fact is removed.", send });
+    await sendOnce({ ...base(path), event: "completion", text: "Removed the fact; tests passed.", send });
+    expect(posted).toBe(1);
+    await sendOnce({ ...base(path), event: "ci:abc123", text: "The new checks passed.", send });
+    await sendOnce({ ...base(path), event: "completion", target: "501", text: "The next request is complete.", send });
+    expect(posted).toBe(3);
+    const db = new Database(path);
+    try {
+      expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM reply_sends WHERE state='sent' AND pending_text IS NOT NULL").get()?.n).toBe(0);
+    } finally { db.close(); }
+  });
+});
+
+test("uncertain event delivery recovers the original producer's content before another producer takes over", async () => {
+  await withDb(async (path) => {
+    const original = "Removed the fact. Offline tests passed.";
+    const event = { ...base(path, { now: () => 2_000_000_000_000 }), event: "completion" };
+    await expect(sendOnce({ ...event, text: original,
+      send: async () => { throw new Error("accepted but response lost"); } })).rejects.toThrow("response lost");
+    let posted = 0;
+    await sendOnce({ ...event, text: "The requested edit is done.",
+      send: async () => String(++posted),
+      findSent: async (text) => text === original ? "already-posted" : undefined });
+    await sendOnce({ ...event, text: "Another producer repeats completion.",
+      send: async () => String(++posted) });
+    expect(posted).toBe(0);
+  });
+});
+
 test("two overlapping sends of the same reply post it once; the second waits and returns the first reply", async () => {
   await withDb(async (path) => {
     let release!: () => void;

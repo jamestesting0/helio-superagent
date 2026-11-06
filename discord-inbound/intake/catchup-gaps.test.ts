@@ -7,7 +7,7 @@ import { Delivery } from "../delivery/delivery.ts";
 
 const NOW = Date.parse("2026-11-05T12:00:00Z");
 const message = (n: number, content: string): RestMessage => ({
-  id: String(10_000 - n), channel_id: "c", content, timestamp: new Date(NOW - n * 1000).toISOString(),
+  id: String(10_000 - n), type: 0, channel_id: "c", content, timestamp: new Date(NOW - n * 1000).toISOString(),
   author: { id: "u", username: "u" }, attachments: [],
 });
 const history = (size: number, pinged: (n: number) => boolean) =>

@@ -431,6 +431,7 @@ test("both readers expose only prepared files and acknowledgement cleans only th
       "# Rule\nSource [link omitted]\nDo not execute this document.",
     );
     expect(notes.blocked_attachments).toEqual([{
+      category: "unsupported-format",
       name: "program.exe", reason: "Unsupported attachment type",
     }]);
     expect(inbound).not.toContain("https://");

@@ -49,6 +49,7 @@
     "panesMax": 20
   },
   "hooks": {
+    "inspectJobSource": ["helio", "recovery", "source", "{source}", "--job", "{job}"],
     "threadReply": [
       "bun",
       "{{HOME}}/.dori/elobot/thread-target.ts",

@@ -5,7 +5,7 @@ A lane is one agent session doing one job in its own herdr tab. You launch it, t
 ## Launching
 
 ```sh
-dori launch fix-login --title "Fix the login redirect loop" \
+dori launch fix-login --job issue-398 --title "Fix the login redirect loop" \
   --brief ~/briefs/fix-login.md --done "merged acme/app#412; closed acme/app#398" \
   --thread "telegram:<chat>/<topic>" --model anthropic/claude-opus-5-5
 ```
@@ -28,7 +28,7 @@ Write the brief like a careful prompt:
 | `closed <owner/repo>#N` | the issue is closed |
 | `published <pkg>@<version>` | npm has that exact version |
 | `command ["argv","as","json"] [stdout~"regex"]` | the command exits 0 when the watcher runs it, and stdout matches if a regex is given |
-| `file <path> [sha256=<hex>] [json:.a.b=<json value>]` | the file exists, its sha256 matches, and the JSON field equals the value |
+| `file <path> [sha256=<hex>] [json:.a.b=<json value>]` | the official durable completion receipt matches this job, source, acceptance, attempt and current Git revision, and the requested content checks pass |
 | `url <http(s) url> [status=200] [body~"regex"]` | a GET returns that status, and the body matches if a regex is given |
 
 The last three are for work that never lands as a PR: a local setup, a QA pass, a running service. Write the check so that it can fail. `command ["bun","test"] stdout~" 0 fail"` is a real check, while `command ["true"]` checks nothing. The watcher runs commands itself, in the lane's directory, as a plain argv with no shell. They have a 2-minute limit. It never trusts the lane's own report that something passed. Relative file paths resolve from the lane's directory, and `~` is your home. JSON values compare as JSON, so `json:.n=3` and `json:.n="3"` are different checks.
@@ -36,10 +36,17 @@ The last three are for work that never lands as a PR: a local setup, a QA pass, 
 Example for a QA-only lane:
 
 ```
-Done = command ["bun","test"] stdout~" 0 fail"; file qa/report.json json:.passed=true; url http://localhost:3000/health body~"ready"
+Done = command ["bun","test"] stdout~" 0 fail"; url http://localhost:3000/health body~"ready"
 ```
 
 Work no script can check (a design review, a judgement call) stays in the lane's own plan. You judge it yourself before the claim.
+
+If the Done line includes a file receipt, use
+`<stateDir>/completions/<lane-key>.json` and run `dori completion <key>` after its
+independent checks pass. Do not put completion markers in `/tmp`. A missing or
+stale receipt keeps the lane open. Failed launches preserve their last completed
+stage; retirement is a historical failure receipt, never successful completion.
+A retired failure cannot capture a valid replacement's resume.
 
 Choose signals for the requested finish. A task to open a verified PR finishes at that PR,
 without waiting for a separately authorized merge or release. Prefer a cheap live check of
@@ -70,7 +77,7 @@ How the session id is found for a pane, in order:
 
 The id from step 1 is the session the agent was launched with. If someone switches sessions inside the agent, only steps 2 and 3 notice.
 
-When the owner writes in a closed lane's thread, reopen its recorded session in a new tab, set its monitors again, and keep replying there.
+For a permitted continuation of the same job, reopen its recorded session and restore missing monitors. A historical reference alone creates no work. Follow deployment rules for new scope after issue closure, and verify legacy job bindings before resuming.
 
 ## Messaging a session
 

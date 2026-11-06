@@ -234,12 +234,12 @@ class MonitorReloadTests(unittest.TestCase):
                 script = self.home / f"helio-{name}.py"
                 script.write_text(source)
                 if name == "followups":
-                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py"):
+                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py"):
                         (self.home / helper).write_text((ROOT / "scripts" / helper).read_text())
                     self.executable("dori", "#!/bin/sh\necho '[]'\n")
                 argv = [sys.executable, str(script)]
                 if name == "followups":
-                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
+                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*|*"pr list"*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
                     subprocess.run(
                         [*argv, "add", "--issue", "1", "--channel", "100", "--user", "7", "--reply-to", "9"],
                         env=self.env, capture_output=True, check=True, timeout=3,

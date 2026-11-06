@@ -30,6 +30,7 @@ Normal WSL shell (the host `helio`):
 
 Inside the isolated workspace (`helio-wsl`): `helio start|resume`, `helio update [--apply]`,
 `helio doctor`, `helio browser ready|close`, `helio beta ...`, `helio question ...`,
+`helio pr check --number N` (read-only current-main/CI/mergeability inspection),
 `helio release inspect`, `helio release-check ...`, `helio triage ...`,
 `helio conversation open|close|list`, `helio followups add|check|done|list`, `helio status`,
 `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`.

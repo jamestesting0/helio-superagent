@@ -2,6 +2,7 @@ import { newerId } from "./lastseen.ts";
 import type { MessageBody } from "../messages/forwarded.ts";
 
 export interface RestMessage extends MessageBody {
+  readonly type: number;
   channel_id: string;
   author: { id: string; username: string; global_name?: string | null; bot?: boolean };
   timestamp: string;

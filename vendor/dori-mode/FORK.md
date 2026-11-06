@@ -22,6 +22,8 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 | SKILL.md | Doing the work | Bug fixes stay within the deployment's authorization policy; steps it reserves (PR, merge, production restart) need an explicit go | Helio needs explicit authorization for PRs, merges and restarts |
 | SKILL.md | Doing the work | Numbered options go through the deployment's question mechanism if it has one | Helio asks via `helio question ask`, never a terminal prompt |
 | SKILL.md, references/sessions.md | Doing the work, completion signals | Reuse already given authority, resolve meaning in context and match completion checks to the requested finish | A verified PR request must not produce another permission prompt or wait for an unrequested merge |
+| SKILL.md | Setup, Onboarding, Doing the work, Scripts | Keep conditional setup/CLI detail in existing references; routine conflict/check repair remains part of an authorized task | Reduces repeated reading and unnecessary approval pauses without changing setup consent or production authority |
+| SKILL.md | Writing to the owner | Deployment reply/routing contracts govern whether multipart sends are allowed | Generic writing advice must not produce multiple completion publishers or replies |
 | references/writing.md | Voice | Eyes reaction exception limited to messages that call for a response | Matches the SKILL.md change |
 | references/writing.md | Asking | Use the deployment's question mechanism instead of a terminal prompt when one exists | Matches the SKILL.md change |
 | references/writing.md | Visitors | Deployment-defined roles for non-owners take precedence; the visitor rules cover everyone else | Helio staff and trusted-user flows |
@@ -53,6 +55,18 @@ Tests: `scripts/test/helio-host.test.ts`.
 
 ## Bounded lanes (2026-11-05)
 
+Lifecycle reliability adds explicit job/source admission, durable completion
+receipts bound to the attempt and live checks, and bounded preview/apply
+reconciliation with fresh record and resource checks. The optional
+`hooks.inspectJobSource` delegates read-only original request verification to the
+deployment; its proof grants identity only. Failed retirement retains uncertain
+resources and never reports task completion. Legacy jobless workers stay awake
+because they cannot yet be safely resumed by job.
+
+Owner replies follow deployment relevance rules; historical references do not
+automatically reopen closed work. Reuse applicable instructions and restored
+monitors rather than repeating setup or verification without changed evidence.
+
 | Files | Change |
 |---|---|
 | `scripts/src/admission.ts`, `launch.ts`, `routing.ts` | `launch` enforces `maxWorkers` and the host guard under a launch lock, failing closed on an unknown pane count or host sample, and queues the rest durably (`LAUNCH_QUEUED`; owner priority first). One open lane per `--job` (`LANE_EXISTS`); a job's hibernated or closed lane is resumed in its recorded session. A failed attempt's key relaunches in place (fixes the stale-brief `EEXIST`). The session id is recorded at startup. |
@@ -63,3 +77,20 @@ Tests: `scripts/test/helio-host.test.ts`.
 | `scripts/test/lifecycle.test.ts` | Cover the cap and queue, fail-closed admission, job identity, session wake, hibernation guards, cleanup-pending, the archive, stale review and the reaper. |
 
 - `dori abandon <key> --reason TEXT [--with-unpushed]` (`done-flow.ts`, `cli.ts`): the owner's way to retire a lane whose Done line can never pass. It shares the failed-launch retirement checks (no live agent in the pane; tab closed; worktree kept), refuses unpushed work unless `--with-unpushed`, records the receipt as abandoned with the reason, and never runs the thread-done hook. Covered by `scripts/test/lifecycle.test.ts`.
+
+## Lifecycle identity and receipts (2026-11-06)
+
+New `launch` and `adopt` calls require `--job`; adoption uses the launch admission
+lock and persists the job. `job-id` computes a non-issue identity from repository,
+channel and the original request ID. Queues and resumes retain identity; legacy
+records are readable but are not bound by guessing from names. A valid recorded
+session takes precedence over a failed attempt. Retirement records `retiredAt`
+and preserves failure history without claiming success.
+
+Launch failures retain `failedAfter`. Missing worktrees stay protected unless
+failure preceded creation and Git confirms both the worktree and branch absent.
+Unconfirmed startup is inspected in place. Completion receipts live under durable
+state and bind job, source, acceptance, attempt and verified revision. The new
+`completion` command records independent checks; close refuses arbitrary or stale
+file markers and retains its own durable verification receipt. Existing claim
+acknowledgement, live checks, holds and dirty/unpushed-work guards remain in force.

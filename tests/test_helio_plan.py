@@ -78,7 +78,7 @@ class FakeGitHub:
             remote = subprocess.run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
                                     cwd=project, check=True, capture_output=True, text=True).stdout.split()[0]
             return json.dumps({"state": "OPEN", "headRefOid": remote, "headRefName": branch, "baseRefName": "main",
-                               "isCrossRepository": False})
+                               "isCrossRepository": False, "body": self.created_bodies[-1]})
         raise AssertionError(f"unexpected gh call {argv}")
 
     def hand_edit(self, old, new):
@@ -483,6 +483,95 @@ class StateTests(PlanCase):
 
 
 class SubmitTests(PlanCase):
+    def test_followup_pr_preserves_its_predecessor_hold_until_explicitly_lifted(self):
+        ledger = runpy.run_path(str(ROOT / "scripts/helio_decisions.py"))
+        self.gh_fake.issue_body = (f"Current scope.\nRelated history: https://github.com/{REPO}/issues/8\n"
+                                   '<!-- helio-followup:{"previous":8,"request":"' + "f" * 64 + '"} -->')
+        original = self.gh.issue
+        self.gh.issue = lambda number: {"state": "CLOSED"} if number == 8 else original(number)
+        private = "Private hold details must stay in the decision ledger."
+        for planned in (False, True):
+            with self.subTest(approved_plan=planned):
+                if planned:
+                    self.approved_plan()
+                else:
+                    self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                 discord_fn=discord(content="implement the new follow-up"))
+                self.setUp_result(direct=not planned)
+                code, out = self.submit()
+                self.assertEqual(code, 0, out)
+                body = self.gh_fake.created_bodies[-1]
+                P["ISSUE_LINK"]["require_link"](body, {12}, "main")
+                self.assertNotIn(private, body)
+                state = self.dir / "state"
+                with contextlib.closing(ledger["connect"](state / "decisions.sqlite")) as db:
+                    identity = ledger["record"](db, ledger["Decision"](
+                        REPO, "hold", "production merge", "issue#8", private, private,
+                        OWNER, "owner", "1", f"hold-{planned}", "owner"))
+                    with patch.dict(RC["require_no_holds"].__globals__, {"STATE": state, "REPO": REPO}):
+                        with self.assertRaisesRegex(RC["Refused"], "Active issue hold"):
+                            RC["require_no_holds"]("merge", {"body": body, "closingIssuesReferences": [{"number": 12}]})
+                        ledger["revoke"](db, identity, OWNER, OWNER, f"lift-{planned}")
+                        RC["require_no_holds"]("merge", {"body": body, "closingIssuesReferences": [{"number": 12}]})
+
+    def test_followup_adopts_only_an_existing_pr_bound_to_its_predecessor(self):
+        self.setUp_result(direct=True)
+        self.git(self.work, "branch", "-m", "helio/issue-8")
+        self.git(self.work, "push", "origin", "HEAD:helio/issue-8")
+        self.gh_fake.issue_body = ('New scope\n<!-- helio-followup:{"previous":8,"request":"' + "f" * 64 + '"} -->')
+        original = self.gh.issue
+
+        def issue(number):
+            return {"state": "CLOSED", "title": "Old task", "body": "Completed"} if number == 8 else original(number)
+
+        self.gh.issue = issue
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement the new follow-up"))
+        for unrelated in (False, True):
+            with self.subTest(unrelated_pr=unrelated):
+                before = []
+                if unrelated:
+                    self.gh_fake.prs["helio/issue-8"] = f"https://github.com/{REPO}/pull/13"
+                    before = ["Fixes #99\n" + P["ISSUE_LINK"]["marker"](99, 1, True)]
+                    self.gh_fake.created_bodies[:] = before
+                code, out = self.run_cli("pr", "submit", "--issue", "12", "--worktree", str(self.work),
+                                         "--result-file", str(self.dir / "result.json"),
+                                         "--summary-file", str(self.dir / "summary.md"))
+                self.assertEqual(code, 1, out)
+                self.assertEqual(self.gh_fake.created_bodies, before)
+
+    def test_linked_followup_retargets_its_open_predecessor_pr_only_with_current_authority(self):
+        self.setUp_result(direct=True)
+        self.git(self.work, "branch", "-m", "helio/issue-8")
+        self.git(self.work, "push", "origin", "HEAD:helio/issue-8")
+        self.gh_fake.prs["helio/issue-8"] = f"https://github.com/{REPO}/pull/13"
+        self.gh_fake.created_bodies.append("Fixes #8\n" + P["ISSUE_LINK"]["marker"](8, 1, True))
+        self.gh_fake.issue_body = ("Current full PR scope.\nRelated history: https://github.com/" + REPO +
+                                  '/issues/8\n<!-- helio-followup:{"previous":8,"request":"' + "f" * 64 + '"} -->')
+        original = self.gh.issue
+
+        def issue(number):
+            return {"state": "CLOSED", "body": "Completed scope", "title": "Old work"} if number == 8 else original(number)
+
+        self.gh.issue = issue
+        previous = Path.cwd()
+        os.chdir(self.work)
+        self.addCleanup(os.chdir, previous)
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertIn("no recorded work request", out)
+        self.assertTrue(self.gh_fake.created_bodies[0].startswith("Fixes #8"))
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement the current correction to PR #13"))
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+        self.assertTrue(self.gh_fake.created_bodies[0].startswith("Fixes #12"))
+        self.assertEqual(P["ISSUE_LINK"]["parse"](self.gh_fake.created_bodies[0]).issue, 12)
+        self.assertIn(f"https://github.com/{REPO}/issues/8", self.gh_fake.created_bodies[0])
+        self.assertEqual(self.submit()[0], 0)
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+
     def test_explicit_named_lane_submits_without_an_issue_number_in_its_branch(self):
         self.approved_plan()
         branch = "helio/balance-facts-tips-current"
@@ -700,6 +789,76 @@ class SubmitTests(PlanCase):
         self.assertEqual(code, 0, out)
         self.assertEqual((self.work / "base.txt").read_text(), "new main\n")
         self.assertEqual(checked, [self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12")])
+
+    def test_main_push_during_verification_requires_verifying_the_updated_tree(self):
+        self.approved_plan()
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+
+        def advance(project, head):
+            (shared / "base.txt").write_text("owner update\n")
+            self.git(shared, "add", "base.txt")
+            self.git(shared, "commit", "-m", "owner update")
+            self.git(shared, "push", "origin", "main")
+            return 5
+
+        code, out = self.submit(suite=advance)
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+        self.assertEqual(self.git(self.work, "ls-remote", "--heads", "origin", "helio/issue-12"), "")
+        checked = []
+        code, out = self.submit(suite=lambda project, head: checked.append(head) or 5)
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.work / "base.txt").read_text(), "owner update\n")
+        self.assertEqual(checked, [self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12")])
+
+    def test_main_push_during_pr_creation_is_not_reported_as_verified_delivery(self):
+        self.approved_plan()
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+        original = self.gh.run
+
+        def create_with_new_main(argv, stdin=None, **kwargs):
+            result = original(argv, stdin, **kwargs)
+            if argv[:3] == ["gh", "pr", "create"]:
+                (shared / "base.txt").write_text("new main during publication\n")
+                self.git(shared, "add", "base.txt")
+                self.git(shared, "commit", "-m", "owner update")
+                self.git(shared, "push", "origin", "main")
+            return result
+
+        self.gh.run = create_with_new_main
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("PLAN_PR ", out)
+        self.gh.run = original
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(self.gh_fake.created_bodies), 1)
+        self.assertEqual((self.work / "base.txt").read_text(), "new main during publication\n")
+
+    def test_conflicting_main_preserves_both_sides_until_owned_resolution(self):
+        self.approved_plan()
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+        (shared / "a.txt").write_text("owner intent\n")
+        self.git(shared, "add", "a.txt")
+        self.git(shared, "commit", "-m", "owner change")
+        self.git(shared, "push", "origin", "main")
+        owner_head = self.git(shared, "rev-parse", "HEAD")
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.git(self.work, "show", ":2:a.txt"), "two")
+        self.assertEqual(self.git(self.work, "show", ":3:a.txt"), "owner intent")
+        self.assertEqual(self.gh_fake.created_bodies, [])
+        (self.work / "a.txt").write_text("owner intent\ntwo\n")
+        self.git(self.work, "add", "a.txt")
+        self.git(self.work, "commit", "-m", "preserve owner and task changes")
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        head = self.git(self.work, "rev-parse", "HEAD")
+        self.assertEqual(self.git(self.work, "merge-base", owner_head, head), owner_head)
+        self.assertEqual(self.git(shared, "rev-parse", "HEAD"), owner_head)
 
     def test_wrong_repository_explicit_tree_is_rejected(self):
         self.approved_plan()

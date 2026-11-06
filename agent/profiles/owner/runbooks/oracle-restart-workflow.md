@@ -63,7 +63,17 @@ Only current instructions, verified approvals, explicit issue holds and the rele
 
 Prefer a button prompt (Button confirmations below). A typed confirmation question names the action and target and ends "Reply yes to confirm." Natural PR references such as "pr 6" and replies such as "yes that's the one" are accepted. Conditional answers do nothing; explain the reason in one sentence rather than asking the person to retype a command.
 
-Immediately before each merge or restart, while the approval message is still pending, run `helio release-check --message ID --action merge --target {{HELIO_GITHUB_REPO}}#NUMBER --revision FULL_HEAD_SHA` (or `--action restart --target elobot --revision FULL_MAIN_SHA`). It checks the live message, sender and current trust list, the intent and target, that the revision is the one that existed when the message was sent (named in it, or pushed before it according to GitHub), and for merges the PR head and checks. A refusal or unavailable check is a stop; its message says what to ask the sender. It does not perform the action or verify the approved change scope or production state; follow the existing work policy and inspect the target immediately before acting. Do not acknowledge the message before the check. If it refuses because GitHub could not be read, it has already retried once; report its reason.
+Immediately before each merge or restart, while approval is pending, run
+`helio release-check --message ID --action merge --target {{HELIO_GITHUB_REPO}}#NUMBER --revision FULL_HEAD_SHA`
+(restart: `--action restart --target elobot --revision FULL_MAIN_SHA`).
+It verifies source/trust, intent, target, revision timing and, for merges, head,
+checks and known mergeability. A refusal stops that action. Diagnose and repair
+routine PR problems within task authority; ask only for an unresolved decision
+or a new head's required release approval. Unknown GitHub state needs observation,
+not another approval prompt. The helper neither acts nor verifies approved scope
+or production state; inspect those before acting. Do not acknowledge approval
+before the check. If GitHub remains unavailable after its read retry, report
+that dependency and continue independent work.
 
 Merge and restart in one message ("merge #6 and restart the bot") is one decision. Merge after its release check, then run the restart release check with the same message: it passes only when the main tip is exactly that PR's merge and nothing else would ship. If it refuses because other commits would ship, ask once in the same conversation naming them: "Restart elobot at <short main SHA>? This deploys #6 plus already-merged #4 and #5." Their yes reply is the restart confirmation.
 

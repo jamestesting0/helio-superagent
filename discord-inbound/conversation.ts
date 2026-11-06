@@ -25,6 +25,7 @@ try {
     if (!flag || !value || options.has(flag) ||
         !(flag === "--offset" && (action === "list" || action === "show") ||
           flag === "--text-file" && action === "note" || flag === "--issue" && action === "close" ||
+          (flag === "--job" || flag === "--issue") && action === "set" ||
           SET_FLAGS.has(flag as never) && action === "set" ||
           flag === "--topic" && ["show", "note", "set", "hold", "resume", "close"].includes(action ?? ""))) {
       throw new TypeError("Invalid conversation options");
@@ -92,7 +93,12 @@ try {
       case "set": {
         // "-" clears a field; the lead records its restatement, decisions, open question and results here.
         const fields = Object.fromEntries([...SET_FLAGS].flatMap(([flag, name]) => options.has(flag) ? [[name, options.get(flag) === "-" ? "" : options.get(flag)]] : []));
-        store.setState(channel, user, fields, topicAnchor);
+        const job = options.get("--job"), issue = options.get("--issue");
+        if (issue && process.env.HELIO_GITHUB_REPO &&
+            !issue.startsWith(`https://github.com/${process.env.HELIO_GITHUB_REPO}/issues/`)) {
+          throw new TypeError("Issue must belong to the configured repository");
+        }
+        store.setState(channel, user, { ...fields, ...(job ? { job } : {}), ...(issue ? { issue } : {}) }, topicAnchor);
         console.log(`CONVERSATION_SET channel=${channel} user=${user} fields=${Object.keys(fields).join(",")}`);
         break;
       }

@@ -3,13 +3,14 @@ import { join } from "node:path";
 import { readdir, readFile } from "node:fs/promises";
 import { Delivery } from "./delivery/delivery.ts";
 import { Conversations } from "./conversations/conversations.ts";
-import { filterConfig, reauthorize, validateChannelPolicy } from "./intake/authorization.ts";
+import { filterConfig, reauthorize, validateChannelPolicy, type OriginalMetadata } from "./intake/authorization.ts";
 import { cachedReads, discordRest } from "./discord/rest.ts";
 import { object } from "./delivery/monitor-summary.ts";
 import { detailPage } from "./delivery/context-render.ts";
 import { cleanupAttachments } from "./messages/images.ts";
 import { finishWorking } from "./conversations/working.ts";
 import { sweepExpired } from "./delivery/expiry.ts";
+import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
 import { PromptStore } from "./interactive/store.ts";
 
 const state = process.env.DORI_STATE_DIR;
@@ -62,6 +63,28 @@ async function laneSources(statePath: string): Promise<readonly { readonly key: 
 }
 
 async function main(): Promise<void> {
+  if (action === "source") {
+    if (!id || options.size !== 1 || !options.has("--job") || !process.env.DORI_DISCORD_TOKEN) {
+      throw new TypeError("Usage: helio recovery source discord:CHANNEL:MESSAGE --job issue-N");
+    }
+    const [{ inspectJobSource }, { recoveryPolicyHash }] = await Promise.all([
+      import("./intake/source-proof.ts"), import("./delivery/reconcile-manifest.ts"),
+    ]);
+    const cfg = filterConfig(process.env), rest = cachedReads(discordRest(process.env.DORI_DISCORD_TOKEN));
+    const warnings: string[] = [];
+    // A directly ignored source is refused before any Discord lookup.
+    const channel = /^discord:(\d+):\d+$/.exec(id)?.[1];
+    if (channel && cfg.ignoredChannels?.has(channel)) throw new RangeError("Historical source channel is ignored");
+    await validateChannelPolicy(cfg, rest, warning => warnings.push(warning));
+    console.log(JSON.stringify(await inspectJobSource(id, options.get("--job")!, cfg, rest, recoveryPolicyHash())));
+    return;
+  }
+  if (action === "preview" || action === "apply") {
+    if (!state || !id) throw new TypeError("Usage: helio recovery preview|apply MANIFEST [--messages IDs] [--topics CHANNEL:USER:ANCHOR] [--notices IDs]");
+    const { reconcileRecovery } = await import("./delivery/reconcile.ts");
+    await reconcileRecovery(action, id, options, state);
+    return;
+  }
   if (!state || !["begin", "scan", "show", "review"].includes(action ?? "")) {
     throw new TypeError("Usage: helio recovery begin|scan|show REPORT [--offset N]|review MESSAGE --outcome resume|settled|informational|needs-review --reason-file FILE [--pr N] [--issue N]");
   }
@@ -93,6 +116,20 @@ async function main(): Promise<void> {
         (channel, user) => store.talkedRecently(channel, user, Date.now()));
     cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
     await validateChannelPolicy(cfg, rest, warn);
+    for (const item of queue.pending("inbound")) {
+      await queue.ignored.settle("inbound", item.id, item.payload, cfg.ignoredChannels,
+        async channel => rest<{ parent_id?: string }>(`/channels/${channel}`));
+    }
+    await cleanupIgnored(queue, state, store);
+    const currentInput = async (item: { readonly id: string; readonly payload: string }) => {
+      let original: OriginalMetadata | undefined;
+      const current = await reauthorize(item.payload, cfg, rest, value => { original = value; });
+      if (!current && original && await queue.ignored.settle("inbound", item.id, item.payload, cfg.ignoredChannels,
+        async channel => rest<{ parent_id?: string }>(`/channels/${channel}`), original)) {
+        await cleanupIgnored(queue, state, store);
+      }
+      return current;
+    };
     await sweepExpired(queue, state, warn);
     const pending = queue.pending("inbound");
     if (action === "scan") {
@@ -101,8 +138,9 @@ async function main(): Promise<void> {
       const lanes = await laneSources(state);
       for (const item of pending) {
         queue.recovery.flag(item.id, item.payload);
-        const current = await reauthorize(item.payload, cfg, rest);
+        const current = await currentInput(item);
         if (!current) {
+          if (queue.status("inbound", item.id).disposition === "ignored") continue;
           withheld++;
           items.push({ message_id: item.id, state: "withheld", read: "Current policy forbids replay; retain pending" });
           continue;
@@ -142,7 +180,11 @@ async function main(): Promise<void> {
       console.log(`RECOVERY_HANDLED message_id=${id}; inspect recorded outcome, do not restart its conversation`);
       return;
     }
-    const current = await reauthorize(item.payload, cfg, rest);
+    const current = await currentInput(item);
+    if (!current && queue.status("inbound", item.id).disposition === "ignored") {
+      console.log(`RECOVERY_IGNORED message_id=${id}`);
+      return;
+    }
     if (!current) throw new RangeError("Source no longer authorized; retain pending");
     const outcome = options.get("--outcome");
     if (outcome !== "resume" && outcome !== "settled" && outcome !== "informational" && outcome !== "needs-review") {

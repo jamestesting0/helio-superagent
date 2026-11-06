@@ -1,0 +1,54 @@
+diff --git a/dist/src/platforms/discordbot/listener.js b/dist/src/platforms/discordbot/listener.js
+index 6b495b6cbe54490018ad9478241015f1f25fc747..bdb7e4b739da0322f3cd911ce5806f94f35a7e26 100644
+--- a/dist/src/platforms/discordbot/listener.js
++++ b/dist/src/platforms/discordbot/listener.js
+@@ -280,7 +280,7 @@ export class DiscordBotListener {
+             return;
+         }
+         const eventType = t.toLowerCase();
+-        const event = { ...d, type: t };
++        const event = { ...d, ...(t === 'MESSAGE_CREATE' ? { message_type: d.type } : {}), type: t };
+         this.emitter.emit(eventType, event);
+         this.emitter.emit('discord_event', event);
+     }
+diff --git a/dist/src/platforms/discordbot/types.d.ts b/dist/src/platforms/discordbot/types.d.ts
+index 7ca9e646406125979ba4dc463c4aa2b52c434c3d..1b892f1c1bd63b81fcd3ed9851d52208cbfe8987 100644
+--- a/dist/src/platforms/discordbot/types.d.ts
++++ b/dist/src/platforms/discordbot/types.d.ts
+@@ -263,6 +263,8 @@ export interface DiscordGatewayStickerItem {
+ }
+ export interface DiscordGatewayMessageCreateEvent {
+     type: 'MESSAGE_CREATE';
++    message_type: number;
++    nonce?: string | number;
+     id: string;
+     channel_id: string;
+     guild_id?: string;
+diff --git a/src/platforms/discordbot/listener.ts b/src/platforms/discordbot/listener.ts
+index 34e1e91070f4c1bd6f9a6793a6104f23db004cf0..9cf592abdb4f0336ff6e9bbba17f5602f89f9567 100644
+--- a/src/platforms/discordbot/listener.ts
++++ b/src/platforms/discordbot/listener.ts
+@@ -307,7 +307,9 @@ export class DiscordBotListener {
+     }
+ 
+     const eventType = t.toLowerCase()
+-    const event: DiscordGatewayGenericEvent = { ...d, type: t }
++    const event: DiscordGatewayGenericEvent = {
++      ...d, ...(t === 'MESSAGE_CREATE' ? { message_type: d.type } : {}), type: t,
++    }
+     this.emitter.emit(eventType, event)
+     this.emitter.emit('discord_event', event)
+   }
+diff --git a/src/platforms/discordbot/types.ts b/src/platforms/discordbot/types.ts
+index 3c52fa8d2b7e686b755acec9635112c750344d61..f4c43c099b8a3585c7fd43e64418c71e396256f8 100644
+--- a/src/platforms/discordbot/types.ts
++++ b/src/platforms/discordbot/types.ts
+@@ -264,6 +264,8 @@ export interface DiscordGatewayStickerItem {
+ 
+ export interface DiscordGatewayMessageCreateEvent {
+   type: 'MESSAGE_CREATE'
++  message_type: number
++  nonce?: string | number
+   id: string
+   channel_id: string
+   guild_id?: string

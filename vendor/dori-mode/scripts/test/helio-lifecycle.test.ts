@@ -26,7 +26,7 @@ test("isolated lanes preserve input brief and recover failed pane launch", async
    if(argv.slice(0,3).join(" ")==="herdr pane list") return {code:0,out:JSON.stringify({result:{panes:[]}}),err:""};
    return {code:0,out:"",err:""};
   }};
-  await expect(launchLane(deps,{key:"lane-one",title:"test",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");
+  await expect(launchLane(deps,{key:"lane-one",job:"lane-one",title:"test",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");
   const lane=await registry.read("lane-one"); expect(lane?.launchState).toBe("failed"); expect(lane?.status).toBe("not-done"); expect(lane?.pane).toBe("pane");
   expect(lane?.cwd).toBe(join(state,"worktrees","lane-one")); expect(readFileSync(brief,"utf8")).toBe("original brief\n");
   expect(readFileSync(lane!.brief,"utf8")).toContain("## Lane footer");
@@ -34,9 +34,9 @@ test("isolated lanes preserve input brief and recover failed pane launch", async
   expect(readlinkSync(join(lane!.cwd!,".env"))).toBe(betaEnv);
   expect(calls.some(x=>x[0]==="git" && x.includes("add"))).toBe(true);
   chmodSync(betaEnv,0o644);
-  await expect(launchLane(deps,{key:"lane-two",title:"insecure",brief,done:"closed owner/repo#1"})).rejects.toThrow("owner-only regular file");
+  await expect(launchLane(deps,{key:"lane-two",job:"lane-two",title:"insecure",brief,done:"closed owner/repo#1"})).rejects.toThrow("owner-only regular file");
   chmodSync(betaEnv,0o600);
-  await expect(launchLane(deps,{key:"lane-one",title:"retry",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");
+  await expect(launchLane(deps,{key:"lane-one",job:"lane-one",title:"retry",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");
   const retried=await registry.read("lane-one");
   expect(retried?.history?.map(h=>h.note)).toContain("relaunched after a failed attempt");
   expect(calls.filter(x=>x[0]==="git" && x.includes("add") && x.includes(join(state,"worktrees","lane-one")))).toHaveLength(1);

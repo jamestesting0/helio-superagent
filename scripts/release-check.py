@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Verify a specific, still-pending Discord release approval. Performs no production action."""
-import argparse, hashlib, json, os, re, runpy, sqlite3, subprocess, sys, time, urllib.error, urllib.request
+import argparse, hashlib, json, os, re, runpy, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 HOME=Path.home(); BASE=HOME/'.dori/elobot'; STATE=Path(os.environ.get('DORI_STATE_DIR', str(BASE/'state')))
 APPROVAL=runpy.run_path(str(Path(__file__).resolve().parent/'helio_approval.py'))
@@ -51,7 +51,7 @@ def api(path,token):
  except (urllib.error.URLError,ValueError) as e: raise Refused('Discord verification failed') from e
 def pr_view(repo,num,run=None,sleep=None):
  run=run or subprocess.run; sleep=sleep or time.sleep
- argv=['gh','pr','view',num,'--repo',repo,'--json','state,headRefOid,headRefName,baseRefName,statusCheckRollup,closingIssuesReferences,body']
+ argv=['gh','pr','view',num,'--repo',repo,'--json','state,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,statusCheckRollup,closingIssuesReferences,body']
  reason=''
  for attempt in (1,2):
   try:
@@ -78,6 +78,16 @@ def require_passing(rollup):
  if failing: raise Refused('PR checks failing: '+', '.join(failing))
  if running: raise Refused('PR checks still running: '+', '.join(running)+'; check again when they finish')
  if not passed: raise Refused('PR has no passing check')
+def require_mergeable(mergeable: str, status: str) -> None:
+ if mergeable!='MERGEABLE' or status not in ('CLEAN','HAS_HOOKS'):
+  raise Refused(f'PR merge readiness is {mergeable}/{status}; inspect current main, conflicts, checks and repository requirements before acting')
+def github_revision(path: str, field: str) -> str:
+ result=subprocess.run(['gh','api',path,'--jq',field],capture_output=True,text=True,timeout=30)
+ revision=result.stdout.strip()
+ if result.returncode or not re.fullmatch(r'[0-9a-f]{40}',revision):
+  detail=(result.stderr or revision).strip()[-200:]
+  raise Refused(f'GitHub base inspection unavailable: {detail}')
+ return revision
 def load(message_id, work_channel=None, work_fingerprint=None):
  """The pending inbound delivery and its live Discord state; shared with helio-plan.py."""
  if not re.fullmatch(r'\d+',message_id): raise Refused('message must be a numeric ID')
@@ -169,6 +179,12 @@ def release_gate(action,target,revision):
   try: ISSUE_LINK['require_link'](pr.get('body',''),{item['number'] for item in pr.get('closingIssuesReferences') or []},pr.get('baseRefName',''))
   except ISSUE_LINK['Refused'] as error: raise Refused(str(error)) from None
   require_passing(pr.get('statusCheckRollup'))
+  require_mergeable(pr.get('mergeable','UNKNOWN'),pr.get('mergeStateStatus','UNKNOWN'))
+  branch=urllib.parse.quote(pr['baseRefName'],safe='')
+  base=github_revision(f'repos/{repo}/branches/{branch}','.commit.sha')
+  common=github_revision(f'repos/{repo}/compare/{base}...{revision}?per_page=1','.merge_base_commit.sha')
+  if common!=base:
+   raise Refused('PR head does not include the current base; integrate it and verify the new head before merging')
   require_no_holds('merge',pr)
   return pr.get('headRefName','')
  if action=='restart':

@@ -34,6 +34,7 @@ test("one nudge at twenty-four hours resets after a claimed response and houseke
     store.open("100", "99", "10", "request", NOW);
     store.claim("100", "99", entry("99", "11"), NOW);
     store.append("100", "99", entry("88", "12"), NOW);
+    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which error?" }, NOW);
     await sweep(NOW + DAY_MS - 1);
     expect(posts).toEqual([]);
     await sweep(NOW + DAY_MS);
@@ -45,6 +46,7 @@ test("one nudge at twenty-four hours resets after a claimed response and houseke
     store.claim("100", "99", entry("99", "13"), NOW + DAY_MS + 2);
     expect(store.get("100", "99")?.nudged_at).toBeNull();
     store.append("100", "99", entry("88", "14"), NOW + DAY_MS + 3);
+    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which error?" }, NOW + DAY_MS + 3);
     await sweep(NOW + 2 * DAY_MS + 3);
     expect(posts).toHaveLength(2);
     expect(lines.filter((line) => line.startsWith("INBOUND_CONVERSATION_NUDGE "))).toHaveLength(2);
@@ -53,7 +55,8 @@ test("one nudge at twenty-four hours resets after a claimed response and houseke
 
 test.each(["waiting_on_requester", "waiting_on_helio", "on_hold"])("seventy-two hour closure only applies while waiting on requester (%s)", async (state) => {
   await scenario(async (store, sweep, lines, posts) => {
-    store.open("100", "99", "10", "request", NOW);
+    const row = store.open("100", "99", "10", "request", NOW);
+    if (state === "waiting_on_requester") store.applyReply(row, { disposition: "question", waiting_on: "Which error?" }, NOW);
     if (state === "waiting_on_helio") store.claim("100", "99", entry("99", "11"), NOW);
     if (state === "on_hold") store.hold("100", "99", "beta test");
     await sweep(NOW + 3 * DAY_MS);
@@ -71,6 +74,7 @@ test.each(["waiting_on_requester", "waiting_on_helio", "on_hold"])("seventy-two 
 test("a missing anchor resolves silently with other and sends no courtesy messages", async () => {
   await scenario(async (store, sweep, lines, posts) => {
     store.open("100", "99", "10", "request", NOW);
+    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which error?" }, NOW);
     await sweep(NOW + DAY_MS);
     expect(store.latest("100", "99")?.outcome).toBe("other");
     expect([lines, posts]).toEqual([[], []]);

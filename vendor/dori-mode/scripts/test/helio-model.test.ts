@@ -7,7 +7,7 @@ const launch = async (allow: string | undefined, model: string | undefined, defa
   else process.env.HELIO_MODEL_ALLOW = allow;
   const deps = { registry: { read: async () => null }, config: { defaultModel } } as any;
   try {
-    return await launchLane(deps, { key: "test-lane", title: "test", brief: "/nonexistent", done: "closed acme/app#3", ...(model ? { model } : {}) }).catch((e: Error) => e.message);
+    return await launchLane(deps, { key: "test-lane", job: "test-lane", title: "test", brief: "/nonexistent", done: "closed acme/app#3", ...(model ? { model } : {}) }).catch((e: Error) => e.message);
   } finally {
     if (previous === undefined) delete process.env.HELIO_MODEL_ALLOW;
     else process.env.HELIO_MODEL_ALLOW = previous;

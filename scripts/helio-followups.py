@@ -158,6 +158,12 @@ def check(db: sqlite3.Connection, include_announced: bool, observation: dict | N
     return 1 if failed else 0
 
 
+def check_prs() -> None:
+    readiness = runpy.run_path(str(Path(__file__).with_name("helio_pr_readiness.py")))
+    for line in readiness["watch"](REPO, run):
+        print(line, flush=True)
+
+
 def daily_upkeep(housekeeping: dict) -> None:
     try:
         result = housekeeping["run"](STATE, Path.home(), time.time(), ["dori"])
@@ -253,6 +259,7 @@ def main() -> int:
             row = db.execute("SELECT data FROM oracle_observations WHERE singleton=1").fetchone()
             print(row[0] if row else '{"phase":"unavailable"}')
     elif args.action == "check":
+        check_prs()
         return check(db, include_announced=True)
     else:
         stamp = read_stamp()
@@ -273,6 +280,7 @@ def main() -> int:
                 print(f"FOLLOWUP_WARN decision upkeep unavailable: {type(error).__name__}", flush=True)
             observation = observer["poll"](db, lambda: json.loads(run(["helio", "release", "inspect"])))
             check(db, include_announced=first, observation=observation)
+            check_prs()
             events = observer["pending"](db)
             if events:
                 print(f'FOLLOWUP_ORACLE_PENDING count={len(events)} oldest={events[0]} read="helio followups oracle --event {events[0]}" audience=owner', flush=True)

@@ -103,5 +103,26 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
       CREATE INDEX IF NOT EXISTS conversations_active ON conversations(channel_id,user_id,status);
       PRAGMA user_version=3`);
   }).immediate();
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 4) return;
+    db.exec(`ALTER TABLE conversations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE conversations ADD COLUMN job TEXT;
+      ALTER TABLE conversations ADD COLUMN reply_disposition TEXT;
+      ALTER TABLE conversations ADD COLUMN question_started_at INTEGER;
+      ALTER TABLE conversations ADD COLUMN question_generation INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE conversations ADD COLUMN last_reply_key TEXT;
+      PRAGMA user_version=4`);
+  }).immediate();
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 5) return;
+    db.exec(`ALTER TABLE conversations ADD COLUMN latest_input_id TEXT;
+      UPDATE conversations SET latest_input_id=coalesce((SELECT message_id FROM transcript t
+        WHERE t.channel_id=conversations.channel_id AND t.user_id=conversations.user_id
+          AND t.opened_at=conversations.opened_at AND t.author_id=conversations.user_id
+        ORDER BY length(message_id) DESC,message_id DESC LIMIT 1),anchor_message_id);
+      PRAGMA user_version=5`);
+  }).immediate();
   return db;
 }

@@ -36,6 +36,7 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `guard` | load 150/80, 20% memory, 50 GB disk, 20 panes | `guard` |
 | `hooks.threadReply`, `hooks.threadDone` | none | `freshness`, `close` |
 | `hooks.transcribe` | none | `transcribe` (argv with `{file}`, prints the text) |
+| `hooks.inspectJobSource` | none | bounded reconciliation: read-only argv with `{source}` and `{job}` returning verified original request identity |
 
 Hooks are argv templates for your messenger CLI. `{thread}`, `{text}` and `{key}` are filled into each argument separately, so the text stays one argument whatever it contains.
 
@@ -59,13 +60,38 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 
 ## Commands
 
-### `dori launch <key> --title T --brief FILE --done "..." [--job J] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]`
+### `dori launch <key> --job J --title T --brief FILE --done "..." [--source REF] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]`
 
 Admission and the lane reservation happen under one lock. Over `maxWorkers`, or when the guard holds (memory, disk, unknown or excess pane count, unreadable host sample), the launch is queued: `LAUNCH_QUEUED key=K position=N reasons="..."` (owner priority first). `watch` starts queued launches as slots free (`LANE_DEQUEUED`). An open lane for the same job refuses with `LANE_EXISTS key=K`; a hibernated or closed lane of the job with a recorded session is resumed (`LANE_WOKEN`). A key whose previous attempt failed is relaunched in place. Omo workers get a recorded `--session-id` before starting; custom commands use discovery (`session=unknown` when unavailable).
 Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and after 20 seconds checks it: `STARTUP_ERROR` on a known failure in the pane, `STARTUP_OK` only when herdr reports the agent idle or working, and `STARTUP_UNCONFIRMED` (with the last lines) otherwise. Exit 0 for `STARTUP_OK`, `LANE_WOKEN` or `LAUNCH_QUEUED`; exit 3 for error/unconfirmed startup.
 
-### `dori adopt <key> --pane ID --title T --brief FILE --done "..." [--thread REF]`
-Registers a lane that is already running.
+### `dori adopt <key> --job J --pane ID --title T --brief FILE --done "..." [--source REF] [--thread REF]`
+Registers a lane that is already running under the same job admission lock as launch.
+An existing active or queued job is refused.
+
+### `dori job-id --repository OWNER/REPO --channel ID --source ORIGINAL_ID`
+Prints `JOB_ID request-...`: the first 24 SHA-256 hex characters over the JSON array
+`[repository, channel ID, original top-level request ID]`, prefixed with `request-`.
+Issue jobs use `issue-N` instead. Wording, display names and forwarded message IDs
+are never job identity.
+
+### `dori completion <key>`
+Runs the independent non-file Done checks and writes
+`<stateDir>/completions/<key>.json`, bound to the job, source, acceptance, attempt
+and current Git revision. A file in a lane's Done line must be this receipt and
+must accompany independent live checks. An arbitrary file or a stale `passed`
+field cannot establish completion. Verified closes also retain durable receipts.
+
+### `dori reconcile preview --manifest FILE --job issue-N --repository OWNER/REPO [--failed KEY] [--replacement KEY]`
+
+Writes a new private manifest for only the selected records. It reads current issue
+metadata, briefs, pane state and Git resources without changing the registry.
+`dori reconcile apply --manifest FILE` rechecks the evidence under the admission
+lock, refuses changed records and preserves uncertain resources. Repeating an
+applied manifest is idempotent. Job binding is identity only and grants no new
+action authority. The optional deployment source hook must independently verify
+the original request; names and quoted claims cannot bind a job. Already closed
+records remain historical. Legacy jobless workers are not automatically hibernated.
 
 ### `dori sync [--write]`
 Prints `key | thread | pane | session | status` for every open lane and every unregistered agent pane, followed by drift. Read-only unless `--write`, which stores session ids.

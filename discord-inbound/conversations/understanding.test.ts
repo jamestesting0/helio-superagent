@@ -26,7 +26,7 @@ const config = (recentlyTalked: (channel: string, user: string) => boolean) => {
   return cfg;
 };
 const unpinged = (over: Partial<IncomingMessage> = {}): IncomingMessage => ({
-  id: "1300000000000000001", channel_id: NORMAL, guild_id: "900", author: { id: STAFF, username: "staff" },
+  id: "1300000000000000001", type: 0, channel_id: NORMAL, guild_id: "900", author: { id: STAFF, username: "staff" },
   content: "that fixed it, thanks", timestamp: new Date(AT).toISOString(), mentions: [], ...over,
 });
 const replyToHelio = { message_reference: { message_id: "1290000000000000001" }, referenced_message: { author: { id: BOT } } };
@@ -81,7 +81,7 @@ test("two topics from one person stay separate, and a reply goes to the topic it
     expect(logs?.read_more).toBe(`helio conversation show ${NORMAL} ${STAFF} --topic 500`);
     expect(logs && "topic" in logs ? [logs.topic, logs.relation, logs.transcript.map((e) => e.message_id)] : [])
       .toEqual(["logs", "reply", ["501", "502"]]);
-    expect(fresh && "topic" in fresh ? [fresh.topic, fresh.relation] : []).toEqual(["logs", "new_ping"]);
+    expect(fresh).toBeUndefined();
     s.conversations.setState(NORMAL, STAFF, { request: "Fix role sync" }, "600");
     const roles = topic("601");
     expect(roles && "topic" in roles ? [roles.topic, roles.request, roles.transcript.map((e) => e.message_id)] : [])
@@ -98,6 +98,10 @@ test("who owes the next reply follows the structured state, and a new message fr
     s.conversations.append(NORMAL, STAFF, said("502", BOT), AT + 1);
     expect(state()).toBe("waiting_on_helio");
     s.conversations.setState(NORMAL, STAFF, { waiting_on: "Send the error log" });
+    expect(state()).toBe("waiting_on_helio");
+    s.conversations.applyReply(s.conversations.get(NORMAL, STAFF)!, {
+      disposition: "question", waiting_on: "Send the error log",
+    }, AT + 1);
     expect(state()).toBe("waiting_on_requester");
     s.conversations.claim(NORMAL, STAFF, said("503", STAFF, "502"), AT + 2);
     expect(state()).toBe("waiting_on_helio");

@@ -12,6 +12,7 @@ export type Priority = "owner" | "normal";
 export type QueuedLaunch = {
   readonly key: string;
   readonly job?: string;
+  readonly source?: string;
   readonly title: string;
   readonly done: string;
   readonly thread?: string;
@@ -58,7 +59,7 @@ export const occupiesSlot = (lane: Lane, livePanes: ReadonlySet<string>): boolea
   if (status === "closed") return false;
   if (lane.launchState === "failed") return lane.pane !== undefined && livePanes.has(lane.pane);
   if (status === "hibernated") return false;
-  return lane.pane !== undefined || lane.launchState === "reserved";
+  return lane.pane !== undefined || ["reserved", "brief-written", "worktree-created"].includes(lane.launchState ?? "");
 };
 
 export const livePaneIds = async (deps: FlowDeps): Promise<Set<string>> => new Set((await listPanes(deps.run)).map((pane) => pane.pane_id));

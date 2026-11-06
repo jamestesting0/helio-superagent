@@ -31,7 +31,10 @@ export type PreparedFile = {
 
 export interface PreparedAttachments {
   readonly files: readonly PreparedFile[];
-  readonly blocked: readonly { readonly name: string; readonly reason: string; readonly source?: "link" }[];
+  readonly blocked: readonly {
+    readonly name: string; readonly reason: string;
+    readonly category: "unsupported-format" | "invalid" | "unavailable"; readonly source?: "link";
+  }[];
 }
 
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
@@ -43,7 +46,9 @@ const MIB = 1024 * 1024;
 const UNSAFE_NAME = /[/\\\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
 const ANSI = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\))/g;
 
-class ImageRejected extends Error {}
+class ImageRejected extends Error {
+  constructor(message: string, readonly category: "unsupported-format" | "invalid" = "invalid") { super(message); }
+}
 
 function omitAllLinks(text: string): string {
   return text.replace(/(?:\b(?:https?|ftp|file|data|javascript):[^\s<>"`]*|\bwww\.[^\s<>"`]*)/gi, "[link omitted]");
@@ -90,10 +95,10 @@ function attachmentKind(item: Attachment): FileKind {
     throw new ImageRejected("Unsupported or suspicious attachment filename");
   }
   const extension = /\.(png|jpe?g|webp|gif|txt|md|markdown)$/i.exec(name)?.[1]?.toLowerCase();
-  if (!extension) throw new ImageRejected("Unsupported attachment type");
+  if (!extension) throw new ImageRejected("Unsupported attachment type", "unsupported-format");
   const kind = ["txt", "md", "markdown"].includes(extension) ? "text" : extension === "jpg" ? "jpeg" : extension;
   if (kind !== "text" && kind !== "png" && kind !== "jpeg" && kind !== "webp" && kind !== "gif") {
-    throw new ImageRejected("Unsupported attachment type");
+    throw new ImageRejected("Unsupported attachment type", "unsupported-format");
   }
   if (item.content_type != null &&
       (kind === "text" ? !textMime(item.content_type) : mimeKind(item.content_type) !== kind)) {
@@ -230,7 +235,7 @@ export async function prepareAttachments(
 ): Promise<PreparedAttachments> {
   const directory = messageDirectory(messageId, attachmentRoot);
   const files: PreparedFile[] = [];
-  const blocked: { name: string; reason: string; source?: "link" }[] = [];
+  const blocked: PreparedAttachments["blocked"][number][] = [];
   for (const item of attachments) {
     const source = item.source ? { source: item.source } : {};
     try {
@@ -262,6 +267,7 @@ export async function prepareAttachments(
         name: omitAllLinks(item.filename).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "").slice(0, 200),
         reason: error instanceof ImageRejected || error instanceof ImageDecodeError ? error.message :
           "Attachment download, decoding or storage failed",
+        category: error instanceof ImageRejected ? error.category : error instanceof ImageDecodeError ? "invalid" : "unavailable",
         ...source,
       });
     }

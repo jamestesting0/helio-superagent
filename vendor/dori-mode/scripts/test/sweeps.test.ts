@@ -143,7 +143,7 @@ test("launch reports STARTUP_OK only on a ready agent status; a blank pane is un
       if (argv[0] === "herdr" && argv[1] === "pane" && argv[2] === "list") return { code: 0, out: JSON.stringify({ result: { panes: [{ pane_id: "w:p9", workspace_id: "w", ...(status ? { agent: "pi", agent_status: status } : {}) }] } }), err: "" };
       return inner(argv);
     } };
-    return (await launchLane(deps, { key, title: "t", brief, done: "closed acme/app#3" })).startup;
+    return (await launchLane(deps, { key, job: key, title: "t", brief, done: "closed acme/app#3" })).startup;
   };
   expect(await run("idle", "❯ ", "ok-lane")).toBe("STARTUP_OK ok-lane w:p9");
   expect(await run(undefined, "", "blank-lane")).toStartWith("STARTUP_UNCONFIRMED blank-lane w:p9");
@@ -194,10 +194,10 @@ test("a slot whose owner is alive is not taken", async () => {
 
 test("adopting a lane refuses a Done line the watcher could never check", async () => {
   const deps = depsFor(world, fakeClock(T0), state.dir);
-  await expect(adoptLane(deps, { key: "x-lane", title: "x", brief: "/b.md", done: "two clean QA passes", pane: "w:p2" })).rejects.toBeInstanceOf(LaunchError);
-  const ok = await adoptLane(deps, { key: "x-lane", title: "x", brief: "/b.md", done: "closed acme/app#3", pane: "w:p2" });
+  await expect(adoptLane(deps, { key: "x-lane", job: "x-lane", title: "x", brief: "/b.md", done: "two clean QA passes", pane: "w:p2" })).rejects.toBeInstanceOf(LaunchError);
+  const ok = await adoptLane(deps, { key: "x-lane", job: "x-lane", title: "x", brief: "/b.md", done: "closed acme/app#3", pane: "w:p2" });
   expect(ok.thread).toBe("none");
-  await expect(adoptLane(deps, { key: "x-lane", title: "x", brief: "/b.md", done: "closed acme/app#3", pane: "w:p2" })).rejects.toThrow("already registered");
+  await expect(adoptLane(deps, { key: "x-lane", job: "x-lane", title: "x", brief: "/b.md", done: "closed acme/app#3", pane: "w:p2" })).rejects.toThrow("already registered");
 });
 
 test("the session id is read from --session, then a child's environment, then the session file made at start", async () => {

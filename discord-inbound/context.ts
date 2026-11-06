@@ -9,12 +9,15 @@
 //   DORI_STATE_DIR        where the last message read per channel is kept
 
 import { fetchBacklog, PAGE_SIZE, type Caps, type FetchPage, type RestMessage } from "./intake/catchup.ts";
+import { requestMessage } from "./intake/filter.ts";
 import { LastSeen } from "./intake/lastseen.ts";
 import { RecentIds } from "./intake/recent-ids.ts";
 import { Delivery } from "./delivery/delivery.ts";
 import { sweepOrphanAttachments } from "./delivery/expiry.ts";
 import { excludedChannels, learningAllowed, learningChannelAllowed, normalChannels } from "./learning/learning-scope.ts";
+import { contextReplayAllowed } from "./learning/context-replay.ts";
 import { prepareMessageBody } from "./messages/forwarded.ts";
+import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
 import { DiscordRestError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES } from "./discord/rest.ts";
 import { contextSummary, monitorLine } from "./delivery/monitor-summary.ts";
 
@@ -30,7 +33,8 @@ function requireEnv(name: string): string {
 const rest = discordRest(requireEnv("DORI_DISCORD_TOKEN"));
 const ids = requireEnv("DORI_DISCORD_CONTEXT").split(",").map((s) => s.trim()).filter(Boolean);
 const excluded = excludedChannels(process.env.DORI_DISCORD_CONTEXT_EXCLUDED ?? "");
-for (const id of excludedChannels(process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "")) excluded.add(id);
+const ignored = excludedChannels(process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "");
+for (const id of ignored) excluded.add(id);
 for (const id of normalChannels(process.env)) excluded.add(id);
 const stateDir = requireEnv("DORI_STATE_DIR");
 const statePath = `${stateDir}/discord-context.json`;
@@ -68,6 +72,13 @@ async function refresh(): Promise<void> {
   const allowed = new Set(channels.map(c => c.id));
   let withheld = 0;
   for (const item of delivery.pending("context")) {
+    try {
+      if (await delivery.ignored.settle("context", item.id, item.payload, ignored, async id =>
+        rest<{ parent_id?: string }>(`/channels/${id}`))) continue;
+    } catch (error) {
+      if (!(error instanceof DiscordRestError)) throw error;
+      skip(item.id, error); withheld++; continue;
+    }
     let payload: unknown;
     try { payload = JSON.parse(item.payload); } catch (err) {
       if (!(err instanceof SyntaxError)) throw err;
@@ -79,6 +90,12 @@ async function refresh(): Promise<void> {
         ("author_id" in payload && typeof payload.author_id === "string" && delivery.moderation.isBlocked(payload.author_id))) {
       withheld++;
       continue;
+    }
+    try {
+      if (!await contextReplayAllowed(item.payload, process.env, rest)) { withheld++; continue; }
+    } catch (error) {
+      if (!(error instanceof DiscordRestError)) throw error;
+      skip(item.id, error); withheld++; continue;
     }
     if (!announced.has(item.id)) console.log(contextSummary(item.id, item.payload));
     announced.add(item.id);
@@ -103,10 +120,13 @@ async function refresh(): Promise<void> {
       for (const msg of messages) {
         if (msg.author.bot || ("webhook_id" in msg && msg.webhook_id !== undefined) ||
             delivery.moderation.isBlocked(msg.author.id)) continue;
+        if (!requestMessage(msg)) continue;
         if (delivery.contains("context", msg.id)) continue;
         const body = await prepareMessageBody(msg, `${stateDir}/attachments/context`);
         const payload = JSON.stringify({
           message_id: msg.id,
+          message_type: msg.type,
+          preparation_complete: true,
           channel: channel.name,
           channel_id: channel.id,
           guild_id: channel.guild_id,
@@ -119,6 +139,7 @@ async function refresh(): Promise<void> {
           ...body,
         });
         if (delivery.stage("context", msg.id, payload) && !emitted.has(msg.id)) {
+          if (await delivery.ignored.settle("context", msg.id, payload)) continue;
           console.log(contextSummary(msg.id, payload));
           announced.add(msg.id);
           emitted.add(msg.id);
@@ -133,6 +154,7 @@ async function refresh(): Promise<void> {
     }
   }
   // Only a refresh that reached every channel may forget read positions of channels no longer learned.
+  await cleanupIgnored(delivery, stateDir);
   if (skipped === 0) await lastRead.retain(new Set(channels.map((channel) => channel.id)));
   await lastRead.save();
   console.log(`CONTEXT_DONE channels=${channels.length} messages=${total}`);

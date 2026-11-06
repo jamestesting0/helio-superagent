@@ -2,12 +2,17 @@
 
 ## Implementing without a plan
 
+Resolve task identity first under issue-truth-workflow.md. Related closed issues
+stay historical; new work uses a linked new issue. Authorize and plan the new
+number from the current request, never from a completed issue's old approval.
+
 An owner's or trusted user's request to implement an issue ("implement #8", "proceed" or "yes"
 replying to your proposal to implement it) is one decision covering the work and its PR. Record it
 immediately: `helio work authorize --issue N --message M --channel C`. On `WORK_AUTHORIZED` launch
 the lane; it removes `needs-owner-review`. The receipt survives intake acknowledgement, restarts
-and elapsed implementation time until used. Re-recording the same request is idempotent and
-does not restore spent authority. Never ask again before the PR.
+and elapsed implementation time. Its creation receipt is marked used after verified PR creation;
+that does not revoke authorized updates to the same PR. Never ask separately for the commits
+and ordinary pushes needed to implement or revise the requested work.
 Receipts are per issue: when one human request clearly covers several tasks, record each
 resolved issue. Completing one task does not revoke the other tasks from that request.
 
@@ -23,6 +28,57 @@ The scope is the current issue body (`helio issue show N`): build its confirmed 
 its open questions out. The lane follows the brief below without the plan check; its result file has
 one `scope` row per confirmed requirement, `deviation` for anything left open, which makes the PR
 `Refs #N` and keeps the issue open. A work authorization never approves a merge or restart.
+
+## Revising an existing PR
+
+A direct owner/trusted instruction such as "remove that fact", "fix this in #14" or
+"change the copy" in the PR's conversation requests the revision, including its
+necessary commit and non-forced branch update. Resolve the target from permitted
+context and lane records. For an open issue, record the new source with
+`helio work authorize` for that issue. For closed history, first resolve the
+linked new issue under issue-truth-workflow.md. Carry its current scope/limits
+into the existing PR lane and update through `helio pr submit`. Do not ask
+"may I commit?" or "may I update the PR?"
+after that request. If plan mode applies, clear explicit feedback can authorize
+the revised scope through `--from-message` and `--resolved-approval`; do not ask
+the same decision twice. Proposals, ambiguous targets and explicit publication
+holds still need resolution. A real denial, conflict or changed source is a
+fact to diagnose, not a reason to invent a missing approval.
+
+## PR recovery and readiness
+
+An authorized task includes routine repair until its PR is usable. Fetch main
+on launch/resume and before submission; the isolated checkout does not inherit
+owner pushes. Merge current main into the task tree, preserving both intents.
+If Git stops at conflicts, inspect the conflicting code and tests, resolve and
+commit in that tree, then resubmit. A conflict is not a request for permission.
+Do not switch, reset or stash someone else's shared work.
+
+`helio pr submit` merges main before its integration suite and rechecks main
+before publication and delivery. If main moves, incorporate it and verify the
+new head through the same submission. A non-fast-forward push means inspect the
+remote's new commits and reconcile them; never force-push or open a duplicate PR.
+
+`helio pr check --number N` reads the current head, main ancestry, mergeability
+and CI. The existing follow-up monitor checks open canonical `helio/` PRs every
+five minutes, even after the worker closes. `FOLLOWUP_PR_REPAIR` is internal work:
+read its command, resolve the issue/lane and original authority, then resume that
+job. Repeated events while repair is running need no second lane or human reply.
+`FOLLOWUP_PR_WAIT` means a named check or GitHub calculation is pending;
+subscribe to its change. `FOLLOWUP_PR_READY` supplies the observed head/base;
+announce only a new result the requester is waiting for.
+
+For failed CI, inspect the failed run/job logs, reproduce the cause, fix the task
+or integration regression and resubmit. Diagnose unavailable infrastructure or a
+pre-existing failure before escalating; do not skip, weaken or disable checks.
+An actual product-intent conflict needs one question explaining both intents and
+what you tried. Preserve explicit holds and original autofix scope/path/size
+limits; a monitor event never grants broader authority.
+
+Report after repair, or when a diagnosed blocker needs a human/resource. Keep
+required progress updates concise. Say which head and main revision were checked
+and whether CI passed, remains running, or is blocked. Repairing a published head
+invalidates approvals pinned to its old head; merge/restart checks still apply.
 
 ## Opting into a plan
 
@@ -67,8 +123,9 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
    regressions for changed behavior. Use direct `ulw`, sized to the actual change, unless the
    requester selected another method. Do not create a planning pipeline merely to launch a lane.
 3. Live beta only if the plan says "Requested by"; otherwise none.
-4. If the work needs a different Scope, decision or Done-when item, stop and report; the lead posts
-   a new revision. Small mechanical details (a helper name, an extra test) need no new approval.
+4. If the work needs unrequested scope, decisions or Done-when changes, report the missing
+   decision. A clear authorized follow-up already supplies its requested correction; the lead
+   records that scope/source without another permission round. Mechanical details need no approval.
 5. Write a result file, one entry per Scope row and per Done-when item, in order:
    `{"scope": [{"status": "met", "evidence": "test_name"}], "done_when": [...]}` (status `met` or
    `deviation`), and a summary file. Then run
@@ -79,9 +136,13 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
    run from the actual task tree, or pass its recorded `--worktree PATH` from the lead/shared tree.
    Without either, only a unique issue-numbered tree is a discovery fallback.
    Keep unrelated shared changes untouched. It handles normal branch
-   updates and verifies the actual remote and PR head. An existing PR is updated when necessary;
+   updates and verifies the actual remote, PR head and latest main. An existing PR is updated when necessary;
    its URL alone is not success. Failed or uncertain creation does not spend authority before
    read-back establishes the PR and intended head. Do not create a duplicate to recover.
+6. Run `helio pr check --number PR_NUMBER` using the published PR's number; resolve failed checks/conflicts before claiming
+   readiness. Pending CI may be reported accurately while its watcher stays active.
+   Return the result, verified head/base, checks and evidence paths privately to the lead, then claim
+   done. The lead sends the routed completion once; do not also send it through evidence.ts.
 
 Revisions: post again with `change_note` ("window 8 to 6 hours"). A content change prints
 `PLAN_APPROVAL_RESET`; send the new announcement and ask for approval of the new revision.

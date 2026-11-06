@@ -1,9 +1,10 @@
 import { Delivery } from "./delivery/delivery.ts";
 import { redactBlocked } from "./delivery/moderation.ts";
 import { cleanupAttachments } from "./messages/images.ts";
-import { filterConfig, reauthorize, validateChannelPolicy } from "./intake/authorization.ts";
+import { filterConfig, reauthorize, validateChannelPolicy, type OriginalMetadata } from "./intake/authorization.ts";
 import { cachedReads, discordRest } from "./discord/rest.ts";
 import { sweepExpired } from "./delivery/expiry.ts";
+import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
 import { contextReplayAllowed } from "./learning/context-replay.ts";
 import { Conversations } from "./conversations/conversations.ts";
 import { conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
@@ -81,6 +82,7 @@ try {
   delivery = new Delivery(`${state}/discord-delivery.sqlite`);
   conversations = new Conversations(`${state}/discord-conversations.sqlite`);
   const queue = delivery, store = conversations;
+  const sourceStream = stream;
   const rest = process.env.DORI_DISCORD_TOKEN ? cachedReads(discordRest(process.env.DORI_DISCORD_TOKEN)) : undefined;
   let policy: Promise<ReturnType<typeof filterConfig>> | undefined;
   function currentPolicy() {
@@ -96,6 +98,24 @@ try {
       return cfg;
     })();
     return policy;
+  }
+  async function quietIgnored(item: { readonly id: string; readonly payload: string }): Promise<boolean> {
+    const ignored = stream === "inbound" ? filterConfig(process.env).ignoredChannels :
+      new Set((process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(value => value.trim()).filter(Boolean));
+    const lookup = rest ? async (channel: string) => rest<{ parent_id?: string }>(`/channels/${channel}`) : undefined;
+    let settled = await queue.ignored.settle(sourceStream, item.id, item.payload, ignored, lookup);
+    if (!settled && sourceStream === "inbound" && rest) {
+      const saved = object(JSON.parse(item.payload)), origin = object(saved.discord_origin ?? {});
+      if (origin.message_type === undefined && saved.preparation_complete === true) {
+        let original: OriginalMetadata | undefined;
+        await reauthorize(item.payload, await currentPolicy(), rest, value => { original = value; });
+        if (original) settled = await queue.ignored.settle(sourceStream, item.id, item.payload, ignored, lookup, original);
+      }
+    }
+    if (!settled) return false;
+    await cleanupIgnored(queue, stateDir, store);
+    console.log(`ACK_IGNORED stream=${stream} message_id=${item.id}`);
+    return true;
   }
   async function authorized(item: { readonly id: string; readonly payload: string }): Promise<string> {
     if (stream === "context") {
@@ -137,6 +157,7 @@ try {
         }
         const item = queue.pending(stream).find((item) => item.id === messageId);
         if (!item) throw new RangeError("Delivery changed while reading");
+        if (await quietIgnored(item)) continue;
         const message = object(JSON.parse(await authorized(item)));
         if (messages.length && messages[0]?.channel_id !== message.channel_id) {
           throw new RangeError("Turn messages must share a channel");
@@ -199,6 +220,7 @@ try {
       if (processed >= 25 || bytes >= 35_000) break;
       let line: string;
       try {
+        if (await quietIgnored(item)) { processed++; last = item.id; continue; }
         const payload = await authorized(item);
         if (stream === "context") line = contextSummary(item.id, payload);
         else {

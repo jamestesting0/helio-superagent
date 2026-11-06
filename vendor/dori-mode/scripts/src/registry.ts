@@ -11,10 +11,15 @@ export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; r
 
 export type Lane = {
   readonly key: string;
-  /** The job this lane does (e.g. issue-8); one open lane per job. Defaults to the key. */
+  /** Explicit for new lanes; absence is retained only for readable legacy records. */
   readonly job?: string;
+  readonly source?: string;
   readonly revision?: number;
-  readonly launchState?: "reserved" | "worktree-created" | "pane-created" | "started" | "unconfirmed" | "failed";
+  readonly launchState?: "reserved" | "brief-written" | "worktree-created" | "pane-created" | "started" | "unconfirmed" | "failed";
+  readonly failedAfter?: Lane["launchState"];
+  readonly retiredAt?: string;
+  readonly supersededBy?: string;
+  readonly reconciliations?: readonly { readonly manifest: string; readonly before: string; readonly at: string; readonly outcome: string }[];
   readonly launchError?: string;
   readonly title: string;
   readonly thread: string;
@@ -53,6 +58,13 @@ export type Lane = {
 };
 
 export const jobOf = (lane: Lane): string => lane.job ?? lane.key;
+
+export const requestJob = (repository: string, channel: string, original: string): string => {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository) || !/^\d{1,30}$/.test(channel) || !/^\d{1,30}$/.test(original)) {
+    throw new TypeError("Request identity requires repository, channel and original top-level message ID");
+  }
+  return `request-${new Bun.CryptoHasher("sha256").update(JSON.stringify([repository, channel, original])).digest("hex").slice(0, 24)}`;
+};
 
 export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
 
@@ -135,6 +147,21 @@ export class Registry {
       if (f.endsWith(".json")) archived.push((await Bun.file(join(this.archiveDir, f)).json()) as Lane);
     }
     return [...active, ...archived];
+  }
+
+  /** Bounded repair previews must not create directories or move legacy records while reading. */
+  async snapshot(): Promise<Lane[]> {
+    const lanes: Lane[] = [];
+    for (const directory of [this.dir, this.archiveDir]) {
+      let names: string[];
+      try { names = readdirSync(directory); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      for (const name of names.filter(name => name.endsWith(".json"))) lanes.push(await Bun.file(join(directory, name)).json());
+    }
+    return lanes;
   }
 
   async open(): Promise<Lane[]> {

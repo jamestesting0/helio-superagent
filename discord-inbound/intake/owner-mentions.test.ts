@@ -29,7 +29,7 @@ function config(values: Record<string, string> = {}, lastOwnerPost?: (channel: s
 
 function message(over: Partial<IncomingMessage> = {}): IncomingMessage {
   return {
-    id: "1300000000000000001", channel_id: NORMAL, guild_id: "900", author: { id: STAFF, username: "staff" },
+    id: "1300000000000000001", type: 0, channel_id: NORMAL, guild_id: "900", author: { id: STAFF, username: "staff" },
     content: `<@${OWNER}> how do I register my base?`, timestamp: new Date(AT).toISOString(),
     mentions: [{ id: OWNER }], ...over,
   };

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { classify, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./filter.ts";
+import { classify, guildChannelAllowed, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./filter.ts";
 import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "../discord/rest.ts";
 
 /** Channel trust never grants sender authority or adds a channel to the allowlist. */
@@ -64,6 +64,20 @@ export function filterConfig(
 
 const THREAD_TYPES = new Set([10, 11, 12]);
 
+/** Source reads and replies use current intake scope, including stateless helper invocations. */
+export async function requireReplyChannel(channelId: string, cfg: FilterConfig, rest: Rest): Promise<void> {
+  if (cfg.ignoredChannels?.has(channelId) || cfg.blockedChannels?.has(channelId)) {
+    throw new RangeError("Reply channel is excluded by current policy; retained pending");
+  }
+  const channel = await rest<ApiChannel>(`/channels/${channelId}`);
+  if (channel.id !== channelId) throw new TypeError("Reply channel identity changed");
+  if (channel.type === 1 || channel.type === 3) return;
+  if (!await guildChannelAllowed(channelId, cfg, async id =>
+    id === channelId ? channel : await rest<ApiChannel>(`/channels/${id}`))) {
+    throw new RangeError("Reply channel is outside current scope; retained pending");
+  }
+}
+
 export async function validateChannelPolicy(
   cfg: FilterConfig, rest: Rest, warn: (message: string) => void,
 ): Promise<void> {
@@ -71,6 +85,7 @@ export async function validateChannelPolicy(
   const channels = new Map<string, ApiChannel | undefined>();
   cfg.blockedChannels = blocked;
   const channelOf = async (id: string) => {
+    if (cfg.ignoredChannels?.has(id)) return undefined;
     if (channels.has(id)) return channels.get(id);
     try {
       const channel = await rest<ApiChannel>(`/channels/${id}`);
@@ -128,6 +143,7 @@ export async function validateChannelPolicy(
 export function authorizationMetadata(msg: IncomingMessage) {
   return {
     version: 1,
+    message_type: msg.type,
     message_id: msg.id,
     channel_id: msg.channel_id,
     guild_id: msg.guild_id ?? null,
@@ -163,8 +179,13 @@ function withoutLinkedFiles(record: Record<string, unknown>): void {
   }
 }
 
-/** Recompute authority from original routing facts and current config, without message GETs. */
-export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest) {
+export interface OriginalMetadata {
+  readonly id: string; readonly channel_id: string; readonly author: { readonly id: string }; readonly type: number;
+}
+
+/** Recompute authority; only legacy records require an original-message read after policy allows it. */
+export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest,
+  onOriginal?: (original: OriginalMetadata) => void) {
   const saved: unknown = JSON.parse(payload);
   if (typeof saved !== "object" || saved === null ||
       !("message_id" in saved) || typeof saved.message_id !== "string" || !/^\d+$/.test(saved.message_id) ||
@@ -175,6 +196,7 @@ export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest
   if (!("preparation_complete" in saved) || saved.preparation_complete !== true) {
     throw new TypeError("Pending evidence preparation is incomplete or legacy; retained pending");
   }
+  if (cfg.ignoredChannels?.has(saved.channel_id)) return null;
   const origin = "discord_origin" in saved ? saved.discord_origin : undefined;
   if (typeof origin !== "object" || origin === null ||
       !("version" in origin) || origin.version !== 1 ||
@@ -192,19 +214,33 @@ export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest
   }
   const channel = await rest<ApiChannel>(`/channels/${saved.channel_id}`);
   if ((channel.guild_id ?? null) !== origin.guild_id) throw new TypeError("Pending channel location changed; retained pending");
+  const lookup = async (id: string) => id === channel.id ? channel : await rest<ApiChannel>(`/channels/${id}`);
+  if (channel.guild_id && !await guildChannelAllowed(channel.id, cfg, lookup)) return null;
+  let type = "message_type" in origin ? origin.message_type : undefined;
+  if (type === undefined) {
+    const original = await rest<OriginalMetadata>(
+      `/channels/${saved.channel_id}/messages/${saved.message_id}`);
+    if (original.id !== saved.message_id || original.channel_id !== saved.channel_id || original.author.id !== origin.author_id) {
+      throw new TypeError("Legacy source identity changed; retained pending");
+    }
+    type = original.type;
+    if (typeof type !== "number" || !Number.isInteger(type)) throw new TypeError("Pending message type is unavailable; retained pending");
+    onOriginal?.(original);
+  }
+  if (typeof type !== "number" || !Number.isInteger(type)) throw new TypeError("Pending message type is unavailable; retained pending");
   const current = await classify({
-    id: saved.message_id, channel_id: saved.channel_id, guild_id: channel.guild_id,
+    id: saved.message_id, type, channel_id: saved.channel_id, guild_id: channel.guild_id,
     author: { id: origin.author_id, bot: origin.bot, username: "author" in saved && typeof saved.author === "string" ? saved.author : origin.author_id },
     webhook_id: origin.webhook_id ?? undefined,
     content: "", timestamp: "sent_at" in saved && typeof saved.sent_at === "string" ? saved.sent_at : "",
     mentions: origin.mention_ids.map((id) => ({ id })),
     message_reference: origin.reply_to === null ? undefined : { message_id: origin.reply_to },
     referenced_message: origin.reply_author_id === null ? null : { author: { id: origin.reply_author_id } },
-  }, cfg,
-    async (id) => (await rest<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined);
+  }, cfg, lookup);
   if (!current) return null;
   const result = {
     ...saved, ...current, content: saved.content,
+    discord_origin: { ...origin, message_type: type },
     attachments: "attachments" in saved ? saved.attachments : [],
     // Expiry is tied to the originally queued sent_at, not a later REST response.
     sent_at: "sent_at" in saved ? saved.sent_at : undefined,

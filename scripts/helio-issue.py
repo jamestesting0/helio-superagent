@@ -16,6 +16,7 @@ HERE = Path(__file__).resolve().parent
 ISSUES = runpy.run_path(str(HERE / "helio_issues.py"))
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
 SYNC = runpy.run_path(str(HERE / "helio_issue_sync.py"))
+FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 STATE = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
 
@@ -44,7 +45,7 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
     info = json.loads(gh.command(["gh", "issue", "view", str(issue), "--repo", REPO, "--json",
                                   "state,stateReason,title,url,comments,closedByPullRequestsReferences"]))
     if transition:
-        info.update(state="OPEN" if transition == "reopened" else "CLOSED", stateReason=transition.upper())
+        info.update(state="CLOSED", stateReason=transition.upper())
     plan = runpy.run_path(str(HERE / "helio-plan.py"))
     login = gh.command(["gh", "api", "user", "--jq", ".login"]).strip()
     plans = [plan["parse"](item.get("body", "")) for item in info.get("comments", [])
@@ -87,8 +88,7 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
         implementation = ISSUE_LINK["parse"](detail.get("body", ""))
         closes = {item["number"] for item in detail.get("closingIssuesReferences") or []}
         merged_at = timestamp(detail.get("mergedAt"))
-        historical = detail["state"] == "MERGED" and (
-            transition == "reopened" or (merged_at > 0 and reopened_at > merged_at))
+        historical = detail["state"] == "MERGED" and merged_at > 0 and reopened_at > merged_at
         if historical:
             parts.append(f"PR #{number}: historical completion before reopened work")
         elif implementation and implementation.issue == issue and implementation.complete:
@@ -144,8 +144,14 @@ def main() -> int:
         command.add_argument("--note-file", type=Path)
         command.add_argument("--adopt", help="SHA256 of the exact reviewed body")
         command.add_argument("--close", choices=("not_planned", "completed"))
-        command.add_argument("--reopen", action="store_true")
         command.add_argument("--labels", nargs="+")
+    followup = sub.add_parser("followup")
+    followup.add_argument("--previous", type=int, required=True)
+    followup.add_argument("--message", required=True)
+    followup.add_argument("--channel", required=True)
+    followup.add_argument("--title", required=True)
+    followup.add_argument("--body-file", type=Path, required=True)
+    followup.add_argument("--labels", nargs="+", required=True)
     show = sub.add_parser("show")
     show.add_argument("issue", type=int)
     reviewed = sub.add_parser("reviewed")
@@ -161,6 +167,13 @@ def main() -> int:
     try:
         gh = ISSUES["Issues"](REPO, STATE)
         now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        if args.command == "followup":
+            number, url = FOLLOWUP["create"](gh, FOLLOWUP["Request"](
+                args.previous, args.channel, args.message, args.title,
+                args.body_file.read_text(), tuple(sorted(set(args.labels)))))
+            SYNC["schedule"](REPO, number)
+            print(f"ISSUE_FOLLOWUP issue={number} previous={args.previous} url={url}; implementation authority is separate")
+            return 0
         if args.command == "reviewed":
             reason = args.reason_file.read_text().strip()
             if not reason:
@@ -187,13 +200,11 @@ def main() -> int:
             issue, operation = gh.resume(args.operation)
             print(f"ISSUE_UPDATED issue={issue} operation={operation}")
             return 0
-        if args.close and args.reopen:
-            raise ISSUES["Refused"]("Choose close or reopen.")
-        facts = projection(args.issue, gh, "reopened" if args.reopen else args.close)
+        facts = projection(args.issue, gh, args.close)
         change = {"projection": facts["status"], "summary": facts["summary"], "links": facts["links"],
                   "body": args.body_file.read_text() if args.body_file else None,
                   "note": args.note_file.read_text().strip() if args.note_file else "", "close": args.close,
-                  "adopt": args.adopt, "labels": args.labels, "reopen": args.reopen}
+                  "adopt": args.adopt, "labels": args.labels}
         if args.labels is None and "Plan " in change["projection"] and ": Approved" in change["projection"]:
             current = gh.get(args.issue)
             change["labels"] = [item["name"] for item in current.get("labels", []) if item["name"] != "needs-owner-review"]
@@ -212,7 +223,7 @@ def main() -> int:
             sync = runpy.run_path(str(HERE / "helio_issue_sync.py"))
             sync["schedule"](REPO, args.issue)
         print(f"ISSUE_UPDATED issue={args.issue} operation={operation}")
-    except (ISSUES["Refused"], ISSUE_LINK["Refused"], OSError, ValueError, sqlite3.Error) as error:
+    except (ISSUES["Refused"], FOLLOWUP["Refused"], ISSUE_LINK["Refused"], OSError, ValueError, sqlite3.Error) as error:
         print(f"ISSUE_UPDATE_PENDING {error}", file=sys.stderr)
         return 2
     return 0

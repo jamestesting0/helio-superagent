@@ -75,7 +75,7 @@ test.each([
  const env={...process.env,PYTHONDONTWRITEBYTECODE:"1",DORI_STATE_DIR:dir,DORI_DISCORD_OWNER_ID:"99",DORI_DISCORD_TOKEN:"fake",DORI_DISCORD_ALLOWED:"100",
   DORI_DISCORD_TRUSTED_CHANNELS:trusted,DORI_DISCORD_NORMAL_CHANNELS:"",DORI_DISCORD_TRUSTED_IDS:"",DORI_DISCORD_REPORT_CHANNELS:""};
  const sentAt="2026-11-03T12:00:00Z";
- const message={id:"400",channel_id:"200",guild_id:"900",author:{id:"77",username:"human",bot},
+ const message={id:"400",type:19,channel_id:"200",guild_id:"900",author:{id:"77",username:"human",bot},
   content:ping?"<@88> choose one":"choose one",mentions:ping?[{id:"88"}]:[],timestamp:sentAt,message_reference:{message_id:"300"}};
  const delivery=new Delivery(join(dir,"discord-delivery.sqlite"));
  try {

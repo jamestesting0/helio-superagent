@@ -1,3 +1,5 @@
+import { insideAllowed } from "../intake/filter.ts";
+
 const API = "https://discord.com/api/v10";
 
 export interface ApiChannel {
@@ -21,6 +23,13 @@ export class DiscordRestError extends Error {
   }
 }
 
+export class IgnoredChannelError extends Error {
+  constructor(readonly channelId: string) {
+    super(`Channel ${channelId} is ignored by current channel policy`);
+    this.name = "IgnoredChannelError";
+  }
+}
+
 /** Within one short-lived command, reuse channel and bot-identity reads; writes and message fetches are never cached. */
 export function cachedReads(rest: Rest): Rest {
   const cache = new Map<string, Promise<unknown>>();
@@ -35,13 +44,15 @@ export function cachedReads(rest: Rest): Rest {
 }
 
 export function discordRest(token: string): Rest {
-  return async <T>(path: string, init: { method?: string; body?: unknown; retryRateLimit?: boolean } = {}): Promise<T> => {
+  const ignored = new Set((process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
+  if ([...ignored].some(id => !/^\d+$/.test(id))) throw new TypeError("Invalid DORI_DISCORD_IGNORED_CHANNELS");
+  const raw: Rest = async <T>(path: string, init: { method?: string; body?: unknown; retryRateLimit?: boolean } = {}): Promise<T> => {
     const method = init.method ?? "GET";
     for (let attempt = 1; ; attempt++) {
       const res = await fetch(`${API}${path}`, {
         method, signal: AbortSignal.timeout(15_000),
-        headers: { Authorization: `Bot ${token}`, "Content-Type": "application/json" },
-        body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        headers: { Authorization: `Bot ${token}`, ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }) },
+        body: init.body instanceof FormData ? init.body : init.body === undefined ? undefined : JSON.stringify(init.body),
       });
       if (res.status === 429 && init.retryRateLimit !== false) {
         const { retry_after } = (await res.json()) as { retry_after: number };
@@ -55,6 +66,18 @@ export function discordRest(token: string): Rest {
       if (res.status === 204) return undefined as T;
       return (await res.json()) as T;
     }
+  };
+  return async <T>(path: string, init?: { method?: string; body?: unknown; retryRateLimit?: boolean }): Promise<T> => {
+    const channel = /^\/channels\/([0-9]+)(?:\/|$)/.exec(path)?.[1];
+    if (channel && ignored.size) {
+      if (ignored.has(channel)) throw new IgnoredChannelError(channel);
+      const metadata = (init?.method ?? "GET") === "GET" && path === `/channels/${channel}`;
+      if (!metadata && await insideAllowed(channel, ignored,
+        async id => (await raw<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined)) {
+        throw new IgnoredChannelError(channel);
+      }
+    }
+    return raw<T>(path, init);
   };
 }
 
@@ -76,6 +99,7 @@ export async function expandChannels(
         if (child.parent_id === id && types.has(child.type)) out.push(child);
       }
     } catch (err) {
+      if (err instanceof IgnoredChannelError) continue;
       onSkip(id, err);
     }
   }

@@ -27,4 +27,26 @@ A review grants no merge, restart, PR, policy or issue-closing authority. Apply 
 
 Never clear the queue to make startup look clean, expire accepted work, reset memory or ask for a new approval merely because an old approval expired. `RELEASE_ALREADY_MERGED` means no merge is pending and no fresh merge approval is needed. A genuinely new action still requires current authorization.
 
+## Bounded lifecycle repair
+
+Preview named records into a new private manifest before applying a repair:
+
+```sh
+helio recovery preview /tmp/helio-repair.json --messages ID1,ID2 --topics CHANNEL:USER:ANCHOR --notices NOTICE_ID --answered SOURCE_ID:REPLY_ID
+helio recovery apply /tmp/helio-repair.json
+```
+
+Select only the relevant arguments and exact IDs. Preview reads current policy and state without migrating databases or changing receipts. Apply rechecks those fingerprints. Changed or accepted inputs and changed topics are preserved; inspect and preview again rather than forcing an old manifest. These commands send no public messages. Use the CLI instead of editing SQLite or registry JSON.
+
+Ignored channels, system events and fully unsupported-only input receive neutral informational receipts without strikes, reactions, replies or owner reports. Short readable input, mixed formats and operational failures remain eligible for normal handling. A prior answer alone does not prove that a mixed legacy topic is now complete. Final settlement requires the matching durable final receipt and all its required delivered routes. Remove only notice IDs proven by durable notice records. Retain ambiguous activity timestamps, holds, history and legitimate later work; legacy waiting text without a verified requester question remains internal review.
+
+For a selected failed lane and its replacement:
+
+```sh
+dori reconcile preview --manifest /tmp/dori-repair.json --job issue-N --repository OWNER/REPO --failed FAILED_KEY --replacement REPLACEMENT_KEY
+dori reconcile apply --manifest /tmp/dori-repair.json
+```
+
+The preview verifies current issue metadata, exact records, briefs, panes and Git resources. A deployment source inspector may bind an original request only after checking its current top-level author, channel policy and message identity. Helio exposes that read-only proof as `helio recovery source discord:CHANNEL:MESSAGE --job issue-N`; it grants historical job identity only, never fresh action authority. Lane names and quoted authorization are insufficient. Preserve already closed records, live or uncertain workers, dirty or unpushed work, unreadable resources and missing completion evidence. A closed issue or merged PR does not independently complete a worker. Legacy lanes without verified jobs stay awake until binding is established.
+
 Send the greeting once receiving status is known, reporting ingestion, recovery and dependency evidence separately. A failed queue read or incomplete recovery remains explicit; neither delays receiving new work nor proves intake is down. For example: "Helio is ready for new requests. Recovery: 1 needs review. Oracle was observed running at 19:38 UTC; login observed at 09:20 UTC, current connectivity unverified. Recorded lane launch failure from 09:06 UTC remains open for inspection." Use actual dates/times, ages and monitor evidence, never these example values. Doctor's saved Oracle observation is enough for this evidence line; inspect a dependency afresh when an operation needs current facts. No extra live Oracle inspection is required merely to greet.

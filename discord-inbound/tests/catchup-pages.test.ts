@@ -20,7 +20,7 @@ import { Listener } from ${JSON.stringify(join(import.meta.dir, "../fixtures/dis
 const timestamp = new Date(Date.now() - 3_600_000).toISOString();
 const history = Array.from({ length: 150 }, (_, i) => {
   const n = i + 1, ping = ${history.ping};
-  return { id: String(1000 + n), channel_id: "104", guild_id: "300", author: { id: ${history.author}, username: "someone" },
+  return { type: 0, id: String(1000 + n), channel_id: "104", guild_id: "300", author: { id: ${history.author}, username: "someone" },
     content: ping ? "<@88> request " + n : "chatter " + n, timestamp, attachments: [], mentions: ping ? [{ id: "88" }] : [] };
 }).reverse();
 const fixture = globalThis.fetch;

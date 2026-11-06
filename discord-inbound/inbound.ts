@@ -21,8 +21,9 @@ import { countsTowardCatchUp, classify, insideAllowed, insideCategory, type Filt
 import { LastSeen } from "./intake/lastseen.ts";
 import { RecentIds } from "./intake/recent-ids.ts";
 import { Delivery, REQUEST_MAX_AGE_MS, requestTimestamp } from "./delivery/delivery.ts";
-import { authorizationMetadata, filterConfig, reauthorize, validateChannelPolicy } from "./intake/authorization.ts";
+import { authorizationMetadata, filterConfig, reauthorize, validateChannelPolicy, type OriginalMetadata } from "./intake/authorization.ts";
 import { sweepExpired, sweepOrphanAttachments } from "./delivery/expiry.ts";
+import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
 import { watchedChannels } from "./intake/watched-channels.ts";
 import { prepareMessageBody } from "./messages/forwarded.ts";
 import { checkImageSandbox } from "./messages/image-worker.ts";
@@ -35,6 +36,7 @@ import { Preceding } from "./intake/preceding.ts";
 import { Conversations } from "./conversations/conversations.ts";
 import { conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
 import { sweepConversations } from "./conversations/conversation-upkeep.ts";
+import { newerInputPending } from "./conversations/pending-input.ts";
 import { reactOnArrival, sweepWorking } from "./conversations/working.ts";
 import { inboundSummary, monitorLine } from "./delivery/monitor-summary.ts";
 import { HOURGLASS, react, reactPendingBlocks, reconcileBlocks, strikeLinks } from "./delivery/moderation-effects.ts";
@@ -270,7 +272,7 @@ async function conversationContext(msg: IncomingMessage) {
 }
 
 function recordHelioReply(msg: IncomingMessage): void {
-  if (conversations.isNotice(msg.id)) return;
+  if (conversations.observeNotice(msg.channel_id, msg.nonce, msg.id, Date.now())) return;
   const reference = msg.message_reference;
   if (!reference?.message_id || reference.type === 1 ||
       (reference.channel_id && reference.channel_id !== msg.channel_id)) return;
@@ -308,7 +310,7 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
         if (tracked.has(msg.channel_id)) await lastSeen.advance(msg.channel_id, msg.id);
         return false;
       }
-      inbound = await classify(msg, cfg, parentOf, () => preceding.remember(msg));
+      inbound = await classify(msg, cfg, channelInfo, () => preceding.remember(msg));
     }
   }
   catch (error) {
@@ -387,6 +389,15 @@ async function enrich(msg: IncomingMessage, inbound: Inbound, staged: Inbound & 
     await withPreviews(msg) : msg;
   const body = await prepareMessageBody(source, `${stateDir}/attachments/inbound`, inbound.role === "BOT_BUG_REPORT",
     inbound.channel_policy);
+  const prepared = JSON.stringify({ ...staged, ...body, attachments_prepared: true, preparation_complete: false });
+  if (!delivery.refresh(msg.id, minimal, prepared)) return;
+  if (await delivery.ignored.settle("inbound", msg.id, prepared, cfg.ignoredChannels, channelInfo)) {
+    await cleanupIgnored(delivery, stateDir, conversations);
+    return;
+  }
+  if (inbound.role !== "BOT_BUG_REPORT") {
+    conversations.observeInput(msg.channel_id, msg.author.id, msg.id, Date.now(), inbound.reply_to);
+  }
   const reply_context = inbound.channel_policy === "trusted" ? await replyContext(msg, fetchReply) : repliedTo(msg);
   const conversation = await conversationContext(msg);
   const record = {
@@ -394,7 +405,7 @@ async function enrich(msg: IncomingMessage, inbound: Inbound, staged: Inbound & 
     ...(reply_context ? { reply_context } : {}), ...(conversation ? { conversation } : {}),
   };
   // Dismissed, blocked or acknowledged while it was being prepared: nothing more to deliver.
-  if (!delivery.refresh(msg.id, minimal, JSON.stringify(record))) return;
+  if (!delivery.refresh(msg.id, prepared, JSON.stringify(record))) return;
   await sweepExpired(delivery, stateDir, warn);
   if (delivery.status("inbound", msg.id).disposition === "expired") return;
   try { delivery.check(msg.id); }
@@ -484,12 +495,17 @@ let backlogCount = 0;
 const connected = Promise.withResolvers<void>();
 enqueue("catch-up", async () => {
   await connected.promise;
+  for (const item of delivery.pending("inbound")) {
+    await delivery.ignored.settle("inbound", item.id, item.payload, cfg.ignoredChannels, channelInfo);
+  }
+  await cleanupIgnored(delivery, stateDir, conversations);
   await sweepExpired(delivery, stateDir, warn);
   await sweepOrphanAttachments(delivery, stateDir, "inbound");
   const replayMessages: TurnMessage[] = [];
   for (const item of delivery.pending("inbound")) {
     let current: Awaited<ReturnType<typeof reauthorize>>;
-    try { current = await reauthorize(item.payload, cfg, rest); }
+    let original: OriginalMetadata | undefined;
+    try { current = await reauthorize(item.payload, cfg, rest, value => { original = value; }); }
     catch (error) {
       if (!(error instanceof Error)) throw error;
       warn(`pending authorization unavailable message_id=${item.id}; retained pending: ${error.message}`);
@@ -497,6 +513,10 @@ enqueue("catch-up", async () => {
       continue;
     }
     if (!current) {
+      if (original && await delivery.ignored.settle("inbound", item.id, item.payload, cfg.ignoredChannels, channelInfo, original)) {
+        await cleanupIgnored(delivery, stateDir, conversations);
+        continue;
+      }
       warn(`pending authorization revoked message_id=${item.id}; retained pending`);
       recoveryNeeded.add(item.id);
       continue;
@@ -512,6 +532,9 @@ enqueue("catch-up", async () => {
       continue;
     }
     const question_id = answerFor(current);
+    if (current.role !== "BOT_BUG_REPORT") {
+      conversations.observeInput(current.channel_id, current.author_id, current.message_id, Date.now(), current.reply_to);
+    }
     const message = { ...current, backlog: true, recovered: true, ...(question_id ? { question_id } : {}) };
     if (!delivery.refresh(item.id, item.payload, JSON.stringify(message))) continue;
     if (message.pinged && message.role !== "BOT_BUG_REPORT") {
@@ -532,6 +555,8 @@ enqueue("catch-up", async () => {
     await reconcileBlocks({ delivery, conversations, rest, stateDir, warn });
     await sweepConversations({
       store: conversations, rest, now: Date.now(), emit: (line) => console.log(line),
+      hasNewInput: row => newerInputPending(delivery.pending("inbound"), conversations, row,
+        [row.latest_input_id ?? row.anchor_message_id]),
       canContact: async (row, guild) => {
         if (blockedAuthor(row.user_id)) return false;
         if (!guild) return row.user_id === cfg.ownerId || cfg.trustedIds?.has(row.user_id) === true;
@@ -630,9 +655,14 @@ listener.on("message_create", (event) => {
   void (async () => {
     if (event.guild_id !== undefined && cfg.ignoredChannels?.size &&
         await insideAllowed(event.channel_id, cfg.ignoredChannels, parentOf)) return;
-    seen(event as unknown as ReplyMessage);
+    if (blockedAuthor(event.author.id)) return;
+    if (event.author.id === cfg.botId && conversations.observeNotice(
+      event.channel_id, event.nonce, event.id, Date.now())) return;
+    if (typeof event.message_type !== "number") throw new TypeError("Gateway message type unavailable");
+    const message = { ...event, type: event.message_type };
+    seen(message);
     seen((event as { referenced_message?: ReplyMessage | null }).referenced_message);
-    enqueue(`message ${event.id} in ${event.channel_id}`, () => deliver(event, false));
+    enqueue(`message ${event.id} in ${event.channel_id}`, () => deliver(message, false));
   })().catch(fail);
 });
 listener.on("typing_start", (event) => {

@@ -62,8 +62,6 @@ def intended_metadata(change: dict) -> dict:
         intended["labels"] = sorted(change["labels"])
     if change.get("close"):
         intended.update(state="closed", state_reason=change["close"])
-    if change.get("reopen"):
-        intended["state"] = "open"
     return intended
 
 
@@ -94,7 +92,7 @@ class Issues:
         return self.api(f"issues/{issue}")
 
     @contextmanager
-    def _operations(self):
+    def operations(self):
         self.state.mkdir(parents=True, exist_ok=True)
         with (self.state / "issue-updates.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -112,11 +110,17 @@ class Issues:
                     # Retention ages finished operations from here; ones finished before this column start their clock now.
                     db.execute("ALTER TABLE operations ADD COLUMN completed_at INTEGER")
                     db.execute("UPDATE operations SET completed_at=? WHERE completed IN (1,2)", (int(time.time()),))
+                for operation, change in db.execute("SELECT id,change FROM operations WHERE completed=0").fetchall():
+                    if json.loads(change).get("reopen"):
+                        db.execute("UPDATE operations SET completed=2,completed_at=? WHERE id=?", (int(time.time()), operation))
+                db.commit()
                 yield db
 
     def update(self, issue: int, change: dict) -> str:
         """Persist intended operations before writes; an interrupted earlier operation on the issue finishes first."""
-        with self._operations() as db:
+        if change.get("reopen"):
+            raise Refused("Closed issues stay closed; create a linked follow-up issue for new work.")
+        with self.operations() as db:
             for pending, pending_change in db.execute(
                     "SELECT id,change FROM operations WHERE repo=? AND issue=? AND completed=0 ORDER BY rowid",
                     (self.repo, issue)).fetchall():
@@ -125,7 +129,7 @@ class Issues:
             body = current.get("body") or ""
             # A plain status sync is tied to the description it starts from; an intent (note, body, close, labels) is not,
             # so repeating one never posts its note twice.
-            intent = any(change.get(key) for key in ("body", "note", "close", "reopen")) or change.get("labels") is not None
+            intent = any(change.get(key) for key in ("body", "note", "close")) or change.get("labels") is not None
             operation = digest(json.dumps([self.repo, issue, change] + ([] if intent else [digest(body)]), sort_keys=True))
             old = db.execute("SELECT after_body,completed,change FROM operations WHERE id=?", (operation,)).fetchone()
             if old:
@@ -150,7 +154,7 @@ class Issues:
                 content = change["body"]
             observed = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
             closed = change.get("close")
-            status = f"Closed: {closed}" if closed else ("open" if change.get("reopen") else current.get("state", "unknown"))
+            status = f"Closed: {closed}" if closed else current.get("state", "unknown")
             status += " · " + change.get("projection", "implementation/live state unverified")
             after = render(content, {"status": status, "note": change.get("note", ""), "observed": observed,
                                     "summary": change.get("summary") or current.get("title") or "See current scope below.",
@@ -163,7 +167,7 @@ class Issues:
             return self._finish(db, issue, operation, change)
 
     def resume(self, operation: str) -> tuple[int, str]:
-        with self._operations() as db:
+        with self.operations() as db:
             row = db.execute("SELECT issue,change,completed FROM operations WHERE id=? AND repo=?", (operation, self.repo)).fetchone()
             if row is None:
                 raise Refused("Unknown operation.")
@@ -171,7 +175,7 @@ class Issues:
 
     def cancel(self, operation: str) -> None:
         """Waits for any update in flight, so a cancel is never reported for an operation that then completes."""
-        with self._operations() as db:
+        with self.operations() as db:
             row = db.execute("SELECT completed FROM operations WHERE id=? AND repo=?", (operation, self.repo)).fetchone()
             if row is None:
                 raise Refused("Unknown operation.")
@@ -204,8 +208,6 @@ class Issues:
                     data["labels"] = change["labels"]
                 if change.get("close"):
                     data.update(state="closed", state_reason=change["close"])
-                if change.get("reopen"):
-                    data.update(state="open", state_reason="reopened")
                 self.api(f"issues/{issue}", data)
             db.execute("UPDATE operations SET written=1 WHERE id=?", (operation,));db.commit()
         if change.get("note") and not commented:

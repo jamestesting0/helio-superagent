@@ -82,7 +82,7 @@ test("a normal-chat addition is admitted for review and names its ping anchor", 
     const anchor = idAt(T0);
     store.openWorking(normal, "66", anchor, T0);
     const msg: IncomingMessage = {
-      id: idAt(T0 + MIN), channel_id: normal, guild_id: "300", author: { id: "66", username: "staff" },
+      id: idAt(T0 + MIN), type: 0, channel_id: normal, guild_id: "300", author: { id: "66", username: "staff" },
       content: "also on mobile", timestamp: new Date(T0 + MIN).toISOString(), mentions: [],
     };
     const admitted = await classify(msg, cfg, async () => undefined);

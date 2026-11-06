@@ -161,7 +161,7 @@ test("a reply sent without any 👀 shown says so, so the skipped first step is 
   });
 });
 
-test("a reply naming an issue links the conversation, and later discussion keeps the issue due until reviewed", async () => {
+test("a named issue requires review but only explicit binding links later conversation discussion", async () => {
   await withStores(async (delivery, store, path) => {
     const reviews = join(dirname(path), "issue-sync.sqlite");
     const url = "https://github.com/o/r/issues/8";
@@ -179,12 +179,22 @@ test("a reply naming an issue links the conversation, and later discussion keeps
     stage(delivery, first);
     store.open(normal, "66", first, "season rules", T0 - MIN);
     expect((await send(first, `Noted for <${url}>.`)).lines).toContain(due);
+    expect(store.get(normal, "66")?.issue).toBeNull();
+    store.setState(normal, "66", { issue: url, job: "issue-8" }, first);
     expect(store.get(normal, "66")?.issue).toBe(url);
     reviewed(Math.floor((T0 - MIN / 2) / 1000));
     stage(delivery, second);
+    store.claim(normal, "66", describeMessage({
+      id: second, channel_id: normal, author: { id: "66", username: "66" }, content: "help",
+      message_reference: { message_id: first }, timestamp: new Date(T0).toISOString(),
+    }, 1000).entry, T0);
     expect((await send(second, "Thanks, confirmed.")).lines).toContain(due);
     reviewed(Math.floor(T0 / 1000) + 1);
     stage(delivery, third);
+    store.claim(normal, "66", describeMessage({
+      id: third, channel_id: normal, author: { id: "66", username: "66" }, content: "help",
+      message_reference: { message_id: first }, timestamp: new Date(T0).toISOString(),
+    }, 1000).entry, T0);
     expect((await send(third, "Thanks.")).lines).not.toContain(due);
   });
 });
@@ -210,6 +220,7 @@ test("a reply records Helio's response in each covered conversation before gatew
     });
     expect(result.code).toBe(0);
     expect(["66", "67"].map((user) => store.transcript(normal, user).at(-1)?.author_id)).toEqual(["88", "88"]);
-    expect(store.list().map((row) => store.state(row))).toEqual(["waiting_on_requester", "waiting_on_requester"]);
+    expect(store.list().map((row) => store.state(row))).toEqual(["waiting_on_helio", "waiting_on_helio"]);
+    expect(store.list().map((row) => row.question_started_at)).toEqual([null, null]);
   });
 });

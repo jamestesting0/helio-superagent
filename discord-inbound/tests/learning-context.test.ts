@@ -38,21 +38,21 @@ async function invoke(dir: string, settings: Record<string, string | undefined>)
       }
       const history = /^\\/api\\/v10\\/channels\\/(\\d+)\\/messages$/.exec(url.pathname);
       if (history && process.env.TEST_QUIET_CHANNEL === history[1]) return Response.json([{
-        id: "5" + history[1], channel_id: history[1], guild_id: "300", author: { id: "99", username: "staff" },
+        type: 0, id: "5" + history[1], channel_id: history[1], guild_id: "300", author: { id: "99", username: "staff" },
         content: "old", timestamp: "2026-09-01T00:00:00Z", attachments: [],
       }]);
       if (history) return Response.json([{
-        id: "990" + history[1], channel_id: history[1], guild_id: "300",
+        type: 0, id: "990" + history[1], channel_id: history[1], guild_id: "300",
         author: { id: "55", username: "bot", bot: true }, content: "blocked-bot-content",
         timestamp: "2026-11-02T12:00:00Z",
         attachments: [{ filename: "secret.txt", url: "https://forbidden.invalid/bot" }],
       }, {
-        id: "980" + history[1], channel_id: history[1], guild_id: "300", webhook_id: "56",
+        type: 0, id: "980" + history[1], channel_id: history[1], guild_id: "300", webhook_id: "56",
         author: { id: "56", username: "webhook" }, content: "blocked-webhook-content",
         timestamp: "2026-11-02T12:00:00Z",
         attachments: [{ filename: "secret.txt", url: "https://forbidden.invalid/webhook" }],
       }, {
-        id: "900" + history[1], channel_id: history[1], guild_id: "300",
+        type: 0, id: "900" + history[1], channel_id: history[1], guild_id: "300",
         author: { id: "99", username: "staff" }, content: "fresh " + history[1],
         timestamp: "2026-11-02T12:00:00Z", attachments: [],
       }]);
@@ -90,7 +90,7 @@ test.each([
     for (const [index, channel_id] of queuedChannels.entries()) {
       queue.stage("context", String(700 + index), JSON.stringify({ channel_id, human_verified: true, content: "blocked-private-content" }));
     }
-    queue.stage("context", "800", JSON.stringify({ channel_id: trusted, human_verified: true, content: "pending trusted" }));
+    queue.stage("context", "800", JSON.stringify({ channel_id: trusted, message_type: 0, bot: false, human_verified: true, content: "pending trusted" }));
     queue.stage("context", "801", JSON.stringify({ channel_id: trusted, human_verified: true, bot: true, content: "blocked-bot-content" }));
     queue.stage("context", "802", JSON.stringify({ channel_id: trusted, human_verified: true, webhook_id: "56", content: "blocked-webhook-content" }));
   } finally { queue.close(); }

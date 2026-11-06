@@ -1,7 +1,7 @@
 import type { Conversations, ConversationEntry } from "./conversations.ts";
 import { WORKING_WINDOW_MS } from "./conversations.ts";
 import type { Delivery } from "../delivery/delivery.ts";
-import { DiscordRestError, type Rest } from "../discord/rest.ts";
+import { DiscordRestError, IgnoredChannelError, type Rest } from "../discord/rest.ts";
 
 export const WORKING_ABANDON_MS = 2 * 60 * 60 * 1000;
 export type WorkingReaction = "added" | "already" | "skipped" | "skipped-already-replied" | "forbidden" | "failed";
@@ -39,6 +39,10 @@ export async function syncReceipts(o: ReceiptContext, force = true): Promise<Rea
       o.store.setReacted(row.message_id, desired);
       results.set(row.message_id, desired ? (row.reacted ? "already" : "added") : "skipped");
     } catch (error) {
+      if (error instanceof IgnoredChannelError) {
+        results.set(row.message_id, "skipped");
+        continue;
+      }
       if (error instanceof DiscordRestError && (error.status === 403 || error.status === 404)) {
         o.store.setReacted(row.message_id, error.status === 403 && row.reacted === 1);
         if (error.status === 404) o.store.closeWorking([row.message_id], o.now);

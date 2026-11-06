@@ -70,6 +70,17 @@ class RetentionCoverage(Fixture):
 
 
 class RetentionRules(Fixture):
+    def test_ignored_receipts_keep_unfinished_cleanup_and_pending_payloads(self):
+        with self.db("discord-delivery.sqlite") as db, db:
+            for ident, cleaned, payload in [("1", 1, None), ("2", 0, None), ("3", 1, "pending")]:
+                db.execute("INSERT INTO delivery VALUES ('inbound',?,?)", (ident, payload))
+                db.execute("INSERT INTO ignored(stream,id,source_digest,ignored_at,reason,attachments_cleaned) "
+                           "VALUES ('inbound',?,'digest',datetime(?,'unixepoch'),'system-event',?)",
+                           (ident, NOW - 200 * DAY, cleaned))
+        self.housekeeping(approve=True)
+        with self.db("discord-delivery.sqlite") as db:
+            self.assertEqual(db.execute("SELECT id FROM ignored ORDER BY id").fetchall(), [("2",), ("3",)])
+
     def seed(self):
         old, recent = NOW - 200 * DAY, NOW - DAY
         with self.db("discord-delivery.sqlite") as db, db:
@@ -135,7 +146,9 @@ class RetentionRules(Fixture):
                 db.execute("INSERT INTO inbound_recovery VALUES (?,?,?,?,'settled','quoted text','evidence text')", (ident, "h", iso(age), iso(age)))
         with self.db("reply-sends.sqlite") as db, db:
             for target, age in [("t-month", 40), ("t-old", 200)]:
-                db.execute("INSERT INTO reply_sends VALUES (?,?,'sent','r',?)", (target, "hash", int((NOW - age * DAY) * 1000)))
+                db.execute("INSERT INTO reply_sends(target,text_hash,state,reply_id,started_at) VALUES (?,?,'sent','r',?)",
+                           (target, "hash", int((NOW - age * DAY) * 1000)))
+            db.execute("INSERT INTO reply_sends(target,text_hash,state,started_at,pending_text) VALUES ('t-unknown','event:completion','sending',0,'pending result')")
         self.housekeeping(approve=True)
         with self.db("issue-updates.sqlite") as db:
             ops = {row[0]: row[1:] for row in db.execute("SELECT id,after_body,change FROM operations WHERE id LIKE 'op-%'")}
@@ -145,7 +158,7 @@ class RetentionRules(Fixture):
             sends = {row[0] for row in db.execute("SELECT target FROM reply_sends WHERE target LIKE 't-%'")}
         self.assertEqual(ops, {"op-month": ("", ""), "op-open": ("published body", '{"note":"x"}')})
         self.assertEqual(recovery, {"rec-month": ("settled", None, None)})
-        self.assertEqual(sends, {"t-month"})
+        self.assertEqual(sends, {"t-month", "t-unknown"})
 
 
     def test_a_rule_whose_column_is_not_migrated_yet_is_reported_and_the_rest_still_apply(self):

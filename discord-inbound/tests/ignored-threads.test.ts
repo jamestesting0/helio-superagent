@@ -70,13 +70,13 @@ globalThis.fetch = Object.assign(async (input, init) => {
 }, { preconnect: fetch.preconnect });
 Listener.prototype.start = async function () {
   this.emit("connected", { user: { id: "88", username: "Helio" }, sessionId: "test" });
-  const ignored = { id: "901", channel_id: "103", guild_id: "300", content: "private",
+  const ignored = { type: "MESSAGE_CREATE", message_type: 0, id: "901", channel_id: "103", guild_id: "300", content: "private",
     timestamp: new Date(Date.now()).toISOString(), attachments: [], mentions: [{id: "88"}] };
   Object.defineProperty(ignored, "author", { get() {
     console.log("TEST_IGNORED_AUTHOR_READ"); return {id: "99", username: "owner"};
   } });
   this.emit("message_create", ignored);
-  this.emit("message_create", { id: "902", channel_id: "104", guild_id: "300", content: "control",
+  this.emit("message_create", { type: "MESSAGE_CREATE", message_type: 0, id: "902", channel_id: "104", guild_id: "300", content: "control",
     timestamp: new Date(Date.now()).toISOString(), author: {id: "99", username: "owner"}, attachments: [], mentions: [{id: "88"}] });
 };
 `);

@@ -90,6 +90,7 @@ def run(home, action, update_launcher=False, profile=None):
   if name in documents: data=documents[name]
   elif name=='config.json':
    for k in ('agentCommand','defaultModel','launchKeywords','maxWorkers','hibernateAfterMin'): active[k]=source_config[k]
+   active.setdefault('hooks',{}).setdefault('inspectJobSource',source_config['hooks']['inspectJobSource'])
    data=(json.dumps(active,indent=2)+'\n').encode()
   elif name=='@launcher': data=(ROOT/'scripts/helio-wsl').read_bytes()
   elif name.startswith('@inbound/'): data=(ROOT/'discord-inbound'/name[9:]).read_bytes()
@@ -149,6 +150,16 @@ def run(home, action, update_launcher=False, profile=None):
   baseline['config.json']=digest(paths['config.json'].read_bytes())
   baseline['_profile']=profile
   atomic(manifest,(json.dumps(baseline,indent=2)+'\n').encode())
+  inbound=home/'.dori/discord-inbound'
+  modules=inbound/'node_modules'
+  if modules.is_symlink(): raise SystemExit('Unsafe inbound dependency directory: node_modules is a symlink')
+  if modules.is_dir():
+   dependencies=subprocess.run(['bun','install','--offline','--frozen-lockfile','--ignore-scripts'],
+                               cwd=inbound,capture_output=True,text=True,timeout=120,
+                               env={**os.environ,'HOME':str(home)})
+   if dependencies.returncode:
+    raise SystemExit('Inbound dependency update failed; managed files are saved, but restart is withheld:\n'+
+                     (dependencies.stdout+dependencies.stderr).strip()[-1500:])
   print('Updated managed files. Restart Helio and its watchers to load changes.')
   # Startup only reports doc drift; adding missing project docs happens here, never overwriting.
   script=dst/'knowledge-setup.py'

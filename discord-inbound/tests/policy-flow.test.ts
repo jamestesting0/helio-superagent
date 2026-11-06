@@ -149,7 +149,7 @@ test("watcher and ack refuse old pending work, clean its files, and preserve acc
     queue.stage("inbound", "11", JSON.stringify({
       ...JSON.parse(old), message_id: "11", preparation_complete: true,
       discord_origin: authorizationMetadata({
-        id: "11", channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
+        id: "11", type: 0, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
         content: "old request", timestamp: "2026-10-30T11:59:59Z",
       }),
     }));

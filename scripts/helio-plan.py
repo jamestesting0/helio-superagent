@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import closing
+from dataclasses import dataclass
 import datetime
 import hashlib
 import json
@@ -32,6 +33,7 @@ class DiscordReader(Protocol):
 HERE = Path(__file__).resolve().parent
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
 WORK = runpy.run_path(str(HERE / "helio-work.py"))
+FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 MARKER = "<!-- helio-plan v1 -->"
 DATA = re.compile(r"<!-- helio-plan-data:([A-Za-z0-9+/=]+) -->\s*\Z")
@@ -342,8 +344,15 @@ def full_suite(project: Path, head: str) -> int:
     return counts.run
 
 
-def task_worktree(project: Path, issue: int, explicit: Path | None) -> tuple[Path, str]:
+@dataclass(frozen=True, slots=True)
+class TaskIssue:
+    number: int
+    previous: int | None = None
+
+
+def task_worktree(project: Path, task: TaskIssue, explicit: Path | None) -> tuple[Path, str]:
     """Use the selected task context; issue-numbered trees are a discovery fallback."""
+    issue = task.number
     branch = f"helio/issue-{issue}"
     matches_issue = re.compile(rf"refs/heads/helio/issue-?{issue}(?:$|[-_])")
     trees = command(["git", "worktree", "list", "--porcelain"], cwd=project)
@@ -376,7 +385,7 @@ def task_worktree(project: Path, issue: int, explicit: Path | None) -> tuple[Pat
     selected_branch = command(["git", "branch", "--show-current"], cwd=selected)
     named_issue = re.match(r"helio/issue-?(\d+)(?:$|[-_])", selected_branch)
     if (not selected_branch.startswith("helio/") or selected_branch.startswith("helio/autofix-")
-            or (named_issue and int(named_issue.group(1)) != issue)):
+            or (named_issue and int(named_issue.group(1)) not in (issue, task.previous))):
         raise Refused(f"check out {branch} in the selected task worktree")
     return selected, selected_branch
 
@@ -577,9 +586,10 @@ def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[s
                                                   hashlib.sha256(source["live"]["content"].encode()).hexdigest()))
     if not recorded:
         return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} "
-                f"sender={author} creation=used update=existing-PR-only; run helio pr submit to verify delivery"]
+                f"sender={author} creation=used update=existing-PR-only mechanics=commit,normal-push,PR; run helio pr submit to verify delivery"]
     gh.run(["gh", "issue", "edit", str(args.issue), "--repo", gh.repo, "--remove-label", "needs-owner-review"])
-    return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} valid=until-used"]
+    return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} "
+            "creation=available update=authorized-task mechanics=commit,normal-push,PR; no separate approval for those steps"]
 
 
 def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], int], discord: DiscordReader) -> list[str]:
@@ -588,14 +598,26 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     if found not in ("PLAN_APPROVED", "PLAN_NONE"):
         raise Refused(f"{found}: approve the current plan or explicitly drop it before submitting")
     project = Path(os.environ["HELIO_PROJECT"]).expanduser().resolve()
-    tree, branch = task_worktree(project, args.issue, args.worktree)
+    previous = FOLLOWUP["predecessor"](issue.get("body") or "")
+    if previous and (previous == args.issue or gh.issue(previous).get("state") != "CLOSED"):
+        raise Refused("follow-up predecessor is not a distinct closed issue; inspect the current relationship")
+    tree, branch = task_worktree(project, TaskIssue(args.issue, previous), args.worktree)
     existing = gh.open_pr(branch)
+    numbered = re.match(r"helio/issue-?(\d+)(?:$|[-_])", branch)
+    if numbered and int(numbered.group(1)) != args.issue and not existing:
+        raise Refused("a new follow-up needs its own task branch; reuse a predecessor branch only for its existing open PR")
     if existing:
         pull = json.loads(gh.run(["gh", "pr", "view", existing, "--repo", gh.repo, "--json",
-                                 "state,headRefName,baseRefName,isCrossRepository"]))
+                                 "state,headRefName,baseRefName,isCrossRepository,body,closingIssuesReferences"]))
         if (pull.get("state"), pull.get("headRefName"), pull.get("baseRefName"), pull.get("isCrossRepository")) != (
                 "OPEN", branch, "main", False):
             raise Refused("existing PR does not belong to this task branch against main in the canonical repository")
+        if previous:
+            implementation = ISSUE_LINK["parse"](pull.get("body") or "")
+            linked = {item["number"] for item in pull.get("closingIssuesReferences") or []}
+            if not ((implementation and implementation.issue in (previous, args.issue))
+                    or linked.intersection({previous, args.issue})):
+                raise Refused("existing PR has no verified relationship to this follow-up or its closed predecessor")
     authorization = None
     if found != "PLAN_APPROVED":
         try:
@@ -682,6 +704,9 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     current_issue, _, _, current_body = gh.plan_comment(args.issue)
     if current_issue.get("state") != "OPEN" or current_body != body or current_issue.get("body") != issue.get("body"):
         raise Refused("issue or plan changed during verification; review current scope before submitting")
+    latest = git("ls-remote", "--heads", "origin", "refs/heads/main")
+    if not latest or latest.split()[0] != base:
+        raise Refused("main advanced during verification; merge current main in the task tree and resubmit under the existing task authority")
     if not remote or remote.split()[0] != head:
         git("push", "origin", f"{head}:refs/heads/{branch}")
     delivered = git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
@@ -698,6 +723,10 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
                               "", f"Full unit suite: {passed} tests passed.", "", ISSUE_LINK["marker"](args.issue, None, complete), ""])
         else:
             text = pr_body(args.issue, data, plan_url, result, summary, passed)
+        if previous:
+            history = f"https://github.com/{gh.repo}/issues/{previous}"
+            if not re.search(re.escape(history) + r"\b", text):
+                text += f"\nRelated history: {history}\n"
         path.write_text(text)
         if existing:
             gh.run(["gh", "pr", "edit", existing, "--repo", gh.repo, "--body-file", str(path)])
@@ -710,6 +739,9 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
         if (pull.get("state"), pull.get("headRefOid"), pull.get("headRefName"), pull.get("baseRefName")) != (
                 "OPEN", head, branch, "main"):
             raise Refused("PR does not yet represent the verified task head; inspect it before reporting success")
+        latest = git("ls-remote", "--heads", "origin", "refs/heads/main")
+        if not latest or latest.split()[0] != base:
+            raise Refused("main advanced during PR publication; update this same PR and verify its new head before reporting delivery")
         if authorization:
             WORK["consume"](REPO, args.issue, authorization.message)
     if not authorization:
@@ -743,7 +775,10 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     work.add_argument("--issue", type=int, required=True)
     work.add_argument("--message", required=True)
     work.add_argument("--channel", required=True)
-    pr = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True).add_parser("submit")
+    prs = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True)
+    inspection = prs.add_parser("check")
+    inspection.add_argument("--number", type=int, required=True)
+    pr = prs.add_parser("submit")
     pr.add_argument("--issue", type=int, required=True)
     pr.add_argument("--result-file", type=Path, required=True)
     pr.add_argument("--summary-file", type=Path, required=True)
@@ -755,6 +790,12 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     now = now or datetime.datetime.now(datetime.timezone.utc)
     args.now = now
     try:
+        if args.command == "pr" and args.pr_command == "check":
+            if args.number < 1:
+                parser.error("--number must be positive")
+            readiness = runpy.run_path(str(HERE / "helio_pr_readiness.py"))
+            print(readiness["check"](gh.repo, args.number, gh.run))
+            return 0
         if args.command != "work" and getattr(args, "issue", None) and args.command != "drop":
             adopted = adopt(args.issue, gh, now)
             if adopted:
@@ -781,7 +822,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
                 lines = [f"PLAN_DROPPED issue={args.issue}"]
             else:
                 lines = [f"{found} issue={args.issue}" + (f" revision={data['revision']} url={url}" if data else "")]
-    except (Refused, WORK["Refused"]) as error:
+    except (Refused, WORK["Refused"], FOLLOWUP["Refused"], RuntimeError) as error:
         print(f"PLAN_REFUSED {error}".replace("\n", " "))
         return 1
     print("\n".join(lines))

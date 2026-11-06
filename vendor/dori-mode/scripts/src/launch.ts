@@ -20,7 +20,8 @@ export type LaunchInput = {
   readonly thread?: string;
   readonly model?: string;
   readonly cwd?: string;
-  readonly job?: string;
+  readonly job: string;
+  readonly source?: string;
   readonly priority?: Priority;
 };
 
@@ -41,7 +42,8 @@ export const modelOutsideAllowlist = (model: string, allow: string | undefined):
 
 const validateShape = (input: Pick<LaunchInput, "key" | "done" | "job">): void => {
   if (!LANE_KEY.test(input.key) || input.key.includes("..")) throw new LaunchError(`key must match ${LANE_KEY}`);
-  if (input.job !== undefined && (!LANE_KEY.test(input.job) || input.job.includes(".."))) throw new LaunchError(`job must match ${LANE_KEY}`);
+  if (!input.job) throw new LaunchError("--job is required; choose an explicit stable work identity");
+  if (!LANE_KEY.test(input.job) || input.job.includes("..")) throw new LaunchError(`job must match ${LANE_KEY}`);
   const errors = doneSyntaxErrors(input.done);
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
 };
@@ -63,10 +65,18 @@ export const footer = (lane: Lane, leadPane: string): string => [
 ].join("\n");
 
 export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly pane: string }): Promise<Lane> => {
+  return withLaunchLock(deps, async () => {
   await validateLaunch(deps, input);
-  const lane: Lane = { key: input.key, title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, openedAt: iso(deps.clock) };
+  const registered = await deps.registry.listAll();
+  const sameJob = registered.find(lane => (lane.job === input.job || lane.pane === input.pane) &&
+    !["closed", "hibernated"].includes(statusOf(lane)));
+  const queued = (await readQueue(deps)).find(entry => entry.job === input.job);
+  if (sameJob || queued) throw new LaunchError(`LANE_EXISTS key=${sameJob?.key ?? queued!.key}: use the registered job`);
+  const lane: Lane = { key: input.key, job: input.job, source: input.source ?? input.thread ?? `brief:${input.brief}`,
+    title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, openedAt: iso(deps.clock) };
   await deps.registry.write(lane);
   return lane;
+  });
 };
 
 /** Admission and the reservation that follows it are one step, so two launches cannot both take the last slot. */
@@ -123,7 +133,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   const briefFile = Bun.file(input.brief);
   if (queuedBrief === undefined && !(await briefFile.exists())) throw new LaunchError(`brief not found: ${input.brief}`);
   const briefText = queuedBrief ?? await briefFile.text();
-  const job = input.job ?? input.key;
+  const job = input.job;
   const sourceCwd = input.cwd ?? deps.config.defaultCwd;
   const isolated = process.env.HELIO_WORKTREES === "1";
   const cwd = isolated ? join(deps.config.stateDir, "worktrees", input.key) : sourceCwd;
@@ -135,34 +145,46 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   const omo = omoIndex(argv);
   const session = omo >= 0 ? randomUUID() : undefined;
   if (session) argv.splice(omo + 1, 0, "--session-id", session);
-  const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model, ...(input.job ? { job: input.job } : {}), ...(isolated ? { worktrees: [cwd] } : {}), ...(session ? { session, sessionVia: "assigned" } : {}) };
+  const source = input.source ?? input.thread ?? `brief-sha256:${new Bun.CryptoHasher("sha256").update(briefText).digest("hex")}`;
+  const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model,
+    job, source, ...(isolated ? { worktrees: [cwd] } : {}), ...(session ? { session, sessionVia: "assigned" } : {}) };
   // Job identity is decided under the same lock as the reservation, so two launches cannot both find the job free.
   const admitted = await withLaunchLock(deps, async () => {
-    const sameJob = (await deps.registry.listAll()).filter((lane) => jobOf(lane) === job);
+    const sameJob = (await deps.registry.listAll()).filter((lane) => lane.job === job);
     const busy = sameJob.find((lane) => !["closed", "hibernated"].includes(statusOf(lane)) && lane.launchState !== "failed");
     if (busy) throw new LaunchError(`LANE_EXISTS key=${busy.key} status=${statusOf(busy)}: send the new work to that lane`);
-    const failed = sameJob.find((lane) => lane.launchState === "failed" && (statusOf(lane) !== "closed" || !sessionFile(deps, lane)));
-    if (failed?.pane && (await livePaneIds(deps)).has(failed.pane)) {
-      throw new LaunchError(`LANE_EXISTS key=${failed.key} status=failed: its pane ${failed.pane} is still open; retire it first (dori close ${failed.key})`);
+    const failedPanes = sameJob.filter(lane => lane.launchState === "failed" && lane.pane);
+    if (failedPanes.length) {
+      const live = await livePaneIds(deps);
+      const surviving = failedPanes.find(lane => live.has(lane.pane!));
+      if (surviving) throw new LaunchError(`LANE_EXISTS key=${surviving.key} status=failed: inspect its surviving pane before retrying`);
     }
+    const resumable = sameJob.filter(lane => lane.launchState !== "failed" && !lane.retiredAt && lane.session &&
+      ["closed", "hibernated"].includes(statusOf(lane))).sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0];
+    if (resumable) return { kind: "wake" as const, wake: resumable };
+    const failed = sameJob.find((lane) => lane.launchState === "failed" && !lane.retiredAt && !lane.supersededBy);
     // One record per job: a retry relaunches the failed attempt's record and keeps its history.
     if (failed && failed.key !== input.key) return { kind: "retry" as const, retryAs: failed.key };
-    const queuedJob = (await readQueue(deps)).find((entry) => entry.key !== input.key && (entry.job ?? entry.key) === job);
+    const queuedJob = (await readQueue(deps)).find((entry) => entry.key !== input.key && entry.job === job);
     if (queuedJob) throw new LaunchError(`LANE_EXISTS key=${queuedJob.key} status=queued: send the new work to that lane`);
-    const resumable = sameJob.filter((lane) => lane !== failed && lane.session && ["closed", "hibernated"].includes(statusOf(lane)))
-      .sort((a, b) => b.openedAt.localeCompare(a.openedAt))[0];
-    if (resumable) return { kind: "wake" as const, wake: resumable };
     const existing = await deps.registry.read(input.key);
+    if (existing && existing.job !== job) throw new LaunchError("Existing lane needs verified job binding; do not infer identity from its key");
+    if (existing && (existing.worktrees ?? []).some(path => !existsSync(path)) &&
+        !["reserved", "brief-written"].includes(existing.failedAfter ?? "")) {
+      throw new LaunchError("A previously created or unverified worktree is missing; inspect before retrying");
+    }
     if (existing && existing.launchState !== "failed") {
       throw new LaunchError(`lane ${input.key} is already registered (${statusOf(existing)}) without a session to resume; launch with a new key and --job ${job}`);
     }
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
-      const position = await enqueue(deps, { key: input.key, ...(input.job ? { job: input.job } : {}), title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at });
+      const position = await enqueue(deps, { key: input.key, job, source, title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at });
       return { kind: "queued" as const, queued: true as const, position, reasons };
     }
     const draft: Lane = existing
-      ? withStatus(existing, "working", "relaunched after a failed attempt", at, { ...fields, openedAt: at, closedAt: undefined, receipt: undefined, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined })
+      ? withStatus(existing, "working", "relaunched after a failed attempt", at, { ...fields, openedAt: at, closedAt: undefined,
+        retiredAt: undefined, supersededBy: undefined, receipt: undefined, launchState: "reserved", failedAfter: undefined,
+        launchError: undefined, pane: undefined, tab: undefined })
       : { key: input.key, ...fields, openedAt: at, launchState: "reserved" };
     await deps.registry.write(draft);
     await dequeue(deps, input.key);
@@ -177,6 +199,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   let lane = admitted.draft;
   try {
     await writeBrief(deps, lane, briefText);
+    lane = { ...lane, launchState: "brief-written" }; await deps.registry.write(lane);
     if (isolated) {
       if (!existsSync(cwd)) await addWorktree(deps, sourceCwd, cwd, input.key);
       for (const rel of [".omo/omo.jsonc", "docs"]) {
@@ -204,7 +227,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     if (launched.code !== 0) throw new LaunchError(`herdr pane run failed: ${launched.err || launched.out}`);
     lane = { ...lane, launchState: "started" }; await deps.registry.write(lane);
   } catch (error) {
-    lane = { ...lane, status: "not-done", launchState: "failed", launchError: error instanceof Error ? error.message.slice(0, 300) : "launch failed" };
+    lane = { ...lane, status: "not-done", failedAfter: lane.launchState, launchState: "failed",
+      launchError: error instanceof Error ? error.message.slice(0, 300) : "launch failed" };
     await deps.registry.write(lane);
     throw new LaunchError(`launch failed for ${input.key}; record and any resources preserved for inspection: ${lane.launchError}`);
   }
@@ -219,7 +243,7 @@ const confirmStartup = async (deps: FlowDeps, started: Lane, okLine: (lane: Lane
   const screen = await readScreen(deps.run, pane, 40);
   const bad = STARTUP_FAILURE.exec(screen);
   if (bad) {
-    lane = { ...lane, status: "not-done", launchState: "failed", launchError: `startup failure: ${bad[0]}` };
+    lane = { ...lane, status: "not-done", failedAfter: lane.launchState, launchState: "failed", launchError: `startup failure: ${bad[0]}` };
     await deps.registry.write(lane);
     return { lane, startup: `STARTUP_ERROR ${lane.key} ${pane}: ${bad[0]}` };
   }
@@ -272,12 +296,17 @@ const restoreArchived = (deps: FlowDeps, session: string): string | undefined =>
 export type Attempt = { readonly title: string; readonly done: string; readonly thread?: string; readonly model?: string };
 
 export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly briefText?: string; readonly priority?: Priority; readonly note: string; readonly attempt?: Attempt }): Promise<LaunchResult> => {
+  if (!lane.job || lane.retiredAt || lane.supersededBy) throw new LaunchError("Lane needs a verified active job binding before resume");
+  if ((lane.worktrees ?? []).some(path => !existsSync(path))) throw new LaunchError("A recorded worktree is missing; inspect before resume");
   const file = sessionFile(deps, lane);
   if (!file) throw new LaunchError(`lane ${lane.key} has no resumable session file (${lane.session ?? "none recorded"}); launch with a new key and --job ${jobOf(lane)}`);
   const at = iso(deps.clock);
   const before = statusOf(lane);
   const admitted = await withLaunchLock(deps, async () => {
     const current = (await deps.registry.read(lane.key)) ?? lane;
+    const competing = (await deps.registry.listAll()).find(other => other.key !== current.key && other.job === current.job &&
+      !["closed", "hibernated"].includes(statusOf(other)) && !other.retiredAt);
+    if (competing) throw new LaunchError(`LANE_EXISTS key=${competing.key}: send the work to the active job`);
     if (!["closed", "hibernated"].includes(statusOf(current))) {
       throw new LaunchError(`LANE_EXISTS key=${current.key} status=${statusOf(current)}: send the new work to that lane`);
     }
@@ -315,7 +344,8 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
     woke = { ...woke, launchState: "started" }; await deps.registry.write(woke);
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 300) : "wake failed";
-    await deps.registry.write(withStatus(woke, before === "closed" ? "hibernated" : before, `wake failed: ${message}`, iso(deps.clock), { launchState: "failed", launchError: message }));
+    await deps.registry.write(withStatus(woke, before === "closed" ? "hibernated" : before, `wake failed: ${message}`, iso(deps.clock),
+      { failedAfter: woke.launchState, launchState: "failed", launchError: message }));
     throw new LaunchError(`wake failed for ${lane.key}: ${message}`);
   }
   return confirmStartup(deps, woke, (ready) => `LANE_WOKEN ${ready.key} pane=${ready.pane}`);
