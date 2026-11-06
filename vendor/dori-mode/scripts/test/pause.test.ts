@@ -14,7 +14,7 @@ let world: World;
 beforeEach(() => {
   state = withState();
   world = newWorld();
-  world.panes = [{ pane_id: "w:p7", workspace_id: "w", agent_status: "idle" }];
+  world.panes = [{ pane_id: "w:p7", workspace_id: "w", agent: "omo", agent_status: "idle" }];
 });
 afterEach(() => state.done());
 

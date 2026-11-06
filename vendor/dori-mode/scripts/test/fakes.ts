@@ -46,10 +46,15 @@ export const fakeRunner = (w: World): Runner => async (argv) => {
     return ok();
   }
   if (cmd === "herdr" && a1 === "pane" && a2 === "list") return ok(JSON.stringify({ result: { panes: w.panes } }));
+  if (cmd === "herdr" && a1 === "pane" && a2 === "process-info") {
+    const pane = w.panes.find((p) => p.pane_id === argv[4]);
+    return ok(JSON.stringify({ result: { process_info: { foreground_processes: pane?.agent ? [{ name: pane.agent, argv: [pane.agent] }] : [] } } }));
+  }
   if (cmd === "herdr") return ok();
   if (cmd === "git" && argv.includes("worktree") && argv.includes("list")) return ok(`worktree /repo\nbranch refs/heads/main\n\nworktree ${WT}\nbranch refs/heads/demo-lane`);
   if (cmd === "git" && argv.includes("status")) return ok(w.dirty);
   if (cmd === "git" && argv.includes("rev-list")) return ok(w.aheadCount);
+  if (cmd === "git" && argv.includes("rev-parse")) return ok("true");
   if (cmd === "git") return ok();
   if (cmd === "gh" && a1 === "pr") return ok(JSON.stringify({ state: w.prState, mergeCommit: w.prState === "MERGED" ? { oid: "abc1234567890" } : null }));
   if (cmd === "gh" && a1 === "issue") return ok(JSON.stringify({ state: w.issueState }));

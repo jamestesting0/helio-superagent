@@ -189,7 +189,13 @@ export const checkSignal = async (signal: string, run: Runner, io: SignalIo = {}
     }
     case "published": {
       const r = await run(["npm", "view", `${sig.pkg}@${sig.version}`, "version", "--json"]);
-      const ok = r.code === 0 && r.out.replace(/"/g, "").trim() === sig.version;
+      let versions: unknown;
+      try {
+        versions = JSON.parse(r.out);
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+      }
+      const ok = r.code === 0 && (Array.isArray(versions) ? versions : [versions]).includes(sig.version);
       return { signal: s, ok, detail: ok ? `registry has ${sig.pkg}@${sig.version}` : r.err || r.out || "not published" };
     }
     case "command": {

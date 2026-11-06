@@ -14,6 +14,19 @@ const state = withState();
 afterAll(() => state.done());
 const io = { cwd: state.dir, home: "/nonexistent-home" };
 
+test.each([
+  ['"1.2.3"', 0, true],
+  ['["1.2.3"]', 0, true],
+  ['["1.2.2","1.2.3"]', 0, true],
+  ['["1.2.2"]', 0, false],
+  ['{"version":"1.2.3"}', 0, false],
+  ['not JSON', 0, false],
+  ['["1.2.3"]', 1, false],
+] as const)("published checks registry JSON %s at exit %s", async (out, code, ok) => {
+  const result = await checkSignal("published @acme/pkg@1.2.3", async () => ({ code, out, err: "" }));
+  expect(result.ok).toBe(ok);
+});
+
 test("a command signal passes on exit 0 and runs the argv directly, so shell syntax stays literal", async () => {
   const ok = await checkSignal('command ["sh","-c","exit 0"]', run, io);
   expect(ok).toMatchObject({ ok: true, detail: "exit 0" });

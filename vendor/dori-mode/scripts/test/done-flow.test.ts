@@ -17,6 +17,7 @@ const closedVia = () => world.calls.filter((c) => c[0] === "herdr" && (c[1] === 
 beforeEach(async () => {
   state = withState();
   world = newWorld();
+  world.panes = [{ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" }];
   await at(T0).registry.write(lane);
 });
 afterEach(() => state.done());

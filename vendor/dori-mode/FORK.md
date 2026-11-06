@@ -94,3 +94,23 @@ state and bind job, source, acceptance, attempt and verified revision. The new
 `completion` command records independent checks; close refuses arbitrary or stale
 file markers and retains its own durable verification receipt. Existing claim
 acknowledgement, live checks, holds and dirty/unpushed-work guards remain in force.
+
+## Selective upstream review (2026-11-06)
+
+Reviewed upstream `sisyphuslabs/dori-superagent` through
+`201e6ca018e48c4a615ee3c50e3cf0da75291eab`, using the current Helio fork,
+including its existing uncommitted lifecycle changes, as the integration base.
+This is a selective backport, not a full upstream synchronization.
+
+| Upstream commits | Adopted change | Helio adaptation |
+|---|---|---|
+| `37cf90b`, `1c608f9` | Refuse pane sends without a live agent or when an interactive shell occupies its foreground | Parse foreground process data at the boundary; empty, malformed or unavailable process information holds delivery. Keep existing single-Enter delivery semantics. |
+| `f30f573`, `7d53474` | Check the lane's working directory when it owns no separate worktree | Preserve missing-worktree protection and `--untracked-files=all`. An unreadable Git probe blocks closure; a directory explicitly identified as outside Git may close. |
+| `a60c617` and subsequent upstream report-parser corrections | Do not forward instructions, prompt echoes or unfilled report templates as progress | Keep the current report kinds, two-tick hold and successful-hook receipt rules. Recognize standalone reports and the final quoted element of a complete argv row. |
+| `cbcbb07` | Accept string or array JSON responses for a published-version Done signal | Keep malformed, mismatched and unsuccessful registry responses as failed checks. |
+
+The full applicability and rejection ledger is in
+`../../docs/dori-upstream-review-2026-11-06.md`. New regressions cover pane
+safety and direct-checkout closure; existing report and signal suites cover
+the remaining fixes. No upstream root harness, installer, telemetry, journal,
+supervision or onboarding feature was imported.

@@ -38,6 +38,48 @@ export const statusLookup = async (run: Runner, pane: string): Promise<{ readonl
 
 export type Delivery = "delivered" | "unconfirmed" | "failed";
 
+const SHELLS: ReadonlySet<string> = new Set([
+  "sh", "ash", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "elvish", "xonsh", "pwsh", "powershell", "busybox",
+]);
+const baseName = (value: string): string => (value.replace(/^-/, "").split("/").at(-1) ?? "").toLowerCase();
+
+/** Herdr can call a suspended agent idle while its foreground process is an interactive shell. */
+const shellInFront = async (run: Runner, pane: string): Promise<boolean> => {
+  const reply = await run(["herdr", "pane", "process-info", "--pane", pane]);
+  if (reply.code !== 0) return true;
+  let data: unknown;
+  try {
+    data = JSON.parse(reply.out);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return true;
+  }
+  if (typeof data !== "object" || data === null || !("result" in data)) return true;
+  const result = data.result;
+  if (typeof result !== "object" || result === null || !("process_info" in result)) return true;
+  const info = result.process_info;
+  if (typeof info !== "object" || info === null || !("foreground_processes" in info)) return true;
+  const processes = info.foreground_processes;
+  if (!Array.isArray(processes) || processes.length === 0) return true;
+  for (const process of processes) {
+    if (typeof process !== "object" || process === null || !("name" in process) || typeof process.name !== "string" ||
+        !("argv" in process) || !Array.isArray(process.argv) || !process.argv.every((arg: unknown) => typeof arg === "string")) return true;
+    let name = baseName(process.name);
+    let args: string[] = process.argv.slice(1);
+    if (name === "busybox") {
+      if (!args[0]) return true;
+      name = baseName(args[0]);
+      args = args.slice(1);
+    }
+    if (!SHELLS.has(name)) continue;
+    const powershell = name === "pwsh" || name === "powershell";
+    const command = args.some((arg) => powershell ? /^-(c|command|f|file|e|ec|encodedcommand)$/i.test(arg) : /^-[A-Za-z]*c[A-Za-z]*$/.test(arg));
+    const keepsPrompt = powershell && args.some((arg) => /^--?noe(x(i(t)?)?)?$/i.test(arg));
+    if (!command || keepsPrompt) return true;
+  }
+  return false;
+};
+
 /**
  * Types the text and presses Enter exactly once. Delivery is confirmed only by a state change: the pane's agent_status
  * moving to "working" from something else. A pane that was already working cannot show that change, so its send comes
@@ -47,6 +89,8 @@ export const sendVerified = async (run: Runner, clock: Clock, pane: string, text
   if (/`|\$\(/.test(text)) throw new UnsafeTextError("refusing to send text containing a backtick or $(");
   const before = await statusLookup(run, pane);
   if (before.error) console.error(`sendVerified ${pane}: status lookup failed before send: ${before.error}`);
+  if (before.status === undefined || !ALIVE_STATUSES.has(before.status)) return "failed";
+  if (await shellInFront(run, pane)) return "failed";
   if ((await run(["herdr", "pane", "send-text", pane, text])).code !== 0) return "failed";
   await run(["herdr", "pane", "send-keys", pane, "enter"]);
   if (before.status === "working") return "unconfirmed";

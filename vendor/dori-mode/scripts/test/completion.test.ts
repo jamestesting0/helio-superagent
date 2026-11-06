@@ -29,7 +29,7 @@ test("a completion receipt binds the job, source, acceptance and current revisio
   const base = depsFor(newWorld(), fakeClock(1793966400000), state.dir);
   let head = "a".repeat(40);
   const deps = { ...base, run: async (...args: Parameters<typeof base.run>) =>
-    args[0].includes("rev-parse") ? { code: 0, out: head, err: "" } : base.run(...args) };
+    args[0].includes("rev-parse") && args[0].includes("HEAD") ? { code: 0, out: head, err: "" } : base.run(...args) };
   const lane: Lane = { key: "bound-work", job: "issue-8", source: "discord:100:500",
     title: "request", thread: "none", brief: "/brief", done: "", openedAt: "2026-11-06T12:00:00Z" };
   const current = { ...lane, done: `file ${completionPath(deps, lane)} json:.passed=true; closed acme/app#3` };

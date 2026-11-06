@@ -5,9 +5,29 @@ import { readScreen, sendVerified } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 
 export const lastReportLine = (screen: string, key: string): string | null => {
-  const grammar = new RegExp(`\\[REPORT\\] ${key.replace(/[.]/g, "\\.")} \\| (milestone|blocker|question|done) \\| (?!<what)\\S`);
-  const template = (l: string) => /["'`]\[REPORT\]/.test(l) && /\$?\{[A-Za-z_][\w.]*\}/.test(l);
-  const hits = screen.split("\n").flatMap((l) => (grammar.test(l) && !template(l) ? [l.slice(l.indexOf("[REPORT]"))] : []));
+  const grammar = new RegExp(`^\\[REPORT\\] ${key.replace(/[.]/g, "\\.")} \\| (milestone|blocker|question|done) \\| \\S`);
+  const template = /^\[REPORT\][^|]*\|[^|]*\|\s*["'`]?(\$\{?[A-Za-z_]\w*\}?|\{[A-Za-z_][\w.]*\}|%[sdif]|<[^>]+>)["'`)\s]*$/;
+  const hits = screen.split("\n").flatMap((line) => {
+    let report = line.trim();
+    if (!report.startsWith("[REPORT]")) {
+      // A lane may show its report as the last quoted argument of an argv row, including inside a spawn call.
+      const call = /^[\w.$]+\(\s*(\[.*\])\s*\)\s*;?$/.exec(report);
+      const row = (call?.[1] ?? report).trim();
+      if (!row.startsWith("[") || !row.endsWith("]")) return [];
+      const inner = row.slice(1, -1);
+      const element = /\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s*(,|$)/y;
+      let last: string | undefined;
+      while (element.lastIndex < inner.length) {
+        const match = element.exec(inner);
+        if (!match) return [];
+        last = match[1] ?? match[2];
+        if (match[3] === "") break;
+      }
+      if (element.lastIndex !== inner.length || last === undefined) return [];
+      report = last;
+    }
+    return grammar.test(report) && !template.test(report) ? [report] : [];
+  });
   return hits.at(-1)?.replace(/["'\])\s,]+$/, "") ?? null;
 };
 

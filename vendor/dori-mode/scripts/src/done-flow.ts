@@ -64,8 +64,18 @@ export const discoverWorktrees = async (lane: Lane, run: Runner, extraRoots: rea
 export const unpushedWork = async (deps: FlowDeps, lane: Lane): Promise<string[]> => {
   const exists = deps.exists ?? existsSync;
   const reasons: string[] = [];
-  for (const wt of await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])) {
+  const owned = await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd]);
+  for (const wt of owned.length ? owned : [lane.cwd ?? deps.config.defaultCwd]) {
     if (!exists(wt)) { reasons.push(`worktree missing: ${wt}; inspect before closing`); continue; }
+    if (!owned.length) {
+      const inside = await deps.run(["git", "-C", wt, "rev-parse", "--is-inside-work-tree"]);
+      if ((inside.code === 0 && inside.out.trim() === "false") ||
+          (inside.code !== 0 && /^fatal: not a git repository(?:\s|$)/.test(inside.err))) continue;
+      if (inside.code !== 0 || inside.out.trim() !== "true") {
+        reasons.push(`unpushed work in ${wt} (git state unreadable)`);
+        continue;
+      }
+    }
     const dirty = await deps.run(["git", "-C", wt, "status", "--porcelain", "--untracked-files=all"]);
     const ahead = await deps.run(["git", "-C", wt, "rev-list", "--count", "HEAD", "--not", "--remotes"]);
     if (dirty.code !== 0 || ahead.code !== 0) reasons.push(`unpushed work in ${wt} (git state unreadable)`);

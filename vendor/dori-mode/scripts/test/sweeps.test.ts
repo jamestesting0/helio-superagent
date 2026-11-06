@@ -26,6 +26,7 @@ const working: Lane = { key: "quiet-lane", title: "quiet", thread: "chat:team/9"
 test("a lane silent past the nudge time is nudged once, then its last report is posted for it", async () => {
   const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
   await deps(T0).registry.write(working);
+  world.panes = [{ pane_id: "w:p7", workspace_id: "w", agent: "omo", agent_status: "idle" }];
   world.screen = "noise\n[REPORT] quiet-lane | milestone | tests green on /home/test/repo, PR open\n❯ ";
   expect(await freshnessTick(deps(T0 + 10 * MIN), "/home/test")).toEqual([]);
   expect((await freshnessTick(deps(T0 + 16 * MIN), "/home/test")).map((a) => a.kind)).toEqual(["nudged"]);
@@ -224,4 +225,29 @@ test("a [REPORT] template with an unfilled placeholder is source, not a report: 
   expect(lastReportLine('echo "[REPORT] demo-lane | done | ${message}"', "demo-lane")).toBeNull();
   expect(lastReportLine("[REPORT] demo-lane | done | PR #12 merged", "demo-lane")).toBe("[REPORT] demo-lane | done | PR #12 merged");
   expect(lastReportLine("[REPORT] demo-lane | milestone | added getUser({id}) and ${HOME} docs", "demo-lane")).toBe("[REPORT] demo-lane | milestone | added getUser({id}) and ${HOME} docs");
+});
+
+test.each([
+  "Send [REPORT] quiet-lane | milestone | tests green to the lead",
+  "❯ [REPORT] quiet-lane | milestone | tests green",
+  'echo "[REPORT] quiet-lane | milestone | tests green"',
+  "[REPORT] quiet-lane | milestone | $message",
+  "[REPORT] quiet-lane | milestone | %s",
+  '[REPORT] quiet-lane | milestone | "$text"',
+])("freshness never forwards a screen instruction or template: %s", async (screen) => {
+  world.screen = screen;
+  const deps = depsFor(world, fakeClock(T0 + 30 * MIN), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
+  await deps.registry.write({ ...working, lastNudgeAt: T0 + MIN });
+  await freshnessTick(deps, "/home/test");
+  await freshnessTick(deps, "/home/test");
+  expect(world.calls.filter((argv) => argv[0] === "notify")).toEqual([]);
+});
+
+test.each([
+  '  [REPORT] demo-lane | milestone | set $HOME in docs',
+  '["herdr", "pane", "send-text", "lead:p1", "[REPORT] demo-lane | milestone | set $HOME in docs"]',
+  "Bun.spawn(['herdr', 'pane', 'send-text', 'lead:p1', '[REPORT] demo-lane | milestone | set $HOME in docs'])",
+])("the last real report survives a newer instruction: %s", (report) => {
+  expect(lastReportLine(`${report}\nSend [REPORT] demo-lane | milestone | next step to the lead`, "demo-lane"))
+    .toBe("[REPORT] demo-lane | milestone | set $HOME in docs");
 });
