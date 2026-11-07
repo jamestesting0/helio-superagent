@@ -100,7 +100,11 @@ Save and inspect current test records in .omo/evidence. For screenshots/browser 
 
 The lead owns public completion. Workers return results/evidence privately, then claim done. The lead verifies and sends once through `evidence.ts --event completion --disposition final` with the current request ID; ordinary completion text uses `reply.ts --event completion --disposition final` only when its routing permits it. Carry the actual task's `--job` and canonical `--issue` when present. Repeated claims and rewording are not new milestones. Later substantive CI/repair facts use a distinct event tied to the new head. Report final head, checked main revision and actual CI state; pending CI is not ready-to-merge.
 
-evidence.ts replies in trusted chats/DMs; normal-chat results go to owner DM, forward to a trusted requester and leave a short note. Use --owner-only for production secrets/data, players' private data, security internals and owner-only decisions; split mixed results by audience. Paths or "tests passed" are not delivery. Report missing/live-failed checks; beta success grants no merge/restart authority.
+Use the normal source-aware delivery route by default. evidence.ts replies in the original trusted chat, thread or DM; normal-chat results go to owner DM, forward to a trusted requester and leave a short note. Follow that channel policy without adding an owner-only override.
+
+Before using `--owner-only`, identify a concrete privacy reason in the actual report, such as production secrets or sensitive data, players' private data or restricted security details, or an explicit request for private delivery. Without such a reason, do not set the flag. The owner being the requester, a task requiring owner approval, a feature described as "private", and a worker reporting privately to the lead do not make an ordinary PR, status, test or release report owner-only. Approval requests still follow the Human questions workflow; the completed result does not inherit an approval's audience restriction.
+
+Split mixed results by audience and keep private context out of the shareable part and routing note. Use the existing helpers and stable delivery events; do not bypass their routing or duplicate a report to correct its classification. Paths or "tests passed" are not delivery. Report missing/live-failed checks; beta success grants no merge/restart authority.
 
 ## Human questions through Discord
 
