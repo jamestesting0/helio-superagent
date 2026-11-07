@@ -17,7 +17,7 @@ Use:
 | Database | `elo_beta` |
 | Main test channel | `{{HELIO_TEST_CHANNEL}}` |
 | Extra multi-channel destinations | Only within category `{{HELIO_TEST_CATEGORY}}` |
-| Browser | Chrome profile **Helio**, controlled through BrowserSkill |
+| Browser | Dedicated WSL Chrome QA profiles: **qa-a** by default, **qa-b** and **qa-c** for additional accounts; controlled through BrowserSkill |
 | Default QA hosting clan | Balloon Moon (`#2RY0QP8GY`) |
 
 The owner authorized choosing a configured clan as the QA default. This is a runbook default, not a change to production command defaults. Check the clan and slot are actually free before each start; beta database availability alone does not establish that the shared real clan is unused.
@@ -44,16 +44,16 @@ The profile-specific Beta data rules in `~/.dori/elobot/work-policy.md` determin
 
 ## 3. Connect Chrome through BrowserSkill
 
-Open Chrome with profile **Helio** solely to expose its BrowserSkill extension. Once open, use BrowserSkill for browser work, not desktop clicks/keystrokes or OmO's unrelated built-in preview. Do not launch a fresh profile, copy session data, or extract tokens.
+Use `helio browser` to open the dedicated QA profiles; it selects Wayland when the sandbox exports `WAYLAND_DISPLAY`. Do not launch Chrome directly. Once open, use BrowserSkill for browser work, not desktop clicks/keystrokes or OmO's unrelated built-in preview. Do not launch a fresh profile, copy session data, or extract tokens.
 
 When Chrome is fully closed and an approved QA task needs it, Helio may open
-the existing dedicated WSL Helio profile using:
+the existing dedicated WSL qa-a profile using:
 
 ```bash
 helio browser ready
 ```
 
-This command opens the dedicated WSL profile and waits for the BrowserSkill extension to connect. A closed browser before running it is normal, not a blocker.
+This command defaults to qa-a and waits for its registered BrowserSkill extension to connect. A closed browser before running it is normal, not a blocker. qa-b and qa-c are additional accounts selected with `--accounts N` or `--profile`. Never fall back to the legacy Helio profile when a QA profile is unavailable.
 Do not close other Chrome windows or use a new data directory. If the
 extension does not connect or readiness fails, inspect `helio doctor` and the installed browser-skill CLI before asking the owner to resolve it. A real denial still requires the owner; do not substitute another profile.
 
@@ -62,15 +62,15 @@ set the existing daemon's `BSK_HOME` and expose the installed `bsk` executable
 through `BSK_BIN` and `PATH`. Existing processes need to be restarted before
 they inherit a changed environment.
 
-Read the installed `browser-skill` instructions and run `bsk doctor --json`. It must report a connected Chrome browser. If several browsers are connected, choose the verified Helio instance explicitly.
+Read the installed `browser-skill` instructions and run `bsk doctor --json`. It must report a connected Chrome browser. Bind each session to the verified QA profile's instance in `~/.dori/elobot/qa-accounts.json`; a connected browser alone does not establish its account.
 
-Use the installed browser-skill instructions and `bsk` CLI for the current version. Select the verified Helio browser, retain the session ID, and always stop the session after use.
+Use the installed browser-skill instructions and `bsk` CLI for the current version. Select the verified QA browser, retain the session ID, and always stop the session after use.
 
 The installed BrowserSkill requires a cooperation context for shared-tab actions. Some older OmOWright method wrappers do not pass it; use the supported BrowserSkill CLI for those operations, not another input engine.
 
 ### One window per test account
 
-Discord keeps one login per Chrome profile, so tabs in one profile are always the same account. Multi-account tests use the dedicated test profiles instead of the account switcher: `qa-a` is always the Elo Manager account (Dominik), and `qa-b` and `qa-c` hold other test accounts (see `helio browser accounts`). Open as many as the test needs, `helio browser ready --accounts N`: 1 for a single-user command, 2 for a match, 3 for a match plus a host or helper. Start one BrowserSkill session per profile with `bsk session start --browser <instance-id from ~/.dori/elobot/qa-accounts.json> --json` and keep each `session_id` with its role (participant A, participant B, manager). Moving between accounts is moving between sessions; nothing logs out. Check each window's account once at its first sync, not after every action. Close them with `helio browser close --all`. If a profile is not set up yet, ask the owner once to run `helio browser setup <profile>`, and use the single Helio profile with the account switcher meanwhile.
+Discord keeps one login per Chrome profile, so tabs in one profile are always the same account. `qa-a` is always the Elo Manager account (Dominik), and `qa-b` and `qa-c` hold other supplied test accounts (see `helio browser accounts`). Open as many as the test needs, `helio browser ready --accounts N`: 1 for a single-user command, 2 for a match, 3 for a match plus a host or helper. Start one BrowserSkill session per profile with `bsk session start --browser <instance-id from ~/.dori/elobot/qa-accounts.json> --json` and keep each `session_id` with its role (participant A, participant B, manager). Moving between accounts is moving between sessions; nothing logs out. Check each window's account once at its first sync, not after every action. Close only profiles this task opened, as described in section 9. If a profile is not set up yet, ask the owner once to run `helio browser setup <profile>` and complete its login and instance mapping; report the affected live check as unverified until then.
 
 ### Links instead of clicks
 
@@ -109,11 +109,11 @@ Helio's bot is in the main server but cannot read the test channel. Its REST API
 
 Inventory the supplied QA accounts through Discord's visible account UI, without reading credentials. Record each account's visible identity, confirmed test role, and access to the permitted channel. The older guide mentions Crystal Wolf, Tergum, and Dominik, but that is not proof of current login or roles.
 
-Use the account switcher only when available and authorized. Verify the active account after every switch and before the first action in each tab. Tabs in one profile are not independent login sessions; recheck affected tabs after switching.
+Keep one supplied account signed into each QA profile. Change accounts by selecting the corresponding profile's BrowserSkill session, not Discord's account switcher. Verify the active account before the first action in each session. Tabs in one profile are not independent login sessions.
 
 Use at least two distinct participants for cross-user behavior and a verified manager/non-manager pair where the command has permission gates. A third nonparticipant is needed for scenarios such as betting on other players' matches. Do not grant permissions just to make a test pass. Ask the owner to complete missing logins/verification.
 
-Sequential switching is acceptable when it exercises the same persisted interaction. A simultaneous-session scenario needs additional owner-approved isolated sessions; one account or several same-profile tabs do not prove it.
+A simultaneous-session scenario needs distinct approved QA profiles and identities; one account or several same-profile tabs do not prove it. If a required profile lacks login or access, report that gate instead of substituting the legacy Helio profile.
 
 Read `~/.dori/elobot/beta-maintenance-workflow.md` before any beta database preparation.
 
@@ -266,7 +266,7 @@ If any required live scenario is blocked, report it as unverified before calling
 
 Commit and push only the verified in-scope working branch when authorized by the bug policy or feature request. PR creation requires an owner or trusted-user request, an approved plan or a recorded work authorization (`helio work authorize`), submitted through `helio pr submit` (issue-plan-workflow.md), or standing autofix authorization through `helio autofix submit`; a PR merge and `elobot` restart remain separately confirmation-gated in `work-policy.md`; other production changes remain owner-only.
 
-Always use a finally/cleanup path, including failures. Stop the task BrowserSkill session, then run `helio browser close` to close the dedicated profile after browser work; if another BrowserSkill session remains active, defer closure until it finishes. Stop only a beta process started by this run, using its recorded handle. Never broad-kill Python or another lane's bot. Remove only owned disposable fixtures/resources, preserve evidence and unrelated state subject to the isolated Beta data exception, stop the BrowserSkill session, and return borrowed tabs. Keep logins intact.
+Always use a finally/cleanup path, including failures. Stop the task BrowserSkill sessions, then close only profiles opened by this task through `helio browser close --profile qa-a` (or the corresponding qa-b/qa-c profile). Unqualified `helio browser close` targets qa-a. Preserve profiles already open for the owner or another task; if another BrowserSkill session remains active, defer closure until it finishes. Stop only a beta process started by this run, using its recorded handle. Never broad-kill Python or another lane's bot. Remove only owned disposable fixtures/resources, preserve evidence and unrelated state subject to the isolated Beta data exception, and return borrowed tabs. Keep logins intact.
 
 ## Latest observed setup state
 

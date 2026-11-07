@@ -17,6 +17,7 @@ KIT_RULES = (
     ("isolation/*", FULL),
     ("scripts/helio-followups.py", MONITORS),
     ("scripts/helio-questions.py", MONITORS),
+    ("scripts/helio_runtime_policy.py", MONITORS),
     *(("scripts/" + helper, MONITORS) for helper in (
         "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py",
         "helio_observations.py", "helio_decision_upkeep.py", "helio_issue_sync.py", "helio_pr_readiness.py")),
@@ -26,6 +27,9 @@ KIT_RULES = (
 INSTALLED_RULES = (
     ("@inbound/*.test.ts", NONE),
     ("@inbound/fixtures/*", NONE),
+    *(("@inbound/admin/" + name, NONE) for name in (
+        "main.ts", "controller.ts", "editor.ts", "interaction.ts", "panels.ts", "render.ts", "manifest.ts",
+        "broker.ts", "transport.ts", "registration.ts", "command-schema.ts", "command-sync.ts", "command-sync-state.ts")),
     ("@inbound/package.json", MONITORS),
     ("@inbound/*", MONITORS),
     ("inbound", MONITORS),
@@ -54,9 +58,13 @@ def plan(kit_changes: list[str], installed_changes: list[str], env_changed: bool
         needs |= {LEAD, MONITORS}
     needs.discard(NONE)
     top = max(needs, key=ORDER.index) if needs else NONE
+    administration = any(path.startswith("discord-inbound/admin/") and not path.endswith(".test.ts")
+                         for path in kit_changes) or any(name.startswith("@inbound/admin/") and not name.endswith(".test.ts")
+                                                        for name in installed_changes)
     return {
         "needs": top,
         "monitors_changed": MONITORS in needs or FULL in needs,
+        "admin_controller_changed": administration,
         "changed": sorted(set(kit_changes) | set(installed_changes) | ({"env"} if env_changed else set())),
     }
 

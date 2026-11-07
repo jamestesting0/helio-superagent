@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { loadConfig } from "./config.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
@@ -26,6 +28,7 @@ import { slackPresence } from "./messenger/slack-presence.ts";
 import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { realTimers } from "./messenger/typing.ts";
+import { reclaimLane } from "./reclaim.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 
 const USAGE = `dori <command> [options]
@@ -49,6 +52,7 @@ const USAGE = `dori <command> [options]
   resume <key> [--note TEXT] [--brief FILE]   undo pause; or wake a hibernated or closed lane in its recorded session
   stale [--hours N] [--json]           lanes paused, not done, failed or awaiting cleanup for N hours (default 24)
   reap-worktrees [--apply] [--json]    remove worktrees of closed lanes whose PR settled 3+ days ago and that hold no unpushed work
+  reclaim <key>                       checkpoint an owned idle session and release its slot; retain unfinished work and all files
   watch                                long-running: emits LANE_* lines every 30 s; hibernates idle lanes and starts queued launches
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
@@ -124,8 +128,9 @@ try {
     }
     case "sync": {
       const r = await syncRegistry(deps, Boolean(flags.values.write));
-      console.log("key | thread | pane | session | status");
-      for (const row of [...r.rows, ...r.unregistered]) console.log([row.key, row.thread, row.pane, row.session, row.status].join(" | "));
+      console.log("key | thread | pane | session | recorded work | execution");
+      for (const row of [...r.rows, ...r.unregistered]) console.log([row.key, row.thread, row.pane, row.session, row.status,
+        `${row.execution?.status ?? "unknown"}: ${row.execution?.reason ?? "No engine observation"}`].join(" | "));
       console.log(r.drift.length ? `DRIFT (${r.drift.length}):\n${r.drift.map((d) => `- ${d}`).join("\n")}` : "DRIFT none");
       console.log(flags.values.write ? "WROTE session ids" : "READ_ONLY");
       break;
@@ -174,6 +179,12 @@ try {
       for (const line of r.lines) console.log(line);
       process.exit(r.closed ? 0 : 2);
     }
+    case "reclaim": {
+      const result = await reclaimLane(deps, key ?? die("reclaim needs a lane key"));
+      for (const line of result.lines) console.log(line);
+      process.exitCode = result.released ? 0 : 2;
+      break;
+    }
     case "close": {
       const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead");
       for (const line of r.lines) console.log(line);
@@ -212,8 +223,18 @@ try {
     case "watch":
       console.log("LANE_WATCH_READY");
       for (;;) {
-        for (const line of await watchTick(deps).catch((e: unknown) => [monitorLine(`LANE_WATCH_ERROR ${String(e)}`)])) console.log(line);
-        for (const line of await lifecycleTick(deps).catch((e: unknown) => [monitorLine(`LANE_LIFECYCLE_ERROR ${String(e)}`)])) console.log(line);
+        const current = { ...deps, config: await loadConfig() };
+        for (const line of await watchTick(current).catch((e: unknown) => [monitorLine(`LANE_WATCH_ERROR ${String(e)}`)])) console.log(line);
+        for (const line of await lifecycleTick(current).catch((e: unknown) => [monitorLine(`LANE_LIFECYCLE_ERROR ${String(e)}`)])) console.log(line);
+        if (current.config.runtimeRevision) {
+          mkdirSync(current.config.stateDir, { recursive: true, mode: 0o700 });
+          const path = join(current.config.stateDir, "config-applied.json");
+          const temporary = `${path}.${process.pid}.tmp`;
+          const identity = process.platform === "linux" ? readFileSync("/proc/self/stat", "utf8").split(") ").at(-1)?.split(" ")[19] : null;
+          writeFileSync(temporary, JSON.stringify({ revision: current.config.runtimeRevision, pid: process.pid,
+            start_ticks: identity, at_ms: Date.now() }), { mode: 0o600 });
+          renameSync(temporary, path);
+        }
         await Bun.sleep(30_000);
       }
     case "freshness":

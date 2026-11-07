@@ -47,6 +47,21 @@ class AgentFileTests(unittest.TestCase):
         self.assertIsNone(P["read_agent_file"](str(self.home), ".dori/elobot/pipe"))
         self.assertIsNone(P["read_agent_file"](str(self.home), ".dori/elobot/missing"))
 
+    def test_legacy_permission_readers_observe_atomic_directory_publication(self) -> None:
+        policy = self.home / ".dori/elobot/policy"
+        policy.mkdir()
+        for name in ("trusted-users", "release-approvers", "report-channels"):
+            (self.home / ".dori/elobot" / name).write_text("old installation")
+            (policy / name).write_text("11111")
+        P["bind_policy_links"](str(self.home))
+        before = (policy / "trusted-users").open()
+        self.addCleanup(before.close)
+        replacement = policy / ".next"
+        replacement.write_text("22222")
+        replacement.replace(policy / "trusted-users")
+        self.assertEqual((self.home / ".dori/elobot/trusted-users").read_text(), "22222")
+        self.assertEqual(before.read(), "11111")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,10 @@ import type { FlowDeps } from "./done-flow.ts";
 import { listPanes } from "./panes.ts";
 import { statusOf } from "./registry.ts";
 import { procTable, resolveSession } from "./session-id.ts";
+import type { SessionExecution } from "./session-state.ts";
 
-export type SyncRow = { readonly key: string; readonly thread: string; readonly pane: string; readonly session: string; readonly status: string };
+export type SyncRow = { readonly key: string; readonly thread: string; readonly pane: string; readonly session: string; readonly status: string;
+  readonly execution?: SessionExecution };
 export type SyncResult = { readonly rows: SyncRow[]; readonly drift: string[]; readonly unregistered: SyncRow[] };
 
 export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<SyncResult> => {
@@ -15,13 +17,19 @@ export const syncRegistry = async (deps: FlowDeps, write: boolean): Promise<Sync
   const lanes = await deps.registry.open();
   for (const lane of lanes) {
     const pane = lane.pane ? live.get(lane.pane) : undefined;
-    if (!pane) drift.push(`${lane.key}: pane ${lane.pane ?? "(none)"} is gone but the lane is ${statusOf(lane)}`);
-    const hit = pane ? await resolveSession(pane.pane_id, pane.cwd ?? "", table, { run: deps.run, sessionsDir: deps.config.sessionsDir }) : { id: "", via: "none" };
-    if (lane.session && hit.id && hit.id !== lane.session) drift.push(`${lane.key}: pane now runs session ${hit.id} (registry has ${lane.session})`);
+    if (!pane && statusOf(lane) !== "hibernated") drift.push(`${lane.key}: pane ${lane.pane ?? "(none)"} is gone but the lane is ${statusOf(lane)}`);
+    const execution = pane?.execution;
+    const observed = execution && "session" in execution ? execution : undefined;
+    const hit = observed ? { id: observed.session, via: "control" } :
+      pane ? await resolveSession(pane.pane_id, pane.cwd ?? "", table, { run: deps.run, sessionsDir: deps.config.sessionsDir }) : { id: "", via: "none" };
+    const sameSession = hit.id === lane.session || (observed !== undefined && lane.session === observed.id);
+    if (lane.session && hit.id && !sameSession) drift.push(`${lane.key}: pane now runs session ${hit.id} (registry has ${lane.session})`);
     if (lane.launchState && lane.launchState !== "started") drift.push(`${lane.key}: launch ${lane.launchState}${lane.launchError ? `: ${lane.launchError}` : ""}; inspect retained resources before retry`);
     if (!lane.done) drift.push(`${lane.key}: empty Done line, so a done claim can never close it`);
-    if (write && hit.id && hit.id !== lane.session) await deps.registry.write({ ...lane, session: hit.id, sessionVia: hit.via });
-    rows.push({ key: lane.key, thread: lane.thread, pane: lane.pane ?? "-", session: hit.id ? `${hit.id} (${hit.via})` : (lane.session ?? "-"), status: statusOf(lane) });
+    if (write && hit.id && !sameSession) await deps.registry.write({ ...lane, session: hit.id, sessionVia: hit.via });
+    rows.push({ key: lane.key, thread: lane.thread, pane: lane.pane ?? "-", session: hit.id ? `${hit.id} (${hit.via})` : (lane.session ?? "-"),
+      status: statusOf(lane), execution: pane?.execution ?? { status: pane ? "unknown" : "missing", reason: pane ?
+        `Process label ${pane.agent_status ?? "unknown"}; current engine state is unavailable` : "No linked pane" } });
   }
   const owned = new Set(lanes.map((l) => l.pane));
   const watch = new Set(deps.config.workspaces);

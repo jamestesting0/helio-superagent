@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Persist task questions, deliver them to Discord, and watch for answers."""
 from __future__ import annotations
-import argparse, hashlib, json, os, re, sqlite3, sys, time, urllib.error, urllib.request, uuid
+import argparse, hashlib, json, os, re, runpy, sqlite3, sys, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -13,9 +13,10 @@ TOKEN=os.environ.get('DORI_DISCORD_TOKEN','')
 OWNER=os.environ.get('DORI_DISCORD_OWNER_ID','')
 ALLOWED=set(x.strip() for x in os.environ.get('DORI_DISCORD_ALLOWED','').split(',') if x.strip())
 STAFF=os.environ.get('HELIO_STAFF_CHAT','').strip()
+POLICY=runpy.run_path(str(Path(__file__).with_name('helio_runtime_policy.py')))
 
 def trusted_now():
- return {x.strip() for x in os.environ.get('DORI_DISCORD_TRUSTED_IDS','').split(',') if ID.fullmatch(x.strip())}
+ return {x.strip() for x in POLICY['values'](os.environ).get('DORI_DISCORD_TRUSTED_IDS','').split(',') if ID.fullmatch(x.strip())}
 
 def may_answer(row,author):
  # Staff questions accept the owner or anyone trusted at the moment they answer.
@@ -106,12 +107,18 @@ def write(db,id,status,when=None,**values):
  if when and not changed:raise ValueError('question changed while this command ran; inspect it again')
 
 def allowed_channel(channel):
- current=channel;seen=set()
+ settings=POLICY['values'](os.environ)
+ allowed=set(filter(None,settings.get('DORI_DISCORD_ALLOWED',','.join(ALLOWED)).split(',')))
+ ignored=set(filter(None,settings.get('DORI_DISCORD_IGNORED_CHANNELS','').split(',')))
+ current=channel;seen=set();permitted=False
  for _ in range(3):
-  if current in ALLOWED:return True
+  if current in ignored:return False
+  if not ignored and current in allowed:return True
+  if current in allowed:permitted=True
   if not ID.fullmatch(current) or current in seen:return False
   seen.add(current);meta=request('GET',f'/channels/{current}');current=meta.get('parent_id') or ''
- return current in ALLOWED
+  if not current:return permitted
+ return permitted and current not in ignored
 
 def channel_for(row):
  if row['audience']=='owner':
@@ -173,10 +180,13 @@ def reconcile_pending(db):
    timestamp=datetime.fromisoformat(sent_at.replace('Z','+00:00')).timestamp()
    if delivery_id not in accepted and time.time()-timestamp>72*60*60:
     continue
+   settings=POLICY['values'](os.environ)
+   allowed={x.strip() for x in settings.get('DORI_DISCORD_ALLOWED',','.join(ALLOWED)).split(',') if x.strip()}
+   ignored={x.strip() for x in settings.get('DORI_DISCORD_IGNORED_CHANNELS','').split(',') if x.strip()}
    trusted_ids,trusted_channels,normal_channels,report_channels=(
-    {x.strip() for x in os.environ.get(name,'').split(',') if x.strip()}
+    {x.strip() for x in settings.get(name,'').split(',') if x.strip()}
     for name in ('DORI_DISCORD_TRUSTED_IDS','DORI_DISCORD_TRUSTED_CHANNELS','DORI_DISCORD_NORMAL_CHANNELS','DORI_DISCORD_REPORT_CHANNELS'))
-   if not ID.fullmatch(OWNER) or not ALLOWED or any(not ID.fullmatch(x) for ids in (ALLOWED,trusted_ids,trusted_channels,normal_channels,report_channels) for x in ids):
+   if not ID.fullmatch(OWNER) or not allowed or any(not ID.fullmatch(x) for ids in (allowed,ignored,trusted_ids,trusted_channels,normal_channels,report_channels) for x in ids):
     continue
    if trusted_channels & normal_channels:
     continue
@@ -205,7 +215,7 @@ def reconcile_pending(db):
      if parent in trusted_channels | normal_channels and channel.get('type') not in (0,5,10,11,12,15):
       raise ValueError('invalid policy channel')
      ancestors.add(parent)
-    if not ancestors & ALLOWED:
+    if not ancestors & allowed or ancestors & ignored:
      continue
     if ancestors & trusted_channels and ancestors & normal_channels:
      continue

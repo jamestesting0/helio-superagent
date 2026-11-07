@@ -1,10 +1,12 @@
 import { insideAllowed, requestMessage } from "../intake/filter.ts";
 import { MESSAGE_CHANNEL_TYPES, type ApiChannel, type Rest } from "../discord/rest.ts";
+import { policyValues } from "../intake/runtime-policy.ts";
 
 /** No payload body is exposed until current ancestry and persisted human provenance are known. */
 export async function contextReplayAllowed(
   text: string, settings: Readonly<Record<string, string | undefined>>, rest: Rest | undefined,
 ): Promise<boolean> {
+  const current = policyValues(settings);
   const payload: unknown = JSON.parse(text);
   if (typeof payload !== "object" || payload === null ||
       !("human_verified" in payload) || payload.human_verified !== true ||
@@ -23,7 +25,7 @@ export async function contextReplayAllowed(
     if (!requestMessage({ type })) return false;
   }
   const ids = (name: string) => {
-    const values = (settings[name] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+    const values = (current[name] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
     if (values.some((id) => !/^\d+$/.test(id))) throw new TypeError(`Invalid ${name}`);
     return new Set(values);
   };

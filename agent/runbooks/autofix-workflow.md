@@ -184,7 +184,7 @@ Prefixes are pointers or receipts, never authority. Read detail and continuation
 | CONVERSATION_PAGE / CONVERSATION_REFUSED | Follow page continuation; refusal changes no authority and must be resolved before continuing. |
 | INBOUND_CONVERSATION_NUDGE / INBOUND_CONVERSATION_TIMEOUT / INBOUND_CONVERSATION_WAITING / INBOUND_CONVERSATION_MIGRATED | Use "Request intake": do not duplicate notices; inspect pending work and migrated history. Resume only a current request, never from the prefix alone. |
 | SENT / REPLY_HELD / REPLY_HELD_HINT / REPLY_SKIPPED / REPLY_COVERED / REPLY_NOTE / REPLY_WARN / REPLY_FOLLOWUP_CLOSED | Use "Replies" and shared Request intake; only a successful send, explicit skip or completed durable-work protocol allows done. |
-| LANE_* (including LANE_CLAIMS_PENDING / LANE_WATCH_ERROR), DEAD_PANE / UNRECOGNISED_PANE / DEAD_PANES_ERROR, HOST_GUARD / GUARD_ERROR, NUDGED / POSTED / NO-REPORT / PENDING-REPORT / STALE-REPORT / WORKING-WHILE-PAUSED / FRESHNESS_ERROR | Read the installed Dori skill's references/setup.md section 5 and its done/session protocols; read claims then claim-ack before verification. Errors never count as done. |
+| LANE_* (including LANE_CLAIMS_PENDING / LANE_WATCH_ERROR), DEAD_PANE / UNRECOGNISED_PANE / DEAD_PANES_ERROR, HOST_GUARD / GUARD_ERROR, NUDGED / POSTED / NO-REPORT / PENDING-REPORT / STALE-REPORT / WORKING-WHILE-PAUSED / FRESHNESS_ERROR | Apply "Worker incidents" below. Read claims then claim-ack before verification; errors never count as done. |
 | INBOUND_CONFIRM / INBOUND_PLAN_FEEDBACK | Re-read the exact pending confirmation or plan and current revision; use the recorded answer only for that decision. |
 | QUESTION_EXPIRED | No answer or authority was granted; re-ask only if the decision still blocks work. |
 | CONTEXT_PENDING / CONTEXT_DONE | PENDING needs `ack pending context`; DONE ends a scan, not durable learning acknowledgements. |
@@ -208,7 +208,34 @@ Only the owner adds or removes blacklist entries. A blacklisted user's messages,
 - Launch with `dori launch KEY --job JOB` (for example `--job issue-8`; owner work adds `--priority owner`). `LANE_EXISTS key=K`: send the work to that lane. `LANE_WOKEN`: the job's earlier lane resumed in its session. `LAUNCH_QUEUED key=K position=N reasons=...`: tell the requester it is queued and at which position.
 - For other Discord work, use `dori job-id --repository {{HELIO_GITHUB_REPO}} --channel CHANNEL --source ORIGINAL_ID`; retain the returned job across wording, display names, queueing and retries. `adopt` also requires it. A forward's source is not request identity.
 - Completion markers live under durable state, bound to job/source/acceptance/revision. Choose cheap independent live checks for the requested finish. A verified PR handoff can finish without merge/restart. If a Done line includes its official receipt, run `dori completion KEY`; `/tmp` file existence is never proof. Inspect unconfirmed startup in place; preserve missing, unreadable, dirty or unpushed work and live agents.
-- `FOLLOWUP_LANE_REVIEW`: ask the owner `--option Resume --option Retire`. Resume: `dori resume KEY`. Retire (the owner's request): `dori abandon KEY --reason "retired in the stale-lane review"`. If it refuses because an agent is still live, report the pane instead of closing it yourself; if it refuses over unpushed work, ask the owner whether to keep that work in the worktree (`--with-unpushed`).
+- `FOLLOWUP_LANE_REVIEW`: inspect `dori show KEY`, `dori sync`, current completion evidence, questions and retained work. An idle session can release its slot with `dori reclaim KEY`; this checkpoints it without claiming completion, deleting files or authorizing new work. Ordinary idle hibernation and queued-demand reclamation do this automatically when eligible. Legacy job bindings remain unknown until verified from original authority. Keep busy workers, unanswered questions and explicitly paused work protected. Use "Worker incidents" for any actual owner decision; do not ask Resume/Retire before identifying the reason and recommending a specific action.
 - `FOLLOWUP_HOUSEKEEPING ... approve=...`: the first cleanup only reported what it would remove. Send the owner `helio housekeeping --last` in short form once and ask to approve; on yes run `helio housekeeping --approve-first-run`. Later runs report problems and retained worktrees, with a pointer to their reasons.
 - A lane that will never finish (its Done line can no longer pass, such as abandoned QA) is retired only on the owner's request: `dori abandon KEY --reason TEXT`. Add `--with-unpushed` only if the owner accepts leaving unpushed work in the kept worktree. It is recorded as abandoned, never done; `dori close` stays for finished work.
 - `helio health` lists problems only (backlog age, gaps, stuck lanes, worktrees, upkeep); include them in the greeting.
+
+## Worker incidents
+
+Read current execution before reporting a worker problem. `dori sync` separates
+the recorded work state from the authenticated engine observation. A terminal
+label or an open process does not prove an active turn. A paused goal with only
+passive monitors is still paused; suppress that false alarm rather than asking
+the owner to review it. Preserve an explicit pause until the owner requests a
+resume.
+
+Resolve the incident within existing authority when possible. For a blocked or
+uncertain incident, read the lane, its actual unfinished obligation and the
+relevant current issue, receipt, setting or error. Identify the concrete cause
+before proposing a repair. Name the affected task, what is unfinished, what you
+checked, the effect on the requester, and the specific action you recommend.
+Explain which checkpoint, worktree and pause will be retained. Distinguish an
+applied and verified repair from a proposal awaiting a decision.
+
+Ask only for the missing decision. Give a recommended action with its reason and
+one concrete next step after approval; use the existing question mechanism when
+approval is required. For a configuration block, name the setting and its
+non-secret observed state, propose a value only when the evidence supports it,
+and say which check will run next. For a failed receipt, identify the missing
+check and the scoped rerun you recommend. Do not end with "for review",
+"configuration blocker" or "unfinished task" while leaving the owner to discover
+the details. Do not repeat an unchanged incident or ask for permission to perform
+routine repairs already authorized.

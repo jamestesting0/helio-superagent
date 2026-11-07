@@ -2,7 +2,7 @@
 
 Shared by the root launcher (every start) and the root admin tool (deploy). Runs as root.
 """
-import grp, json, os, pwd, re, secrets, stat, sys, tempfile
+import fcntl, grp, hashlib, json, os, pwd, re, secrets, stat, sys, tempfile
 from pathlib import Path
 
 # Helio controls its home, so root must never follow a link there: every component is opened
@@ -62,6 +62,17 @@ def read_agent_file(HOME, rel):
 
 
 def refresh(HOME, account):
+    owner = pwd.getpwnam('james')
+    lock = Path(owner.pw_dir) / '.config/helio/helio.lock'
+    handle = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(handle, 'a') as stream:
+        if os.fstat(stream.fileno()).st_uid == 0:
+            os.fchown(stream.fileno(), owner.pw_uid, owner.pw_gid)
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        return refresh_locked(HOME, account)
+
+
+def refresh_locked(HOME, account):
     sys.path.insert(0,'/opt/helio-beta-service/packages')
     from dotenv import dotenv_values
     owner=pwd.getpwnam('james');base=Path('/home/james/.dori/elobot')
@@ -92,6 +103,31 @@ def refresh(HOME, account):
             os.replace(tmp,policy/name)
         finally:
             if os.path.exists(tmp):os.unlink(tmp)
+    snapshot_path = base / 'policy/policy.json'
+    snapshot = json.loads(snapshot_path.read_text())
+    public = snapshot.get('values')
+    forbidden = {'DORI_DISCORD_TOKEN', 'BOT_BETA_TOKEN', 'COC_API_PASSWORD', 'HELPER_API_KEY', 'HELIO_BETA_MONGO_URL'}
+    if (snapshot.get('version') != 1 or not isinstance(public, dict) or
+        any(not isinstance(key, str) or not isinstance(value, str) for key, value in public.items()) or
+        forbidden.intersection(public) or public.get('DORI_DISCORD_OWNER_ID') != owner_id or
+        snapshot.get('revision') != hashlib.sha256(json.dumps(public, sort_keys=True, separators=(',', ':')).encode()).hexdigest() or
+        any(public.get(key) != ','.join(lists[name]) for name, key in
+            (('trusted-users', 'HELIO_TRUSTED_USERS'), ('report-channels', 'HELIO_REPORT_CHANNELS'),
+             ('release-approvers', 'HELIO_RELEASE_APPROVERS')))):
+        raise RuntimeError('Owner policy snapshot is invalid; run helio update')
+    lane_settings = {'revision': snapshot['revision'], 'maxWorkers': int(public['HELIO_MAX_WORKERS']),
+                     'hibernateAfterMin': int(public['HELIO_HIBERNATE_AFTER_MIN'])}
+    for name, content in (('lane-settings.json', lane_settings), ('policy.json', snapshot)):
+        fd, tmp = tempfile.mkstemp(prefix='.' + name + '-', dir=policy)
+        try:
+            os.fchmod(fd, 0o644)
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(content, stream, sort_keys=True)
+                stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
+            os.replace(tmp, policy / name)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+    bind_policy_links(HOME)
     if not token or not re.fullmatch(r'\d{5,30}',owner_id) or any(not re.fullmatch(r'\d{5,30}',x) for x in allowed):raise RuntimeError('Owner Discord configuration is invalid')
     directory=Path('/etc/helio-release-service');release_gid=grp.getgrnam('helio-release').gr_gid
     fd,tmp=tempfile.mkstemp(prefix='.auth-',dir=directory)
@@ -104,4 +140,20 @@ def refresh(HOME, account):
     finally:
         if os.path.exists(tmp):os.unlink(tmp)
     return policy
+
+
+def bind_policy_links(HOME):
+    """Old wrappers follow stable directory publication instead of pinned file inodes."""
+    directory = agent_dir(HOME, '.dori/elobot')
+    try:
+        for name in ('trusted-users', 'release-approvers', 'report-channels'):
+            temporary = f'.{name}-{secrets.token_hex(6)}'
+            try:
+                os.symlink('policy/' + name, temporary, dir_fd=directory)
+                os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            finally:
+                try: os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError: pass
+    finally:
+        os.close(directory)
 

@@ -22,7 +22,9 @@ RUNBOOKS = ("discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-re
 PROFILE_RUNBOOKS = ("beta-maintenance-workflow.md", "oracle-restart-workflow.md")
 # Skills passed to the lead and every lane with `omo --skill`; installed under ~/.dori/elobot/skills.
 SKILLS = ("skills/karpathy-guidelines/SKILL.md",)
-VENDOR_FILES = ("LICENSE", "scripts/src/run.ts", "scripts/src/messenger/discord.ts", "scripts/src/messenger/http.ts")
+VENDOR_MANAGED = ("scripts/src/session-state.ts",)
+VENDOR_FILES = ("LICENSE", "scripts/src/run.ts", *VENDOR_MANAGED,
+                "scripts/src/messenger/discord.ts", "scripts/src/messenger/http.ts")
 MESSENGER = ("http.ts", "discord.ts")
 MANAGED = ("setup-prompt.md", "work-policy.md", *RUNBOOKS, "config.json", *EXECUTABLES, *HELPERS, *SKILLS)
 RETIRED = ("GUIDE.md", "channel-policy.env")
@@ -59,6 +61,16 @@ INBOUND_FILES = (
     # entry points and package
     "ack.ts", "blacklist.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "package.json", "recovery.ts",
     "patches/agent-messenger@2.40.0.patch",
+    # owner-side controller and isolated administration bridge
+    "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts",
+    "admin/editor.ts", "admin/interaction.ts", "admin/lane-session.ts", "admin/main.ts", "admin/manifest.ts", "admin/panels.ts",
+    "admin/protocol.ts", "admin/render.ts", "admin/render.test.ts", "admin/runtime.ts",
+    "admin/lane-records.ts", "admin/lane-evidence.ts", "admin/policy-records.ts", "admin/record-format.ts",
+    "admin/github-status.ts",
+    "admin/transport.ts", "admin/transport.test.ts", "admin/registration.ts", "admin/registration.test.ts", "admin/command-schema.ts",
+    "admin/command-sync.ts", "admin/command-sync-state.ts", "admin/command-sync.test.ts",
+    "admin/main.test.ts", "admin/fixtures/main-preload.ts",
+    "admin/runtime-access.ts", "admin/runtime-mutations.ts", "admin/runtime-records.ts", "admin/runtime-state.ts", "admin/runtime-recovery.ts",
     # discord
     "discord/rest-cache.test.ts", "discord/rest.test.ts", "discord/rest.ts",
     # intake
@@ -68,6 +80,7 @@ INBOUND_FILES = (
     "intake/preceding.test.ts", "intake/preceding.ts", "intake/recent-ids.test.ts", "intake/recent-ids.ts", "intake/turns.test.ts", "intake/turns.ts",
     "intake/watched-channels.ts",
     "intake/source-proof.ts", "intake/source-proof.test.ts",
+    "intake/runtime-policy.ts", "intake/runtime-policy.test.ts",
     # delivery
     "delivery/context-render.ts", "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
     "delivery/expiry.ts", "delivery/monitor-summary.ts", "delivery/pending-reminder.ts",

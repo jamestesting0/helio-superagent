@@ -1,4 +1,5 @@
 import { insideAllowed } from "../intake/filter.ts";
+import { policyValues } from "../intake/runtime-policy.ts";
 
 const API = "https://discord.com/api/v10";
 
@@ -43,9 +44,7 @@ export function cachedReads(rest: Rest): Rest {
   };
 }
 
-export function discordRest(token: string): Rest {
-  const ignored = new Set((process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
-  if ([...ignored].some(id => !/^\d+$/.test(id))) throw new TypeError("Invalid DORI_DISCORD_IGNORED_CHANNELS");
+export function discordRest(token: string, options: { readonly allowIgnoredMetadata?: boolean; readonly metadataActor?: string } = {}): Rest {
   const raw: Rest = async <T>(path: string, init: { method?: string; body?: unknown; retryRateLimit?: boolean } = {}): Promise<T> => {
     const method = init.method ?? "GET";
     for (let attempt = 1; ; attempt++) {
@@ -68,10 +67,14 @@ export function discordRest(token: string): Rest {
     }
   };
   return async <T>(path: string, init?: { method?: string; body?: unknown; retryRateLimit?: boolean }): Promise<T> => {
+    const ignored = new Set((policyValues().DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
+    if ([...ignored].some(id => !/^\d+$/.test(id))) throw new TypeError("Invalid DORI_DISCORD_IGNORED_CHANNELS");
     const channel = /^\/channels\/([0-9]+)(?:\/|$)/.exec(path)?.[1];
-    if (channel && ignored.size) {
+    const metadata = channel !== undefined && (init?.method ?? "GET") === "GET" && path === `/channels/${channel}`;
+    const membership = channel !== undefined && options.metadataActor !== undefined && (init?.method ?? "GET") === "GET" &&
+      path === `/channels/${channel}/thread-members/${options.metadataActor}`;
+    if (channel && ignored.size && !(options.allowIgnoredMetadata && (metadata || membership))) {
       if (ignored.has(channel)) throw new IgnoredChannelError(channel);
-      const metadata = (init?.method ?? "GET") === "GET" && path === `/channels/${channel}`;
       if (!metadata && await insideAllowed(channel, ignored,
         async id => (await raw<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined)) {
         throw new IgnoredChannelError(channel);

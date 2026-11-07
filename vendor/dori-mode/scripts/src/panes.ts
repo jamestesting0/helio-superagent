@@ -1,4 +1,5 @@
 import type { Clock, Runner } from "./run.ts";
+import { paneExecution, type SessionExecution } from "./session-state.ts";
 
 export type Pane = {
   readonly pane_id: string;
@@ -8,6 +9,7 @@ export type Pane = {
   readonly agent_status?: string;
   readonly title?: string;
   readonly cwd?: string;
+  readonly execution?: SessionExecution;
 };
 
 export class UnsafeTextError extends Error {}
@@ -15,7 +17,12 @@ export class UnsafeTextError extends Error {}
 export const listPanes = async (run: Runner): Promise<Pane[]> => {
   const r = await run(["herdr", "pane", "list"]);
   if (r.code !== 0) throw new Error(`herdr pane list failed: ${r.err || r.out}`);
-  return (JSON.parse(r.out) as { result: { panes: Pane[] } }).result.panes;
+  const panes = (JSON.parse(r.out) as { result: { panes: Pane[] } }).result.panes;
+  return Promise.all(panes.map(async pane => {
+    if (!pane.agent) return pane;
+    const execution = await paneExecution(run, pane.pane_id);
+    return execution ? { ...pane, agent_status: execution.status, execution } : pane;
+  }));
 };
 
 export const readScreen = async (run: Runner, pane: string, lines?: number): Promise<string> =>
@@ -30,7 +37,9 @@ export const agentStatus = async (run: Runner, pane: string): Promise<string | u
 /** Like agentStatus, but a failed lookup comes back as its error text instead of being swallowed. */
 export const statusLookup = async (run: Runner, pane: string): Promise<{ readonly status?: string; readonly error?: string }> => {
   try {
-    return { status: await agentStatus(run, pane) };
+    const current = (await listPanes(run)).find(item => item.pane_id === pane);
+    return current?.execution?.status === "unknown" ? { error: current.execution.reason ?? "Session execution is unknown" } :
+      { status: current?.agent_status };
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }

@@ -15,7 +15,7 @@ if [[ "${1:-}" == update ]]; then
   # Never adopt a baseline or opt in to replacing the host launcher here.
   exec python3 "$updater" --home "$HOME" "${update_args[@]}"
 fi
-admin=(/mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- /usr/bin/python3 /opt/helio-beta-service/scripts/helio_isolated_admin.py)
+admin=(/mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root --exec /usr/bin/python3 -I /opt/helio-beta-service/scripts/helio_isolated_admin.py)
 if [[ "${1:-}" == doctor ]]; then
   case "$#:${2:-}" in
     1:|2:--json) exec "${admin[@]}" "$@" </dev/null ;;
@@ -42,6 +42,7 @@ case "${1:-}" in
     if systemctl is-active --quiet helio-isolated.scope; then echo 'Isolated Helio workspace: running'; else echo 'Isolated Helio workspace: stopped'; fi
     if systemctl is-active --quiet helio-beta-maintenance.service; then echo 'Protected beta service: running'; else echo 'Protected beta service: stopped'; fi
     if systemctl is-active --quiet helio-release.service; then echo 'Oracle release service: running'; else echo 'Oracle release service: stopped'; fi
+    (exec "${admin[@]}" commands-status </dev/null) || echo 'Administration status: unavailable'
     exit 0 ;;
   version) exec "${admin[@]}" status </dev/null ;;
   restart) exec "${admin[@]}" restart </dev/null ;;
@@ -57,6 +58,6 @@ if systemctl is-active --quiet helio-isolated.scope; then
   exit 2
 fi
 if [[ -n "$mode" ]]; then
-  exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- systemd-run --scope --quiet --unit helio-isolated /usr/bin/python3 /opt/helio-beta-service/scripts/helio_isolated_launcher.py "$mode"
+  exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root --exec systemd-run --scope --quiet --unit helio-isolated /usr/bin/python3 -I /opt/helio-beta-service/scripts/helio_isolated_launcher.py "$mode"
 fi
-exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root -- systemd-run --scope --quiet --unit helio-isolated /usr/bin/python3 /opt/helio-beta-service/scripts/helio_isolated_launcher.py
+exec /mnt/c/Windows/System32/wsl.exe -d Ubuntu-22.04 -u root --exec systemd-run --scope --quiet --unit helio-isolated /usr/bin/python3 -I /opt/helio-beta-service/scripts/helio_isolated_launcher.py

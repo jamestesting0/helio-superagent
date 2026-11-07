@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { classify, guildChannelAllowed, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./filter.ts";
 import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "../discord/rest.ts";
+import { policyValues } from "./runtime-policy.ts";
 
 /** Channel trust never grants sender authority or adds a channel to the allowlist. */
 export function filterConfig(
@@ -9,19 +10,20 @@ export function filterConfig(
   workingAnchor?: FilterConfig["workingAnchor"], lastOwnerPost?: FilterConfig["lastOwnerPost"],
   recentlyTalked?: FilterConfig["recentlyTalked"],
 ): FilterConfig {
+  const current = policyValues(values);
   const required = (name: string) => {
-    const value = values[name]?.trim();
+    const value = current[name]?.trim();
     if (!value) throw new TypeError(`Missing ${name}`);
     return value;
   };
   const csv = (name: string) => {
-    const ids = (values[name] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+    const ids = (current[name] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
     if (ids.some((id) => !/^\d+$/.test(id))) throw new TypeError(`Invalid ${name}`);
     return new Set(ids);
   };
   const trustedChannels = csv("DORI_DISCORD_TRUSTED_CHANNELS");
   const normalChannels = csv("DORI_DISCORD_NORMAL_CHANNELS");
-  const trustEntries = values.DORI_DISCORD_TRUSTED_CHANNELS?.trim();
+  const trustEntries = current.DORI_DISCORD_TRUSTED_CHANNELS?.trim();
   if (trustEntries && trustEntries.split(",").map((id) => id.trim()).length !== trustedChannels.size) {
     throw new TypeError("Invalid or overlapping DORI_DISCORD_TRUSTED_CHANNELS");
   }
@@ -29,19 +31,19 @@ export function filterConfig(
     throw new TypeError("Overlapping DORI_DISCORD_NORMAL_CHANNELS and DORI_DISCORD_TRUSTED_CHANNELS");
   }
   let bugReportSource: FilterConfig["bugReportSource"];
-  if (values.DORI_DISCORD_BUG_REPORT_SOURCE !== undefined) {
-    const [authorId, channelId, ...extra] = values.DORI_DISCORD_BUG_REPORT_SOURCE.split(":");
+  if (current.DORI_DISCORD_BUG_REPORT_SOURCE !== undefined) {
+    const [authorId, channelId, ...extra] = current.DORI_DISCORD_BUG_REPORT_SOURCE.split(":");
     if (!authorId || !channelId || extra.length || !/^\d+$/.test(authorId) || !/^\d+$/.test(channelId)) {
       throw new TypeError("Invalid DORI_DISCORD_BUG_REPORT_SOURCE");
     }
     bugReportSource = { authorId, channelId };
   }
   required("DORI_DISCORD_ALLOWED");
-  const answerForOwner = values.HELIO_ANSWER_FOR_OWNER?.trim() || "on";
-  const presentMinutes = values.HELIO_OWNER_PRESENT_MINUTES?.trim() || "10";
+  const answerForOwner = current.HELIO_ANSWER_FOR_OWNER?.trim() || "on";
+  const presentMinutes = current.HELIO_OWNER_PRESENT_MINUTES?.trim() || "10";
   if (answerForOwner !== "on" && answerForOwner !== "off") throw new TypeError("Invalid HELIO_ANSWER_FOR_OWNER");
   if (!/^[1-9][0-9]{0,4}$/.test(presentMinutes)) throw new TypeError("Invalid HELIO_OWNER_PRESENT_MINUTES");
-  const scopeCategory = values.DORI_DISCORD_SCOPE_CATEGORY?.trim();
+  const scopeCategory = current.DORI_DISCORD_SCOPE_CATEGORY?.trim();
   if (scopeCategory && !/^\d+$/.test(scopeCategory)) throw new TypeError("Invalid DORI_DISCORD_SCOPE_CATEGORY");
   return {
     ownerId: required("DORI_DISCORD_OWNER_ID"),

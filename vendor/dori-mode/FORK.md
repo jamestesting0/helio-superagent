@@ -34,6 +34,9 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 |---|---|---|
 | `scripts/src/cli.ts`, `scripts/src/messenger/discord.ts` | `dori send discord --to user:ID` (or the owner ID) opens the DM channel first (`Discord.openDm`) | Discord rejects posting to a user ID as a channel (404 Unknown Channel), so DMs to the owner failed |
 | `scripts/src/host-guard.ts` | Disk free is measured at the home directory instead of `/` | Inside a sandbox `/` is a small in-memory root, which made the guard hold every lane |
+| `scripts/src/config.ts`, `cli.ts` | Optional `runtimeConfigFile` supplies worker capacity/hibernation; watch reloads it per tick and records the applied revision with process identity | Owner-published setting changes must reach admission and hibernation without restarting a lead |
+| `scripts/src/session-state.ts`, `panes.ts`, `sync.ts` | Bind foreground Senpi PIDs/session identities to authenticated current TUI lifecycle observations; passive monitor waits are idle and unavailable observations remain unknown | Herdr's persistent process label reported inactive workers as working and generated false paused-worker alerts |
+| `scripts/src/reclaim.ts`, `lifecycle.ts`, `admission.ts`, `registry.ts`, `cli.ts` | Require authenticated idle ownership before checkpointing or releasing a worker slot, including legacy records and partial-cleanup retries; retain all work and unresolved completion, and reclaim under queued demand | Idle sessions and stale pane references exhausted capacity; process labels or descendant-session guesses cannot authorize closing a worker |
 
 Tests: `scripts/test/helio-host.test.ts`.
 
@@ -70,7 +73,7 @@ monitors rather than repeating setup or verification without changed evidence.
 | Files | Change |
 |---|---|
 | `scripts/src/admission.ts`, `launch.ts`, `routing.ts` | `launch` enforces `maxWorkers` and the host guard under a launch lock, failing closed on an unknown pane count or host sample, and queues the rest durably (`LAUNCH_QUEUED`; owner priority first). One open lane per `--job` (`LANE_EXISTS`); a job's hibernated or closed lane is resumed in its recorded session. A failed attempt's key relaunches in place (fixes the stale-brief `EEXIST`). The session id is recorded at startup. |
-| `scripts/src/lifecycle.ts`, `cli.ts` | `watch` also finishes `cleanup-pending` closes, hibernates idle lanes (`hibernateAfterMin`, recorded session, no open question) and drains the launch queue. |
+| `scripts/src/lifecycle.ts`, `cli.ts` | `watch` also finishes `cleanup-pending` closes, hibernates verified idle lanes (`hibernateAfterMin`, authenticated ownership, recorded session, no open question) and drains the launch queue. |
 | `scripts/src/done-flow.ts` | A close whose tab survives records `cleanup-pending` instead of a closed lane with a live tab. |
 | `scripts/src/registry.ts` | Closed lanes move to `lanes/archive/`; hot loops read active records only. |
 | `scripts/src/reap.ts` | `stale` and `reap-worktrees`: worktrees go 3 days after the lane's PR settles, never with unpushed work or without a lane record. Replaces "never delete worktrees automatically" (owner decision). |

@@ -22,6 +22,19 @@ class DeployPlanTests(unittest.TestCase):
                 result = self.needs(kit, installed)
                 self.assertEqual((result["needs"], result["monitors_changed"]), ("monitors", True))
 
+    def test_owner_administration_changes_are_distinct_from_shared_runtime_changes(self):
+        for path, need, administration in (
+            ("@inbound/admin/command-sync.ts", "none", True),
+            ("@inbound/admin/controller.ts", "none", True),
+            ("@inbound/admin/protocol.ts", "monitors", True),
+            ("@inbound/admin/runtime-access.ts", "monitors", True),
+            ("@inbound/admin/command-sync.test.ts", "none", False),
+        ):
+            with self.subTest(path=path):
+                result = self.needs(installed=[path])
+                self.assertEqual(result["needs"], need)
+                self.assertEqual(result["admin_controller_changed"], administration)
+
     def test_instructions_settings_and_dori_need_a_lead_restart(self):
         for kit, installed, env in (([], ["work-policy.md"], False), ([], ["config.json"], False),
                                     (["vendor/dori-mode/scripts/src/cli.ts"], [], False), ([], [], True)):

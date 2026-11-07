@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { policyValues } from "../intake/runtime-policy.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -18,10 +19,11 @@ function positive(value: string | undefined, fallback: number, name: string): nu
 }
 
 export function moderationSettings(env: Readonly<Record<string, string | undefined>>): ModerationSettings {
+  const current = policyValues(env);
   return {
-    strikes: positive(env.HELIO_AUTOBLOCK_STRIKES, 5, "HELIO_AUTOBLOCK_STRIKES"),
-    windowMs: positive(env.HELIO_AUTOBLOCK_WINDOW_H, 12, "HELIO_AUTOBLOCK_WINDOW_H") * HOUR,
-    pingsPerHour: positive(env.HELIO_PING_LIMIT_PER_HOUR, 20, "HELIO_PING_LIMIT_PER_HOUR"),
+    strikes: positive(current.HELIO_AUTOBLOCK_STRIKES, 5, "HELIO_AUTOBLOCK_STRIKES"),
+    windowMs: positive(current.HELIO_AUTOBLOCK_WINDOW_H, 12, "HELIO_AUTOBLOCK_WINDOW_H") * HOUR,
+    pingsPerHour: positive(current.HELIO_PING_LIMIT_PER_HOUR, 20, "HELIO_PING_LIMIT_PER_HOUR"),
   };
 }
 
@@ -50,7 +52,7 @@ export type StrikeEvidence = { readonly message_id: string; readonly channel_id:
 
 /** Blacklist, strikes and ping throttle share the delivery database so a strike commits with its dismissal. */
 export class Moderation {
-  constructor(private readonly db: Database, readonly settings: ModerationSettings = moderationSettings(process.env)) {
+  constructor(private readonly db: Database, private readonly configured?: ModerationSettings) {
     db.exec(`CREATE TABLE IF NOT EXISTS blocked_users (
       user_id TEXT PRIMARY KEY, source TEXT NOT NULL CHECK (source IN ('owner', 'auto')), reason TEXT NOT NULL,
       created_by TEXT NOT NULL, evidence_message_id TEXT, evidence_channel_id TEXT, created_at INTEGER NOT NULL,
@@ -74,6 +76,10 @@ export class Moderation {
       // Keep block evidence after strikes are pruned; concurrent openers must observe this migration atomically.
       if (!columns("blocked_users").has("strike_evidence")) db.exec("ALTER TABLE blocked_users ADD COLUMN strike_evidence TEXT");
     }).immediate();
+  }
+
+  get settings(): ModerationSettings {
+    return this.configured ?? moderationSettings(process.env);
   }
 
   /**

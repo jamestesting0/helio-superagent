@@ -16,11 +16,22 @@ class QuestionTests(unittest.TestCase):
   self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
   self.m=runpy.run_path(str(SCRIPT));self.g=self.m['create_question'].__globals__
   self.state=Path(self.temp.name);self.patcher=patch.dict(self.g,{'STATE':self.state,'OWNER':'99','TOKEN':'fake','ALLOWED':{'100'}});self.patcher.start();self.addCleanup(self.patcher.stop)
+  home=patch.dict(os.environ,{'HOME':str(self.state)});home.start();self.addCleanup(home.stop)
   self.db=self.m['db_connect']();self.addCleanup(self.db.close)
   self.now=datetime.fromisoformat('2026-11-03T12:00:00+00:00').timestamp()
   self.clock=patch('time.time',return_value=self.now)
   self.clock.start()
   self.addCleanup(self.clock.stop)
+ def test_staff_answers_use_published_trust_instead_of_the_watchers_startup_environment(self):
+  policy=self.state/'.dori/elobot/policy/policy.json';policy.parent.mkdir(parents=True)
+  policy.write_text(json.dumps({'version':1,'revision':'a'*64,'values':{'HELIO_TRUSTED_USERS':'77'}}))
+  with patch.dict(os.environ,{'DORI_DISCORD_TRUSTED_IDS':'77'}):
+   self.assertTrue(self.m['may_answer']({'audience':'staff'},'77'))
+   replacement=policy.with_suffix('.next')
+   replacement.write_text(json.dumps({'version':1,'revision':'b'*64,'values':{'HELIO_TRUSTED_USERS':'66'}}))
+   replacement.replace(policy)
+   self.assertFalse(self.m['may_answer']({'audience':'staff'},'77'))
+   self.assertTrue(self.m['may_answer']({'audience':'staff'},'66'))
  def pending_answer(self,**changes):
   message={'message_id':'400','channel_id':'200','reply_to':'300','author_id':'99','role':'OWNER_REQUEST','scope':'may-request-work','content':'Use option one','sent_at':'2026-11-03T12:00:00Z','preparation_complete':True}
   message['discord_origin']={'version':1,'message_id':'400','channel_id':'200','author_id':'99','guild_id':None,'bot':False,'webhook_id':None,'mention_ids':[],'reply_to':'300','reply_author_id':'88'}

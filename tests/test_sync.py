@@ -1,5 +1,5 @@
 from pathlib import Path
-import json,os,runpy,sys,tempfile,unittest
+import json,os,runpy,subprocess,sys,tempfile,unittest
 from unittest.mock import patch
 from contextlib import redirect_stdout
 from io import StringIO
@@ -67,6 +67,24 @@ class SyncTests(unittest.TestCase):
   quiet(SYNC['run'],self.home,'apply')
   self.assertTrue(path.stat().st_mode & 0o100)
   self.assertEqual(path.read_bytes(),content)
+ def test_update_repairs_its_own_linked_dori_entrypoint_but_preserves_other_installations(self):
+  quiet(SYNC['run'],self.home,'adopt')
+  kit=self.home/'kit'; src=kit/'vendor/dori-mode/scripts/src'; src.mkdir(parents=True)
+  (kit/'discord-inbound').symlink_to(ROOT/'discord-inbound',target_is_directory=True)
+  (src/'messenger').symlink_to(ROOT/'vendor/dori-mode/scripts/src/messenger',target_is_directory=True)
+  (src/'session-state.ts').symlink_to(ROOT/'vendor/dori-mode/scripts/src/session-state.ts')
+  launcher=src/'cli.ts'; launcher.write_text('#!/bin/sh\nprintf DORI_READY\n'); launcher.chmod(0o600)
+  binary=self.home/'.bun/bin/dori'; binary.parent.mkdir(parents=True); binary.symlink_to(launcher)
+  with patch.dict(SYNC['run'].__globals__,{'ROOT':kit}):
+   quiet(SYNC['run'],self.home,'preview')
+   self.assertFalse(os.access(launcher,os.X_OK))
+   quiet(SYNC['run'],self.home,'apply')
+   self.assertEqual(subprocess.run([str(binary)],capture_output=True,text=True,check=True).stdout,'DORI_READY')
+   other=self.home/'other-dori'; other.write_text('keep other installation'); other.chmod(0o600)
+   binary.unlink(); binary.symlink_to(other)
+   quiet(SYNC['run'],self.home,'apply')
+   self.assertFalse(os.access(other,os.X_OK))
+   self.assertEqual(other.read_text(),'keep other installation')
  def test_preserves_private_files_and_detects_changed_managed_files(self):
   quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
   self.assertEqual((self.dst/'env').read_text(),'private'); self.assertEqual((self.dst/'trusted-users').read_text(),'123')

@@ -1,4 +1,5 @@
 import { MESSAGE_CHANNEL_TYPES, type ApiChannel, type Rest } from "../discord/rest.ts";
+import { policyValues } from "../intake/runtime-policy.ts";
 
 export function excludedChannels(value: string): Set<string> {
   const ids = value.split(",").map(s => s.trim()).filter(Boolean);
@@ -11,8 +12,9 @@ export function learningAllowed(channelId: unknown, allowed: ReadonlySet<string>
 }
 /** Explicit roots supplement, never weaken, the inbound allowlist-minus-trusted exclusion. */
 export function normalChannels(values: Readonly<Record<string, string | undefined>>): Set<string> {
+  const current = policyValues(values);
   const csv = (name: string) => {
-    const ids = (values[name] ?? "").split(",").map(id => id.trim()).filter(Boolean);
+    const ids = (current[name] ?? "").split(",").map(id => id.trim()).filter(Boolean);
     if (ids.some(id => !/^\d+$/.test(id))) throw new TypeError(`invalid ${name}`);
     return new Set(ids);
   };

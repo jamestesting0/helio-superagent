@@ -86,6 +86,43 @@ test("a claim supplies recent resolution context but only an explicit reopen res
   });
 });
 
+test("administration reopens the selected topic rather than the person's most recent resolution", async () => {
+  await withStore(store => {
+    const first = store.open("100", "99", "9", "selected topic", NOW);
+    store.close("100", "99", "answered", NOW + 1, undefined, "9");
+    store.open("100", "99", "10", "newer topic", NOW + 2);
+    store.close("100", "99", "answered", NOW + 3, undefined, "10");
+    const selected = store.byAnchor("100", "99", "9");
+    if (!selected) throw new Error("Selected topic disappeared");
+    store.administer("reopen-selected", "77", selected, { kind: "reopen" }, NOW + 4);
+    expect(store.get("100", "99")?.opened_at).toBe(first.opened_at);
+    expect(store.byAnchor("100", "99", "10")?.status).toBe("resolved");
+  });
+});
+
+test("a changed conversation rejects an old administration preview without erasing newer input", async () => {
+  await withStore(store => {
+    const preview = store.open("100", "99", "9", "question", NOW);
+    store.claim("100", "99", entry("10"), NOW + 1);
+    expect(() => store.administer("old-preview", "77", preview, { kind: "close", outcome: "answered" }, NOW + 2))
+      .toThrow("Conversation changed");
+    expect(store.transcript("100", "99").map(item => item.message_id)).toEqual(["10"]);
+    expect(store.get("100", "99")?.status).toBe("open");
+  });
+});
+
+test("replayed administration returns its receipt and cannot repeat a state change", async () => {
+  await withStore(store => {
+    const row = store.open("100", "99", "9", "question", NOW);
+    const held = store.administer("hold-once", "77", row, { kind: "hold", reason: "Beta dependency" }, NOW + 1);
+    const repeat = store.administer("hold-once", "77", row, { kind: "hold", reason: "Beta dependency" }, NOW + 2);
+    expect(repeat.revision).toBe(held.revision);
+    expect(store.get("100", "99")?.revision).toBe(held.revision);
+    expect(() => store.administer("hold-once", "77", row, { kind: "close", outcome: "answered" }, NOW + 3))
+      .toThrow("already used");
+  });
+});
+
 test("resolved rows archive at seven days and are deleted thirty days after resolving, even when upkeep was absent", async () => {
   await withStore((store) => {
     store.open("100", "99", "9", "retention", NOW);

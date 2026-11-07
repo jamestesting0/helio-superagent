@@ -18,8 +18,11 @@ import { excludedChannels, learningAllowed, learningChannelAllowed, normalChanne
 import { contextReplayAllowed } from "./learning/context-replay.ts";
 import { prepareMessageBody } from "./messages/forwarded.ts";
 import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
-import { DiscordRestError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES } from "./discord/rest.ts";
+import { DiscordRestError, IgnoredChannelError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES, type ApiChannel } from "./discord/rest.ts";
 import { contextSummary, monitorLine } from "./delivery/monitor-summary.ts";
+import { watch } from "node:fs";
+import { join } from "node:path";
+import { acknowledgePolicy, policyValues, runtimePolicy } from "./intake/runtime-policy.ts";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -31,11 +34,6 @@ function requireEnv(name: string): string {
 }
 
 const rest = discordRest(requireEnv("DORI_DISCORD_TOKEN"));
-const ids = requireEnv("DORI_DISCORD_CONTEXT").split(",").map((s) => s.trim()).filter(Boolean);
-const excluded = excludedChannels(process.env.DORI_DISCORD_CONTEXT_EXCLUDED ?? "");
-const ignored = excludedChannels(process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "");
-for (const id of ignored) excluded.add(id);
-for (const id of normalChannels(process.env)) excluded.add(id);
 const stateDir = requireEnv("DORI_STATE_DIR");
 const statePath = `${stateDir}/discord-context.json`;
 const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`);
@@ -45,8 +43,19 @@ const announced = new RecentIds();
 const FIRST_READ: Caps = { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxPerChannel: 40, minKeep: 15 };
 const LATER_READ: Caps = { maxAgeMs: 30 * 24 * 60 * 60 * 1000, maxPerChannel: 500 };
 
-const fetchPage: FetchPage = (channelId, before) =>
-  rest<RestMessage[]>(`/channels/${channelId}/messages?limit=${PAGE_SIZE}${before ? `&before=${before}` : ""}`);
+function currentExclusions(): Set<string> {
+  const values = policyValues();
+  return new Set([...excludedChannels(values.DORI_DISCORD_CONTEXT_EXCLUDED ?? ""),
+    ...excludedChannels(values.DORI_DISCORD_IGNORED_CHANNELS ?? ""), ...normalChannels(values)]);
+}
+
+const fetchPage: FetchPage = async (channelId, before) => {
+  const metadata = await rest<ApiChannel>(`/channels/${channelId}`);
+  if (!await learningChannelAllowed(metadata, currentExclusions(), rest)) {
+    throw new IgnoredChannelError(channelId);
+  }
+  return rest<RestMessage[]>(`/channels/${channelId}/messages?limit=${PAGE_SIZE}${before ? `&before=${before}` : ""}`);
+};
 
 let skipped = 0;
 const skip = (id: string, err: unknown) => {
@@ -55,6 +64,11 @@ const skip = (id: string, err: unknown) => {
 };
 
 async function refresh(): Promise<void> {
+  const revision = runtimePolicy()?.revision;
+  const values = policyValues();
+  const ids = (values.DORI_DISCORD_CONTEXT ?? requireEnv("DORI_DISCORD_CONTEXT")).split(",").map(s => s.trim()).filter(Boolean);
+  const excluded = currentExclusions();
+  const ignored = excludedChannels(values.DORI_DISCORD_IGNORED_CHANNELS ?? "");
   const lastRead = await LastSeen.load(statePath);
   skipped = 0;
   await sweepOrphanAttachments(delivery, stateDir, "context");
@@ -92,7 +106,7 @@ async function refresh(): Promise<void> {
       continue;
     }
     try {
-      if (!await contextReplayAllowed(item.payload, process.env, rest)) { withheld++; continue; }
+      if (!await contextReplayAllowed(item.payload, policyValues(), rest)) { withheld++; continue; }
     } catch (error) {
       if (!(error instanceof DiscordRestError)) throw error;
       skip(item.id, error); withheld++; continue;
@@ -118,11 +132,13 @@ async function refresh(): Promise<void> {
         if (id !== undefined) console.log(monitorLine(`CONTEXT_GAP ${JSON.stringify({ id, channel_id: channel.id, after, before, read: "ack gaps", ack: `ack gap ${id}` })}`));
       }
       for (const msg of messages) {
+        if (runtimePolicy()?.revision !== revision) return;
         if (msg.author.bot || ("webhook_id" in msg && msg.webhook_id !== undefined) ||
             delivery.moderation.isBlocked(msg.author.id)) continue;
         if (!requestMessage(msg)) continue;
         if (delivery.contains("context", msg.id)) continue;
         const body = await prepareMessageBody(msg, `${stateDir}/attachments/context`);
+        if (runtimePolicy()?.revision !== revision) return;
         const payload = JSON.stringify({
           message_id: msg.id,
           message_type: msg.type,
@@ -149,6 +165,7 @@ async function refresh(): Promise<void> {
       const newest = messages.at(-1);
       if (newest) await lastRead.advance(channel.id, newest.id);
     } catch (err) {
+      if (err instanceof IgnoredChannelError) continue;
       if (!(err instanceof DiscordRestError)) throw err;
       skip(channel.id, err);
     }
@@ -162,9 +179,24 @@ async function refresh(): Promise<void> {
 
 try {
   do {
+    const revision = runtimePolicy()?.revision;
     await refresh();
     if (!process.argv.includes("--loop")) break;
-    await Bun.sleep(30 * 60 * 1000);
+    if (runtimePolicy()?.revision !== revision) continue;
+    acknowledgePolicy("learning", revision);
+    if (revision === undefined) {
+      await Bun.sleep(30 * 60 * 1000);
+      continue;
+    }
+    await new Promise<void>(resolve => {
+      const directory = process.env.DORI_POLICY_DIR ?? join(process.env.HOME ?? "", ".dori/elobot/policy");
+      const timer = setTimeout(() => { watcher?.close(); resolve(); }, 30 * 60 * 1000);
+      const watcher = watch(directory, { persistent: false }, (_event, name) => {
+        if (name !== "policy.json") return;
+        clearTimeout(timer); watcher?.close(); resolve();
+      });
+      if (runtimePolicy()?.revision !== revision) { clearTimeout(timer); watcher?.close(); resolve(); }
+    });
   } while (process.argv.includes("--loop"));
 } catch (err) {
   console.error(monitorLine(`CONTEXT_ERROR ${String(err)}`));

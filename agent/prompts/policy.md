@@ -80,7 +80,7 @@ When a task follows a Discord reply, use the permitted inbound `reply_context` a
 
 ## Browser lifecycle
 
-For browser work only, read ~/.dori/elobot/docs/discord-qa-workflow.md, "Browser lifecycle". Use the existing dedicated WSL Chrome Helio/approved QA profiles through BrowserSkill. Verify profile and Discord identity; no personal/default/ephemeral profiles, desktop input or OmO preview. Diagnose readiness with the supported tools before escalating a real access/connection failure. Never bypass denial, close others' profiles or broad-kill processes. Clean up owned sessions even on failure; defer profile closure while another session is active.
+For browser work only, read ~/.dori/elobot/docs/discord-qa-workflow.md, "Browser lifecycle". Use `helio browser` and BrowserSkill with QA profiles; the helper handles Wayland and defaults to qa-a. No direct Chrome launches or legacy fallback. Verify profile and Discord identity; no personal/default/ephemeral profiles, desktop input or OmO preview. Diagnose readiness with the supported tools before escalating a real access/connection failure. Never bypass denial, close others' profiles or broad-kill processes. Clean up owned sessions even on failure; defer profile closure while another session is active.
 
 ## Live beta testing
 

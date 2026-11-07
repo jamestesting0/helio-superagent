@@ -246,6 +246,7 @@ class MonitorReloadTests(unittest.TestCase):
                     )
                     argv.extend(["watch", "--interval", "1800"])
                 else:
+                    (self.home / "helio_runtime_policy.py").write_text((ROOT / "scripts/helio_runtime_policy.py").read_text())
                     argv.extend(["watch", "--lane", "lane-one"])
                 process = self.launch(argv)
                 self.assertEqual(self.line(process), f"START old {process.pid}")

@@ -1,0 +1,32 @@
+[Unit]
+Description=Helio Discord administration Gateway controller
+After=network-online.target helio-admin.service
+Requires=helio-admin.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=james
+Group=james
+Environment=HOME=/home/james
+Environment=PYTHONNOUSERSITE=1
+ExecStart=/opt/helio-beta-service/python/bin/python3.12 -I /opt/helio-beta-service/scripts/helio_admin_controller.py serve
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+StateDirectory=helio-admin-controller
+StateDirectoryMode=0700
+Environment=HELIO_ADMIN_STATE_DIR=/var/lib/helio-admin-controller
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target

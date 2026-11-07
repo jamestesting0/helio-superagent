@@ -216,7 +216,10 @@ def main() -> int:
         try:
             gh.log_milestones(args.issue, facts["events"])
         except ISSUES["Refused"] as error:
-            print(f"ISSUE_LOG_PENDING issue={args.issue}: progress comment retries on the next sync: {error}")
+            detail = SYNC["safe_detail"](str(error))
+            print(f"ISSUE_LOG_PENDING issue={args.issue}: progress comment retries on the next sync: {detail}")
+            print("ISSUE_SYNC_PARTIAL " + json.dumps({"category": SYNC["failure_kind"](detail),
+                "stage": error.stage, "detail": detail, "uncertain": error.uncertain}))
         for warning in facts["warnings"]:
             print(f"ISSUE_LINK_REVIEW issue={args.issue}: {warning}")
         if args.command == "update":
@@ -224,7 +227,11 @@ def main() -> int:
             sync["schedule"](REPO, args.issue)
         print(f"ISSUE_UPDATED issue={args.issue} operation={operation}")
     except (ISSUES["Refused"], FOLLOWUP["Refused"], ISSUE_LINK["Refused"], OSError, ValueError, sqlite3.Error) as error:
-        print(f"ISSUE_UPDATE_PENDING {error}", file=sys.stderr)
+        detail = SYNC["safe_detail"](str(error))
+        print(f"ISSUE_UPDATE_PENDING {detail}", file=sys.stderr)
+        print("ISSUE_SYNC_FAILURE " + json.dumps({"category": SYNC["failure_kind"](detail),
+            "stage": getattr(error, "stage", "issue_sync"), "detail": detail,
+            "uncertain": getattr(error, "uncertain", False)}), file=sys.stderr)
         return 2
     return 0
 

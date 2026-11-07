@@ -27,7 +27,8 @@ foundation:
 | **Conversations that finish the right request** | Separate topics retain context. Final answers, progress reports and requester questions have distinct states, so an old bot reply does not leave a completed request waiting or start an inappropriate reminder. |
 | **GitHub issues that stay current** | Helio clarifies reports, checks existing work and maintains the issue body as the current scope. Public comments record changes without becoming new instructions to the bot. |
 | **Fewer repeated approvals** | An authorized implementation request includes the verified PR. A clearly scoped merge-and-restart request can be one decision. Choices use Discord buttons; custom answers come through ordinary replies. |
-| **Bounded coding sessions** | Worker caps, host guards and a durable priority queue control concurrency. Explicit stable jobs prevent differently named duplicate workers across retries and resumes. Verified completion and guarded retirement preserve unfinished work. |
+| **Native Discord administration** | Direct commands open private panels for status, conversations, lanes, blocks, trust, channels, settings and audit. Current permissions are checked on every action; administration does not wait for the lead model. |
+| **Bounded coding sessions** | Worker caps, host guards and a durable priority queue control concurrency. Authenticated engine observations distinguish active work from passive monitors. Eligible idle sessions can release capacity while retaining their checkpoints and unfinished work. |
 | **Recovery and long-run upkeep** | Durable delivery, catch-up gaps, reply receipts, startup reconciliation, retention rules, session archives and coordinated backups keep interrupted work inspectable. |
 | **Controlled application operations** | The isolated profile separates the agent from host credentials. Beta maintenance and production restart use narrowly scoped services, with conflict checks, protected preimages and approval checks. |
 | **Direct operational diagnostics** | `helio doctor --json` exposes versions, queues, monitor processes, recovery and lane failures from either shell. Intake writes its own readiness receipt, tied to its process identity. |
@@ -87,6 +88,11 @@ before acting on recovered messages.
   why a worktree must be kept.
 - Housekeeping begins with a preview. An abandoned lane retains its worktree
   and an explicit reason, without announcing that its work was completed.
+- Idle-worker reclamation requires authenticated execution and session ownership,
+  including on retries after an interrupted terminal close. Missing observations,
+  active work, queued input, questions and explicit pauses keep the worker
+  protected. Hibernation retains the session, worktree and original job authority;
+  it does not claim completion or authorize new work.
 - Bounded lifecycle repair previews exact records, then rechecks evidence
   before applying changes through their existing owners. Repeated apply uses
   durable receipts; accepted or changed work is preserved. Historical replies
@@ -183,6 +189,45 @@ Inside Helio, the workflow commands cover issues, plans, questions,
 conversations, blacklists, housekeeping, health, beta and release inspection.
 Start with [day-to-day workflow](docs/workflow.md); use
 [the operator guide](docs/operator-guide.md) for details.
+
+### Discord administration
+
+Use `/status`, `/conversations`, `/lanes`, `/blocks`, `/trusted`, `/channels`,
+`/timeouts`, `/settings` and `/audit` in the configured server or a bot DM.
+Panels use native selectors, autocomplete and confirmation controls. Owner and
+trusted-user access follows current policy; trust, channel policy, settings and
+abandonment remain owner operations.
+
+The protected controller synchronizes bot-DM and configured-server commands
+automatically during startup and updates. It reports those outcomes separately.
+Saved settings, deployed payloads and running consumers also have separate
+receipts, so a saved value is not presented as active before it is applied.
+Initial host activation is explicit; see
+[administration setup and operation](docs/helio-admin.md).
+
+### Worker status and recovery
+
+Inside the configured Helio runtime, `dori sync` shows recorded work state
+separately from authenticated engine execution. An open terminal or a process
+label saying “working” does not establish that a turn is running. A paused goal
+with passive monitors remains paused.
+
+Use `dori reclaim KEY` to release an eligible idle worker's slot while retaining
+its resumable session and files. The watcher also reclaims eligible idle workers
+after the configured idle window or when queued work needs capacity. Unknown
+ownership is a refusal, and legacy records need their original session/brief
+evidence before adoption. Hibernation is distinct from verified completion or
+owner-requested abandonment.
+
+Worker incident reports must name the affected task, unfinished obligation,
+current evidence, impact and recommended repair. When a decision is missing,
+they must explain the proposed action, retained resources and next check rather
+than leave an unexplained blocker “for review.”
+
+Check monitor startup through the linked `dori` executable. Running its source
+through Bun can hide a missing executable bit. Managed updates repair this kit's
+own linked entrypoint; owner updates and isolated deployment remain separate
+from loading changed code into running processes.
 
 ## Repository map
 

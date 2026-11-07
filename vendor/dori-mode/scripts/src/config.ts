@@ -36,6 +36,8 @@ export type DoriConfig = {
   readonly heavyMaxLoad: number;
   readonly maxWorkers: number;
   readonly hibernateAfterMin: number;
+  readonly runtimeConfigFile?: string;
+  readonly runtimeRevision?: string;
   readonly deadPanePatterns: readonly string[];
   readonly guard: GuardThresholds;
   readonly hooks: Hooks;
@@ -73,8 +75,21 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
   const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks } };
+  let limits: { readonly maxWorkers: number; readonly hibernateAfterMin: number; readonly runtimeRevision?: string } | undefined;
+  if (merged.runtimeConfigFile) {
+    const live: unknown = await Bun.file(expandHome(merged.runtimeConfigFile, home)).json();
+    if (typeof live !== "object" || live === null ||
+        !("maxWorkers" in live) || typeof live.maxWorkers !== "number" || !Number.isSafeInteger(live.maxWorkers) || live.maxWorkers < 1 ||
+        !("hibernateAfterMin" in live) || typeof live.hibernateAfterMin !== "number" ||
+        !Number.isSafeInteger(live.hibernateAfterMin) || live.hibernateAfterMin < 0) {
+      throw new TypeError("Invalid live worker settings");
+    }
+    limits = { maxWorkers: live.maxWorkers, hibernateAfterMin: live.hibernateAfterMin,
+      ...("revision" in live && typeof live.revision === "string" ? { runtimeRevision: live.revision } : {}) };
+  }
   return {
     ...merged,
+    ...limits,
     stateDir: expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home),
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),

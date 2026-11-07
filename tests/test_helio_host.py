@@ -11,8 +11,8 @@ ROOT: Final = Path(__file__).resolve().parent.parent
 WRAPPER: Final = ROOT / "scripts/helio-host"
 WSL: Final = "/mnt/c/Windows/System32/wsl.exe"
 LAUNCH: Final = [
-    WSL, "-d", "Ubuntu-22.04", "-u", "root", "--", "systemd-run",
-    "--scope", "--quiet", "--unit", "helio-isolated", "/usr/bin/python3",
+    WSL, "-d", "Ubuntu-22.04", "-u", "root", "--exec", "systemd-run",
+    "--scope", "--quiet", "--unit", "helio-isolated", "/usr/bin/python3", "-I",
     "/opt/helio-beta-service/scripts/helio_isolated_launcher.py",
 ]
 
@@ -65,7 +65,7 @@ else:
 """
 
 ADMIN: Final = [
-    WSL, "-d", "Ubuntu-22.04", "-u", "root", "--", "/usr/bin/python3",
+    WSL, "-d", "Ubuntu-22.04", "-u", "root", "--exec", "/usr/bin/python3", "-I",
     "/opt/helio-beta-service/scripts/helio_isolated_admin.py",
 ]
 
@@ -234,7 +234,7 @@ class HelioHostTests(unittest.TestCase):
                     )
                 ])
                 self.assertEqual(len(self.systemctl_log.read_text().splitlines()), 3)
-                self.assertEqual(self.exec_args(), [])
+                self.assertEqual(self.exec_args(), ADMIN + ["commands-status"])
 
     def test_permissions_uses_owner_home_without_commands(self) -> None:
         result = self.run_host("permissions")

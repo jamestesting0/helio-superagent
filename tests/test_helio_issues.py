@@ -8,6 +8,139 @@ import unittest
 M = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_issues.py"))
 SYNC = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_issue_sync.py"))
 CLI = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio-issue.py"))
+STATUS = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_github_status.py"))
+
+
+class SyncReportingTests(unittest.TestCase):
+    def test_link_review_survives_a_simultaneous_comment_write_failure_until_reviewed(self):
+        import sqlite3
+        import subprocess
+        from unittest.mock import patch
+
+        review = "ISSUE_LINK_REVIEW issue=4: merged PR needs completion reconciliation"
+        failure = 'ISSUE_SYNC_PARTIAL {"category":"transport","stage":"comment_write","detail":"TLS failed","uncertain":true}'
+        cases = [
+            subprocess.CompletedProcess([], 0, f"ISSUE_LOG_PENDING issue=4\n{failure}\n{review}", ""),
+            subprocess.CompletedProcess([], 2, review, failure),
+            subprocess.TimeoutExpired("sync", 120, output=review.encode(), stderr=failure.encode()),
+        ]
+        for result in cases:
+            with self.subTest(result=type(result).__name__), tempfile.TemporaryDirectory() as temp:
+                state = Path(temp)
+                SYNC["enqueue"](state, "o/r", 4)
+                options = {"side_effect": result} if isinstance(result, subprocess.TimeoutExpired) else {"return_value": result}
+                with patch("time.time", return_value=1000), patch.object(subprocess, "run", **options):
+                    SYNC["reconcile"](state, "o/r")
+                with sqlite3.connect(state / "issue-sync.sqlite") as db:
+                    self.assertEqual(db.execute("""SELECT failure_kind,failure_stage,review_required,next_attempt_at,completed_at
+                        FROM tracked WHERE issue=4""").fetchone(), ("transport", "comment_write", 1, 0, 0))
+                SYNC["enqueue"](state, "o/r", 4)
+                with patch("time.time", return_value=2000), patch.object(subprocess, "run") as command:
+                    SYNC["reconcile"](state, "o/r")
+                    command.assert_not_called()
+                SYNC["mark_reviewed"](state, "o/r", 4, 2001, "Reviewed completion relationship")
+                with patch("time.time", return_value=2002), patch.object(subprocess, "run",
+                        return_value=subprocess.CompletedProcess([], 0, "ISSUE_UPDATED issue=4", "")):
+                    SYNC["reconcile"](state, "o/r")
+                with sqlite3.connect(state / "issue-sync.sqlite") as db:
+                    self.assertEqual(db.execute("SELECT last_outcome,review_required,completed_at FROM tracked WHERE issue=4").fetchone(),
+                                     ("complete", 0, 2002))
+
+    def test_failed_and_partial_syncs_remain_visible_until_a_completed_sync(self):
+        import sqlite3
+        import subprocess
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp)
+            SYNC["enqueue"](state, "o/r", 4)
+            outcomes = [
+                subprocess.CompletedProcess([], 1, "", "ISSUE_UPDATE_PENDING error connecting to api.github.com"),
+                subprocess.CompletedProcess([], 0, "ISSUE_LOG_PENDING issue=4: comment remains queued\nISSUE_UPDATED issue=4", ""),
+                subprocess.CompletedProcess([], 0, "ISSUE_UPDATED issue=4", ""),
+            ]
+            observed = []
+            for index, outcome in enumerate(outcomes):
+                if index:
+                    SYNC["enqueue"](state, "o/r", 4)
+                with patch.object(subprocess, "run", return_value=outcome):
+                    SYNC["reconcile"](state, "o/r")
+                with sqlite3.connect(state / "issue-sync.sqlite") as db:
+                    observed.append(db.execute(
+                        "SELECT last_outcome,last_warning,attempted_at,completed_at FROM tracked WHERE issue=4"
+                    ).fetchone())
+            self.assertEqual([row[0] for row in observed], ["failed", "partial", "complete"])
+            self.assertIn("api.github.com", observed[0][1])
+            self.assertIn("ISSUE_LOG_PENDING", observed[1][1])
+            self.assertEqual(observed[2][1], "")
+            self.assertEqual([row[3] for row in observed[:2]], [0, 0])
+            self.assertGreater(observed[2][3], 0)
+            self.assertTrue(all(row[2] > 0 for row in observed))
+            before = (state / "issue-sync.sqlite").read_bytes()
+            self.assertIn("#4: complete", STATUS["queue_status"](state, "o/r")["Sync"])
+            self.assertEqual((state / "issue-sync.sqlite").read_bytes(), before)
+
+    def test_timeout_is_saved_as_uncertain_without_immediate_retry(self):
+        import sqlite3
+        import subprocess
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp)
+            SYNC["enqueue"](state, "o/r", 4)
+            with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("sync", 120)) as command:
+                SYNC["reconcile"](state, "o/r")
+                self.assertEqual(SYNC["reconcile"](state, "o/r"), [])
+                self.assertEqual(command.call_count, 1)
+            with sqlite3.connect(state / "issue-sync.sqlite") as db:
+                outcome, warning, completed = db.execute(
+                    "SELECT last_outcome,last_warning,completed_at FROM tracked WHERE issue=4"
+                ).fetchone()
+            self.assertEqual(outcome, "uncertain")
+            self.assertIn("timed out", warning)
+            self.assertEqual(completed, 0)
+
+    def test_failures_keep_classified_stages_end_times_and_review_holds(self):
+        import os
+        import sqlite3
+        import subprocess
+        from unittest.mock import patch
+
+        cases = [
+            (4, "ISSUE_SYNC_STAGE issue_read\nHTTP 401: Bad credentials", "authentication", "issue_read"),
+            (5, "ISSUE_SYNC_STAGE pr_read\nAPI rate limit exceeded", "rate_limit", "pr_read"),
+            (6, "ISSUE_EDITED_OUTSIDE_HELIO reviewed_sha256=abc", "human_edit_conflict", "issue_review"),
+            (7, "ISSUE_SYNC_STAGE issue_write\nHTTP 403: Forbidden", "permission", "issue_write"),
+            (8, "ISSUE_SYNC_STAGE issue_read\nTLS handshake failed with ghp_fixturesecretvalue", "transport", "issue_read"),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp)
+            for issue, detail, category, stage in cases:
+                SYNC["enqueue"](state, "o/r", issue)
+                with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 2, "", detail)), \
+                     patch.dict(os.environ, {"GH_TOKEN": "ghp_fixturesecretvalue"}), patch("time.time", return_value=1000 + issue):
+                    SYNC["reconcile"](state, "o/r")
+                with sqlite3.connect(state / "issue-sync.sqlite") as db:
+                    recorded = db.execute("""SELECT failure_kind,failure_stage,attempted_at,attempt_finished_at,
+                        next_attempt_at,review_required,last_warning FROM tracked WHERE issue=?""", (issue,)).fetchone()
+                self.assertEqual(recorded[:4], (category, stage, 1000 + issue, 1000 + issue))
+                self.assertEqual(recorded[4:6], (0, 1) if issue == 6 else (1300 + issue, 0))
+                self.assertNotIn("ghp_fixturesecretvalue", recorded[6])
+            with patch("time.time", return_value=2000), patch.object(
+                    subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ISSUE_UPDATED", "")) as command:
+                SYNC["reconcile"](state, "o/r")
+                self.assertEqual(command.call_count, 4)
+            SYNC["mark_reviewed"](state, "o/r", 6, 2001, "Reviewed the current body")
+            with patch("time.time", return_value=2002), patch.object(
+                    subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "ISSUE_UPDATED", "")) as command:
+                SYNC["reconcile"](state, "o/r")
+                self.assertEqual(command.call_count, 1)
+            before = (state / "issue-sync.sqlite").read_bytes()
+            status = STATUS["queue_status"](state, "o/r")
+            self.assertEqual(status["Pending syncs"], "0")
+            self.assertEqual(status["Unfinished writes"], "0")
+            self.assertIn("#6", status["Last full sync"])
+            self.assertEqual((state / "issue-sync.sqlite").read_bytes(), before)
 
 
 class IssueTests(unittest.TestCase):

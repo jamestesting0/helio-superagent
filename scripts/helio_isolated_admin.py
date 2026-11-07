@@ -9,6 +9,7 @@ owner's environment and permission files, applies the managed update in an offli
 reports what the change needs (nothing, monitor self-restart, lead restart or full start).
 """
 import datetime, fcntl, hashlib, json, os, pwd, runpy, stat, subprocess, sys, tarfile, tempfile, time
+from dataclasses import asdict
 from pathlib import Path
 
 HOME = '/var/lib/helio-agent/home'
@@ -84,9 +85,7 @@ def backup():
 
 
 def offline_sync(policy: Path) -> str:
-    binds = []
-    for name in POLICY_FILES:
-        binds += ['--ro-bind', str(policy / name), f'/home/james/.dori/elobot/{name}']
+    binds = ['--ro-bind', str(policy), '/home/james/.dori/elobot/policy']
     cmd = [*AS_AGENT, 'bwrap', '--unshare-all', '--die-with-parent',
            '--clearenv', '--setenv', 'HOME', '/home/james', '--setenv', 'PATH', '/home/james/.bun/bin:/home/james/.local/bin:/usr/bin:/bin',
            '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
@@ -97,6 +96,31 @@ def offline_sync(policy: Path) -> str:
     if result.returncode:
         raise RuntimeError('managed update refused:\n' + (result.stdout + result.stderr).strip()[-1500:])
     return result.stdout
+
+
+def prepare_dependencies():
+    """Transfer only the staged lockfile's cache entries; the offline updater never fetches."""
+    version = hashlib.sha256((STAGE / 'discord-inbound/bun.lock').read_bytes()).hexdigest().encode()
+    marker = '.dori/elobot/dependency-cache-version'
+    if SAFE['read_agent_file'](HOME, marker) == version:
+        return
+    owner = pwd.getpwnam('james')
+    with tempfile.TemporaryDirectory(prefix='dependencies-', dir=STAGE.parent) as temporary:
+        os.chown(temporary, owner.pw_uid, owner.pw_gid)
+        os.chmod(temporary, 0o755)
+        archive = Path(temporary) / 'cache.pack'
+        packed = run([*AS_OWNER, 'env', f'HOME={owner.pw_dir}', f'{owner.pw_dir}/.bun/bin/bun',
+                      'pm', 'cache', 'pack', str(archive)], cwd=STAGE / 'discord-inbound', timeout=300)
+        if packed.returncode:
+            raise RuntimeError('Dependency cache is incomplete; run bun install --frozen-lockfile in the owner inbound checkout:\n' +
+                               (packed.stdout + packed.stderr).strip()[-1000:])
+        archive.chmod(0o644)
+        unpacked = run([*AS_AGENT, 'env', f'HOME={HOME}',
+                        f'BUN_INSTALL_CACHE_DIR={HOME}/.bun/install/cache', f'{HOME}/.bun/bin/bun',
+                        'pm', 'cache', 'unpack', str(archive)], cwd=Path(HOME, 'helio-agent/discord-inbound'), timeout=300)
+        if unpacked.returncode:
+            raise RuntimeError('Isolated dependency cache transfer failed:\n' + (unpacked.stdout + unpacked.stderr).strip()[-1000:])
+    SAFE['write_agent_file'](HOME, account, marker, version, 0o644)
 
 
 def ensure_node():
@@ -135,8 +159,14 @@ def deploy(restart_after: bool) -> int:
     if copied.returncode:
         raise RuntimeError('copy failed: ' + copied.stderr.strip()[-300:])
     kit = plan['rsync_changes'](copied.stdout)
+    prepare_dependencies()
     policy = SAFE['refresh'](HOME, account)
     installed = plan['managed_changes'](offline_sync(policy))
+    administration = None
+    if Path('/opt/helio-admin-service/controller.js').is_file():
+        administration = runpy.run_path(str(HERE / 'helio_admin_install.py'))['install_controller'](
+            Path('/home/james/.dori/discord-inbound'), True)
+    admin_running = runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['status']()
     after = env_digest()
     node = ensure_node()
     outcome = plan['plan'](kit, installed, before != after)
@@ -148,6 +178,8 @@ def deploy(restart_after: bool) -> int:
         'lead_restart_pending': previous.get('lead_restart_pending', False) or outcome['needs'] in ('lead', 'full'),
         'full_restart_pending': previous.get('full_restart_pending', False) or outcome['needs'] == 'full',
         'lead_version': previous.get('lead_version'),
+        'admin_controller_version': administration['controller_sha256'] if administration else None,
+        'admin_controller_restart_pending': bool(administration and admin_running.loaded_version != administration['controller_sha256']),
     }
     SAFE['write_agent_file'](HOME, account, STATE, (json.dumps(state, indent=2) + '\n').encode(), 0o644)
     if outcome['monitors_changed']:
@@ -155,6 +187,9 @@ def deploy(restart_after: bool) -> int:
     live = running()
     print(f'Deployed {version} ({len(outcome["changed"])} changed files; backup {archive.name}; node {node or "not found"}).')
     print(plan['ADVICE'][outcome['needs']])
+    print('Administration controller: ' + ('activation pending' if state['admin_controller_restart_pending'] else 'unchanged'))
+    if restart_after:
+        runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['report'](True)
     if not live:
         print('Helio is not running; everything loads on the next `helio start`.')
     elif restart_after and state['lead_restart_pending'] and not state['full_restart_pending']:
@@ -170,6 +205,7 @@ def restart() -> int:
     if not running():
         print('Helio is not running; use `helio start`.')
         return 1
+    runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['report'](True)
     began = time.monotonic()
     for tab in json.loads(herdr('tab', 'list'))['result']['tabs']:
         if tab.get('label') == 'Helio':
@@ -191,15 +227,31 @@ def status() -> int:
     print(f'Lead running: {state.get("lead_version") or "unknown"}')
     pending = 'full start' if state.get('full_restart_pending') else 'lead restart' if state.get('lead_restart_pending') else 'nothing'
     print(f'Restart pending: {pending}')
+    administration = runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['status']()
+    print('ADMINISTRATION ' + json.dumps(asdict(administration), sort_keys=True))
     return 0
 
 
 def main() -> int:
     args = sys.argv[1:]
+    if args == ['commands-sync']:
+        runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['report']()
+        return 0
+    if args == ['commands-status']:
+        administration = runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['status']()
+        print('ADMINISTRATION ' + json.dumps(asdict(administration), sort_keys=True))
+        return 0
     if args in (['doctor'], ['doctor', '--json']):
         result = run([*AS_AGENT, '/usr/bin/python3', '-I', str(HERE / 'helio_doctor.py'),
                       '--home', HOME, '--runtime-home', '/home/james', *args[1:]], timeout=30)
-        print(result.stdout, end='')
+        administration = asdict(runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['status']())
+        if '--json' in args:
+            report = json.loads(result.stdout)
+            report['administration'] = administration
+            print(json.dumps(report))
+        else:
+            print(result.stdout, end='')
+            print('administration: ' + json.dumps(administration, sort_keys=True))
         if result.stderr:
             print(result.stderr, file=sys.stderr, end='')
         return result.returncode

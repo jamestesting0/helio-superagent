@@ -36,6 +36,7 @@
   "heavySlots": 1,
   "maxWorkers": {{HELIO_MAX_WORKERS}},
   "hibernateAfterMin": {{HELIO_HIBERNATE_AFTER_MIN}},
+  "runtimeConfigFile": "~/.dori/elobot/policy/lane-settings.json",
   "heavyMaxLoad": 80,
   "deadPanePatterns": [
     "has stopped",

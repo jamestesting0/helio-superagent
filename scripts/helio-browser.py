@@ -5,7 +5,7 @@
     helio browser setup qa-a|qa-b|qa-c      open one test profile for its one-time login
     helio browser accounts                  show the test-account map and which profiles are connected
 
-Without options the Helio profile is used, as before. Test profiles qa-a..qa-c each stay logged into one
+Without options qa-a is used. Test profiles qa-a..qa-c each stay logged into one
 Discord test account (qa-a is always the Elo Manager account), so multi-account tests use one window per
 account instead of switching accounts. Their BrowserSkill instance IDs live in ~/.dori/elobot/qa-accounts.json.
 """
@@ -15,10 +15,11 @@ HOME=Path.home(); ROOT=HOME/'.local/share/helio-chrome'; PROFILE=ROOT/'profile';
 CHROME=PKG/'opt/google/chrome/chrome'; LAUNCHER=HOME/'.local/bin/helio-chrome'; BSK=HOME/'.local/bin/bsk'
 ACCOUNTS=HOME/'.dori/elobot/qa-accounts.json'
 QA=('qa-a','qa-b','qa-c')
+DEFAULT_PROFILE=QA[0]
 
 def profile_dir(name):return PROFILE if name=='helio' else ROOT/name
 
-def browser_pids(name='helio'):
+def browser_pids(name=DEFAULT_PROFILE):
  result=[];flag=f'--user-data-dir={profile_dir(name)}'
  for proc in Path('/proc').iterdir():
   if not proc.name.isdigit(): continue
@@ -48,7 +49,7 @@ def accounts():
  except FileNotFoundError: return {}
  return {k:v for k,v in data.items() if k in QA and isinstance(v,dict)}
 
-def close_browser(name='helio'):
+def close_browser(name=DEFAULT_PROFILE):
  label='Helio Chrome' if name=='helio' else f'Chrome profile {name}'
  pids=browser_pids(name)
  if not pids: print(f'{label} is already closed.'); return 0
@@ -62,7 +63,7 @@ def close_browser(name='helio'):
   time.sleep(.1)
  print(f'{label} has not exited; it was left running for inspection.',file=sys.stderr); return 1
 
-def open_browser(name='helio'):
+def open_browser(name=DEFAULT_PROFILE):
  label='Helio Chrome' if name=='helio' else f'Chrome profile {name}'
  if browser_pids(name): print(f'{label} is already open.'); return 0
  if name=='helio':
@@ -73,12 +74,18 @@ def open_browser(name='helio'):
   profile_dir(name).mkdir(parents=True,exist_ok=True,mode=0o700)
   cmd=[str(CHROME),f'--user-data-dir={profile_dir(name)}','--no-first-run']
   env=dict(os.environ,LD_LIBRARY_PATH=f"{PKG/'usr/lib/x86_64-linux-gnu'}"+(':'+os.environ['LD_LIBRARY_PATH'] if os.environ.get('LD_LIBRARY_PATH') else ''))
+ # The isolated WSL runtime exposes Wayland, not an X11 display.
+ if os.environ.get('WAYLAND_DISPLAY'): cmd.append('--ozone-platform=wayland')
  ROOT.mkdir(parents=True,exist_ok=True)
  fd=os.open(ROOT/'helio-browser.log',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
  try:
   with os.fdopen(fd,'ab') as log: p=subprocess.Popen(cmd,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True,env=env)
   for _ in range(40):
-   if browser_pids(name): print(f'{label} opened.'); return 0
+   if browser_pids(name):
+    # A process can appear before Chrome rejects its display backend.
+    try: p.wait(timeout=1)
+    except subprocess.TimeoutExpired: print(f'{label} opened.'); return 0
+    break
    if p.poll() is not None: break
    time.sleep(.1)
   print(f'{label} did not start; inspect ~/.local/share/helio-chrome/helio-browser.log.',file=sys.stderr); return 1
@@ -90,7 +97,7 @@ def connected(name,browsers):
  want=accounts().get(name,{}).get('browser')
  return [b for b in browsers if isinstance(b,dict) and want and want in (b.get('id'),b.get('instance_id'),b.get('label')) and not b.get('unresponsive')]
 
-def ready_browser(name='helio'):
+def ready_browser(name=DEFAULT_PROFILE):
  """Open one profile and wait for its BrowserSkill instance to be connected."""
  if name!='helio' and not accounts().get(name,{}).get('browser'):
   print(f'{name} is not set up yet: run helio browser setup {name}, log in its test account and record its BrowserSkill instance.',file=sys.stderr); return 1
@@ -140,7 +147,7 @@ def main():
   code=open_browser(a.name)
   if code==0: print(f'In the {a.name} window: add BrowserSkill, log into Discord as its test account, then copy the BrowserSkill profile instructions to Helio so it can record the instance in {ACCOUNTS}.')
   return code
- names=list(QA[:a.accounts]) if a.accounts else [a.profile or 'helio']
+ names=list(QA[:a.accounts]) if a.accounts else [a.profile or DEFAULT_PROFILE]
  if a.action=='close' and a.all: names=['helio',*QA]
  codes=[]
  for name in names:

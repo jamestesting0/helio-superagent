@@ -1,0 +1,29 @@
+[Unit]
+Description=Helio owner-authenticated administration broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+RuntimeDirectory=helio-admin-service
+RuntimeDirectoryMode=0755
+StateDirectory=helio-admin-service
+StateDirectoryMode=0700
+Environment=PYTHONNOUSERSITE=1
+ExecStart=/opt/helio-beta-service/python/bin/python3.12 -P /opt/helio-beta-service/scripts/helio_admin_service.py
+ExecStopPost=/usr/bin/rm -f /run/helio-admin-service/admin.sock
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/helio-admin-service /var/lib/helio-runtime-policy /var/lib/helio-agent/home /home/james/.config/helio /home/james/.dori/elobot /etc/helio-release-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

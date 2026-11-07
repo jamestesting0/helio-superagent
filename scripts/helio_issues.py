@@ -6,10 +6,12 @@ from contextlib import closing, contextmanager
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 from typing import TypedDict
 
@@ -20,6 +22,10 @@ HASH = re.compile(r"\n?<!-- helio-body-sha256:([0-9a-f]{64}) -->\s*\Z")
 
 class Refused(Exception):
     """An issue edit cannot safely proceed."""
+    def __init__(self, message: str, stage: str = "issue_review", uncertain: bool = False) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.uncertain = uncertain
 
 class StatusBlock(TypedDict):
     status: str
@@ -72,9 +78,20 @@ def only_status_refreshed(current: str, written: str) -> bool:
 
 
 def run(argv: list[str], stdin: str | None = None) -> str:
-    result = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=45)
+    method = argv[argv.index("--method") + 1] if "--method" in argv else "GET"
+    endpoint = next((part for part in argv if part.startswith("repos/")), "")
+    resource = "comment" if "/comments" in endpoint else "issue_timeline" if endpoint.endswith("/timeline") else \
+        "issue" if "/issues" in endpoint or argv[1:3] == ["issue", "view"] else \
+        "pr" if argv[1:3] == ["pr", "view"] else "identity" if argv[1:3] == ["api", "user"] else "github"
+    stage = resource + ("_read" if method in ("GET", "HEAD") else "_write")
+    if os.environ.get("HELIO_SYNC_DIAGNOSTICS") == "1":
+        print(f"ISSUE_SYNC_STAGE {stage}", file=sys.stderr, flush=True)
+    try:
+        result = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=45)
+    except subprocess.TimeoutExpired as error:
+        raise Refused("GitHub request timed out; inspect its saved operation before retrying", stage, method not in ("GET", "HEAD")) from error
     if result.returncode:
-        raise Refused((result.stderr or result.stdout).strip()[-300:] or "GitHub unavailable")
+        raise Refused((result.stderr or result.stdout).strip()[-2000:] or "GitHub unavailable", stage)
     return result.stdout
 
 

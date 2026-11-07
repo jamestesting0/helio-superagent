@@ -59,7 +59,8 @@ export const occupiesSlot = (lane: Lane, livePanes: ReadonlySet<string>): boolea
   if (status === "closed") return false;
   if (lane.launchState === "failed") return lane.pane !== undefined && livePanes.has(lane.pane);
   if (status === "hibernated") return false;
-  return lane.pane !== undefined || ["reserved", "brief-written", "worktree-created"].includes(lane.launchState ?? "");
+  return (lane.pane !== undefined && livePanes.has(lane.pane)) ||
+    ["reserved", "brief-written", "worktree-created"].includes(lane.launchState ?? "");
 };
 
 export const livePaneIds = async (deps: FlowDeps): Promise<Set<string>> => new Set((await listPanes(deps.run)).map((pane) => pane.pane_id));

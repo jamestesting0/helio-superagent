@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -7,6 +7,8 @@ import { readQueue } from "../src/admission.ts";
 import { abandonLane, closeLane } from "../src/done-flow.ts";
 import { adoptLane, launchLane } from "../src/launch.ts";
 import { lifecycleTick } from "../src/lifecycle.ts";
+import { reclaimLane } from "../src/reclaim.ts";
+import * as sessionState from "../src/session-state.ts";
 import { reapWorktrees, staleLanes } from "../src/reap.ts";
 import { type Lane, requestJob, statusOf, withStatus } from "../src/registry.ts";
 import type { Ran, RunOptions } from "../src/run.ts";
@@ -51,6 +53,15 @@ const launch = (s: ReturnType<typeof setup>, key: string, extra: Record<string, 
 const lane = (key: string, patch: Partial<Lane> = {}): Lane =>
   ({ key, job: key, title: key, thread: "none", brief: "/b", done: "closed acme/app#3", cwd: "/repo", openedAt: new Date(T0).toISOString(), ...patch });
 
+function observeIdle(checkpoints: Readonly<Record<string, { session: string; id: string }>>) {
+  const observation = spyOn(sessionState, "paneExecution").mockImplementation(async (_run, pane) => {
+    const checkpoint = checkpoints[pane];
+    return checkpoint ? { status: "idle", ...checkpoint, pid: 123, since: new Date(T0).toISOString(),
+      state: "waiting_background", version: "123:1", reason: "Passive monitors only" } : undefined;
+  });
+  cleanups.push(() => observation.mockRestore());
+}
+
 test("a non-issue request has a stable job independent of a lane display name", () => {
   expect(requestJob("owner/repo", "100", "500")).toBe("request-84838f43fb356a72b0ff49df");
   expect(requestJob("owner/repo", "100", "501")).not.toBe(requestJob("owner/repo", "100", "500"));
@@ -83,6 +94,13 @@ test("a failed wake's surviving pane keeps the last worker slot", async () => {
   expect(s.world.panes).toHaveLength(1);
   expect((await launch(s, "unrelated")).startup).toContain("workers 1 >= 1");
   expect(s.terminal.tabs).toBe(1);
+});
+
+test("a stale pane reference cannot reserve a worker slot after its process is gone", async () => {
+  const s = setup({ maxWorkers: 1 });
+  await s.deps.registry.write(lane("gone-worker", { pane: "w:missing", status: "working", launchState: "started" }));
+  expect((await launch(s, "new-job")).startup).toStartWith("STARTUP_OK new-job");
+  expect((await s.deps.registry.read("gone-worker"))?.closedAt).toBeUndefined();
 });
 
 test("a retired failed launch remains historical when another key starts the job", async () => {
@@ -195,10 +213,19 @@ test("a job's hibernated lane is resumed in its recorded session instead of a fr
 
 test("an idle worker hibernates after the idle window, never without a session or while a question waits", async () => {
   const s = setup();
+  const sessions = sessionDirFor(s.deps.config.sessionsDir, "/repo");
+  mkdirSync(sessions, { recursive: true });
+  const checkpoints: Record<string, { session: string; id: string }> = {};
   for (const [key, pane] of [["quiet", "w:p1"], ["asking", "w:p2"], ["unknown", "w:p3"], ["legacy", "w:p4"]] as const) {
     s.world.panes.push({ pane_id: pane, workspace_id: "w", agent: "pi", agent_status: "idle" });
     await s.deps.registry.write(lane(key, { job: key === "legacy" ? undefined : key, pane, tab: pane.replace(":p", ":t"), ...(key === "unknown" ? {} : { session: `sid-${key}` }) }));
+    if (key !== "unknown") {
+      const session = join(sessions, `2026-11-05T10-00-00-000Z_sid-${key}.jsonl`);
+      writeFileSync(session, "{}\n");
+      checkpoints[pane] = { session, id: `sid-${key}` };
+    }
   }
+  observeIdle(checkpoints);
   const db = new Database(join(s.state.dir, "discord-questions.sqlite"), { create: true });
   db.exec("CREATE TABLE questions (id TEXT, lane TEXT, status TEXT)");
   db.query("INSERT INTO questions VALUES ('q1', 'asking', 'awaiting_answer')").run();
@@ -206,12 +233,173 @@ test("an idle worker hibernates after the idle window, never without a session o
   expect(await lifecycleTick(s.deps)).toEqual([]);
   s.clock.at = T0 + 31 * MIN;
   const lines = await lifecycleTick(s.deps);
-  expect(lines.filter((line) => line.includes("LANE_HIBERNATED"))).toEqual(['LANE_HIBERNATED quiet session kept; wake="dori resume quiet"']);
+  expect(lines.filter(line => line.startsWith("LANE_HIBERNATED")).map(line => line.split(" ")[1]).sort()).toEqual(["legacy", "quiet"]);
   const quiet = (await s.deps.registry.read("quiet"))!;
-  expect([statusOf(quiet), quiet.session, quiet.pane]).toEqual(["hibernated", "sid-quiet", undefined]);
+  expect([statusOf(quiet), quiet.session, quiet.pane]).toEqual(["hibernated", checkpoints["w:p1"]?.session, undefined]);
   expect(statusOf((await s.deps.registry.read("asking"))!)).toBe("working");
   expect(statusOf((await s.deps.registry.read("unknown"))!)).toBe("working");
-  expect(statusOf((await s.deps.registry.read("legacy"))!)).toBe("working");
+  const legacy = (await s.deps.registry.read("legacy"))!;
+  expect([statusOf(legacy), legacy.session, legacy.job, legacy.closedAt]).toEqual(["hibernated", checkpoints["w:p4"]?.session, undefined, undefined]);
+});
+
+test("an interrupted idle-slot release stays pending and resumes without claiming the work done", async () => {
+  const s = setup();
+  const checkpoint = join(s.state.dir, "saved-session.jsonl");
+  writeFileSync(checkpoint, "{}\n");
+  s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  observeIdle({ "w:p1": { session: checkpoint, id: "saved-session" } });
+  await s.deps.registry.write(lane("old-worker", { job: undefined, session: checkpoint, pane: "w:p1", tab: "w:t1",
+    idleSince: T0 - 31 * MIN }));
+  s.terminal.closeFails = true;
+  await lifecycleTick(s.deps);
+  expect(statusOf((await s.deps.registry.read("old-worker"))!)).toBe("cleanup-pending");
+  s.terminal.closeFails = false;
+  await lifecycleTick(s.deps);
+  const released = (await s.deps.registry.read("old-worker"))!;
+  expect([statusOf(released), released.closedAt, released.claim, released.pane]).toEqual(["hibernated", undefined, undefined, undefined]);
+  expect(existsSync(checkpoint)).toBe(true);
+});
+
+test("queued authorized work reclaims one idle checkpoint before the normal idle timeout", async () => {
+  const s = setup({ maxWorkers: 1 });
+  const checkpoint = join(s.state.dir, "saved-session.jsonl");
+  writeFileSync(checkpoint, "{}\n");
+  s.world.panes.push({ pane_id: "w:p9", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  observeIdle({ "w:p9": { session: checkpoint, id: "saved-session" } });
+  await s.deps.registry.write(lane("old-worker", { session: checkpoint, pane: "w:p9", tab: "w:t9" }));
+  expect((await launch(s, "queued-job")).startup).toStartWith("LAUNCH_QUEUED");
+  await lifecycleTick(s.deps);
+  expect(statusOf((await s.deps.registry.read("old-worker"))!)).toBe("hibernated");
+  expect((await s.deps.registry.read("queued-job"))?.launchState).toBe("started");
+  expect(await readQueue(s.deps)).toEqual([]);
+  expect(s.terminal.tabs).toBe(1);
+  expect(existsSync(checkpoint)).toBe(true);
+});
+
+test("a newer pause during reclamation keeps the owned session open", async () => {
+  const s = setup();
+  const checkpoint = join(s.state.dir, "saved-session.jsonl");
+  writeFileSync(checkpoint, "{}\n");
+  s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  observeIdle({ "w:p1": { session: checkpoint, id: "saved-session" } });
+  await s.deps.registry.write(lane("worker", { session: checkpoint, pane: "w:p1", tab: "w:t1", idleSince: T0 - 31 * MIN }));
+  const run = s.deps.run;
+  let paused = false;
+  s.deps.run = async (argv, options) => {
+    if (argv[0] === "herdr" && argv[2] === "list" && !paused) {
+      const current = await s.deps.registry.read("worker");
+      if (current?.release) {
+        paused = true;
+        await s.deps.registry.write(withStatus(current, "paused", "new owner pause", new Date(T0).toISOString()));
+      }
+    }
+    return run(argv, options);
+  };
+  await lifecycleTick(s.deps);
+  expect((await s.deps.registry.read("worker"))?.status).toBe("paused");
+  expect(s.world.panes.map(pane => pane.pane_id)).toContain("w:p1");
+});
+
+test("a reused pane cannot replace a recorded lane session during reclamation", async () => {
+  const s = setup();
+  const owned = join(s.state.dir, "owned.jsonl"), foreign = join(s.state.dir, "foreign.jsonl");
+  writeFileSync(owned, "{}\n"); writeFileSync(foreign, "{}\n");
+  s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  await s.deps.registry.write(lane("worker", { session: owned, pane: "w:p1", tab: "w:t1" }));
+  const observation = spyOn(sessionState, "paneExecution").mockResolvedValue({
+    status: "idle", session: foreign, id: "22222222-2222-4222-8222-222222222222", pid: 123,
+    since: new Date(T0).toISOString(), state: "waiting_background", version: "123:1", reason: "Passive monitors only",
+  });
+  try {
+    expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
+    expect((await s.deps.registry.read("worker"))?.session).toBe(owned);
+    expect(s.world.panes).toHaveLength(1);
+  } finally { observation.mockRestore(); }
+});
+
+test.each(["recorded", "legacy"])("a shell foreground cannot authorize %s checkpoint adoption or release", async kind => {
+  const s = setup();
+  const owned = join(s.state.dir, "owned.jsonl"), foreign = join(s.state.dir, "foreign.jsonl");
+  writeFileSync(owned, "{}\n"); writeFileSync(foreign, "{}\n");
+  s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  await s.deps.registry.write(lane("worker", { session: kind === "recorded" ? owned : undefined,
+    pane: "w:p1", tab: "w:t1" }));
+  const before = await s.deps.registry.read("worker");
+  const run = s.deps.run;
+  s.deps.run = async (argv, options) => {
+    if (argv[0] === "ps") return ok(`20 10 bun /senpi/dist/bundle/cli.js --session ${foreign}`);
+    if (argv[0] === "herdr" && argv[2] === "process-info") return ok(JSON.stringify({ result: { process_info: {
+      shell_pid: 10, foreground_processes: [{ name: "bash", pid: 10, argv: ["bash"] }],
+    } } }));
+    return run(argv, options);
+  };
+  expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
+  expect(await s.deps.registry.read("worker")).toEqual(before);
+  expect(s.world.panes).toHaveLength(1);
+  expect(readFileSync(owned, "utf8")).toBe("{}\n");
+});
+
+test("a pending release holds when authenticated observation disappears and retries only once it returns", async () => {
+  const s = setup();
+  const checkpoint = join(s.state.dir, "owned.jsonl");
+  writeFileSync(checkpoint, "{}\n");
+  s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  await s.deps.registry.write(lane("worker", { session: checkpoint, pane: "w:p1", tab: "w:t1" }));
+  const idle = { status: "idle", session: checkpoint, id: "owned", pid: 123,
+    since: new Date(T0).toISOString(), state: "waiting_background", version: "123:1", reason: "Passive monitors only" } as const;
+  const observation = spyOn(sessionState, "paneExecution").mockResolvedValueOnce(idle).mockResolvedValue(undefined);
+  try {
+    expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
+    expect((await s.deps.registry.read("worker"))?.session).toBe(checkpoint);
+    expect(s.world.panes).toHaveLength(1);
+    expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
+    expect(s.world.panes).toHaveLength(1);
+    observation.mockResolvedValue(idle);
+    expect((await reclaimLane(s.deps, "worker")).released).toBe(true);
+    expect((await s.deps.registry.read("worker"))?.session).toBe(checkpoint);
+    expect(s.world.panes).toHaveLength(0);
+  } finally { observation.mockRestore(); }
+});
+
+test("a persisted release without authenticated ownership proof stays held even after its pane disappears", async () => {
+  const s = setup();
+  const checkpoint = join(s.state.dir, "owned.jsonl");
+  writeFileSync(checkpoint, "{}\n");
+  await s.deps.registry.write(lane("worker", { session: checkpoint, pane: "w:p1", tab: "w:t1",
+    status: "cleanup-pending", release: { operation: "old-release", session: checkpoint, from: "working",
+      pane: "w:p1", tab: "w:t1", job: "worker" } }));
+  expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
+  const held = (await s.deps.registry.read("worker"))!;
+  expect([held.status, held.session, held.claim, held.closedAt]).toEqual(["cleanup-pending", checkpoint, undefined, undefined]);
+});
+
+test.each(["valid", "wrong-brief", "wrong-cwd", "newer-session", "wrong-id"])(
+  "a legacy session requires its original brief and header before releasing a slot: %s", async variant => {
+  const s = setup();
+  s.clock.at = T0 + 60 * MIN;
+  const matches = variant === "valid";
+  const id = "11111111-1111-4111-8111-111111111111", checkpoint = join(s.state.dir, `session_${id}.jsonl`);
+  writeFileSync(checkpoint, [
+    JSON.stringify({ type: "session", id: variant === "wrong-id" ? "another-session" : id,
+      cwd: variant === "wrong-cwd" ? "/unrelated" : s.state.dir,
+      timestamp: new Date(T0 + (variant === "newer-session" ? 5 * MIN : 500)).toISOString() }),
+    JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text",
+      text: `Read the brief at "${variant === "wrong-brief" ? "/another-brief" : "/b"}" in full.` }] } }),
+  ].join("\n") + "\n");
+  s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
+  await s.deps.registry.write(lane("legacy", { job: undefined, cwd: s.state.dir, pane: "w:p1", tab: "w:t1" }));
+  const observation = spyOn(sessionState, "paneExecution").mockResolvedValue({
+    status: "idle", session: checkpoint, id, pid: 123, since: new Date(T0).toISOString(),
+    state: "waiting_background", version: "123:1", reason: "Passive monitors only",
+  });
+  try {
+    expect((await reclaimLane(s.deps, "legacy")).released).toBe(matches);
+    const result = (await s.deps.registry.read("legacy"))!;
+    expect([result.job, result.closedAt, result.claim]).toEqual([undefined, undefined, undefined]);
+    expect(result.session).toBe(matches ? checkpoint : undefined);
+    expect(s.world.panes).toHaveLength(matches ? 0 : 1);
+    expect(existsSync(checkpoint)).toBe(true);
+  } finally { observation.mockRestore(); }
 });
 
 test("a close whose tab survives stays cleanup-pending until the watcher sees the pane gone", async () => {
@@ -426,7 +614,10 @@ test("a job resumed by a new launch takes that attempt's Done line, title, threa
     writeFileSync(join(h.dir, "2026-11-05T10-00-00-000Z_sid-11.jsonl"), "{}\n");
     await h.write();
     await s.deps.registry.write({ ...(await s.deps.registry.read("issue-11"))!, done: "merged acme/app#11", thread: "thread-11" });
-    if (queued) await s.deps.registry.write(lane("busy", { pane: "w:p3", status: "working" }));
+    if (queued) {
+      s.world.panes.push({ pane_id: "w:p3", workspace_id: "w", agent: "pi", agent_status: "working" });
+      await s.deps.registry.write(lane("busy", { pane: "w:p3", status: "working" }));
+    }
     const attempt = { job: "issue-11", title: "follow-up", done: "merged acme/app#22", thread: "thread-22", model: "m-2" };
     const first = (await launch(s, "issue-11-followup", attempt)).startup;
     if (queued) {

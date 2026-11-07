@@ -5,7 +5,7 @@ On the owner side this first regenerates env/beta/permission files from
 ~/.config/helio/helio.env (see scripts/helio_config.py), then updates managed
 files against the recorded baseline and refuses to overwrite local edits.
 """
-import argparse, hashlib, json, os, runpy, subprocess, sys, tempfile
+import argparse, hashlib, json, os, pwd, runpy, subprocess, sys, tempfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 PAYLOAD=runpy.run_path(str(ROOT/'scripts/helio_payload.py'))
@@ -16,7 +16,8 @@ PROFILES=PAYLOAD['PROFILES']
 MANAGED=PAYLOAD['MANAGED']
 RETIRED=PAYLOAD['RETIRED']
 SHIPPED=PAYLOAD['PREVIOUSLY_SHIPPED']
-NEW_PAYLOAD=('helio-sessions.py','evidence.ts','evidence.test.ts',*PAYLOAD['SKILLS'])
+NEW_PAYLOAD=('helio-sessions.py','evidence.ts','evidence.test.ts',*PAYLOAD['SKILLS'],
+             *('@vendor/'+name for name in PAYLOAD['VENDOR_MANAGED']))
 def digest(b): return hashlib.sha256(b).hexdigest()
 def atomic(p, data):
  fd,tmp=tempfile.mkstemp(prefix='.helio-',dir=p.parent)
@@ -29,7 +30,9 @@ def run(home, action, update_launcher=False, profile=None):
  dst=home/'.dori/elobot'; manifest=dst/'.sync-manifest.json'
  if not dst.is_dir() or dst.is_symlink(): raise SystemExit('Helio install missing or unsafe')
  report_channels=dst/'report-channels'
- if report_channels.is_symlink() or not report_channels.is_file():
+ policy_link=(report_channels.is_symlink() and os.readlink(report_channels)=='policy/report-channels'
+              and not (dst/'policy').is_symlink() and (dst/'policy/policy.json').is_file())
+ if (report_channels.is_symlink() and not policy_link) or not report_channels.is_file():
   raise SystemExit(f'Missing or unsafe authorization file: {report_channels}. Set HELIO_REPORT_CHANNELS in ~/.config/helio/helio.env and run helio update; local authorization files are never overwritten by the managed-file update.')
  if manifest.is_symlink(): raise SystemExit('Unsafe sync manifest')
  baseline=json.loads(manifest.read_text()) if manifest.is_file() else {}
@@ -55,6 +58,8 @@ def run(home, action, update_launcher=False, profile=None):
   paths['@inbound/'+name]=home/'.dori/discord-inbound'/name
  for name in PAYLOAD['MESSENGER']:
   paths['@messenger/'+name]=dst/'vendor/dori-mode/scripts/src/messenger'/name
+ for name in PAYLOAD['VENDOR_MANAGED']:
+  paths['@vendor/'+name]=dst/'vendor/dori-mode'/name
  names=tuple(paths)
  for name,p in paths.items():
   for parent in p.parents:
@@ -85,16 +90,23 @@ def run(home, action, update_launcher=False, profile=None):
  mapping=PAYLOAD['values'](home,PAYLOAD['configured_project'](home,env) or active['defaultCwd'],env)
  documents=PAYLOAD['documents'](profile,mapping)
  source_config=PAYLOAD['render_config'](mapping)
+ lane_settings=dst/'policy/lane-settings.json'
+ bootstrap_limits=not CONFIG['config_path'](home).is_file() and not lane_settings.exists()
+ if bootstrap_limits:
+  for parent in (lane_settings,*lane_settings.parents):
+   if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
+    raise SystemExit(f'Unsafe worker settings destination: {parent}')
  desired={}
  for name in names:
   if name in documents: data=documents[name]
   elif name=='config.json':
-   for k in ('agentCommand','defaultModel','launchKeywords','maxWorkers','hibernateAfterMin'): active[k]=source_config[k]
+   for k in ('agentCommand','defaultModel','launchKeywords','maxWorkers','hibernateAfterMin','runtimeConfigFile'): active[k]=source_config[k]
    active.setdefault('hooks',{}).setdefault('inspectJobSource',source_config['hooks']['inspectJobSource'])
    data=(json.dumps(active,indent=2)+'\n').encode()
   elif name=='@launcher': data=(ROOT/'scripts/helio-wsl').read_bytes()
   elif name.startswith('@inbound/'): data=(ROOT/'discord-inbound'/name[9:]).read_bytes()
   elif name.startswith('@messenger/'): data=(ROOT/'vendor/dori-mode/scripts/src/messenger'/name[11:]).read_bytes()
+  elif name.startswith('@vendor/'): data=(ROOT/'vendor/dori-mode'/name[8:]).read_bytes()
   else: data=PAYLOAD['plain'](name).read_bytes()
   desired[name]=data
  retired={name:dst/name for name in RETIRED if (dst/name).is_file() and not (dst/name).is_symlink()}
@@ -126,10 +138,15 @@ def run(home, action, update_launcher=False, profile=None):
  settings_changed=terminal.get('monitorMaxCharsPerInjection')!=16384
  terminal['monitorMaxCharsPerInjection']=16384
  print('Managed updates: '+(', '.join(changes) if changes else 'none'))
+ if bootstrap_limits: print('Worker settings: initialize the legacy installation projection')
  print(f'Project terminal.monitorMaxCharsPerInjection: {"set to 16384" if settings_changed else "unchanged (16384)"}')
  if retired: print('Retired (no longer used, will be removed): '+', '.join(retired))
  print('Credentials, authorization lists, runtime state, other project settings and memory are excluded.')
  if action=='apply':
+  if bootstrap_limits:
+   lane_settings.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+   data,mode=CONFIG['generate'](mapping,home)['policy/lane-settings.json']
+   atomic(lane_settings,data);lane_settings.chmod(mode)
   if settings_changed:
    settings.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
    atomic(settings,(json.dumps(project_settings,indent=2)+'\n').encode())
@@ -147,6 +164,9 @@ def run(home, action, update_launcher=False, profile=None):
    baseline[name]=digest(paths[name].read_bytes())
   for name in PAYLOAD['EXECUTABLES']:
    paths[name].chmod((paths[name].stat().st_mode & 0o777) | 0o100)
+  dori=home/'.bun/bin/dori'; entrypoint=ROOT/'vendor/dori-mode/scripts/src/cli.ts'
+  if dori.is_symlink() and dori.resolve()==entrypoint.resolve():
+   entrypoint.chmod((entrypoint.stat().st_mode & 0o777) | 0o100)
   baseline['config.json']=digest(paths['config.json'].read_bytes())
   baseline['_profile']=profile
   atomic(manifest,(json.dumps(baseline,indent=2)+'\n').encode())
@@ -167,6 +187,15 @@ def run(home, action, update_launcher=False, profile=None):
    docs=subprocess.run([sys.executable,str(script),'--reconcile-docs'],capture_output=True,text=True,timeout=120,
                        env={**os.environ,'HOME':str(home),'HELIO_PROJECT':mapping['HELIO_PROJECT']})
    print((docs.stdout+docs.stderr).strip() or f'KNOWLEDGE_DOCS exit={docs.returncode}')
+  if profile=='owner' and home==Path(pwd.getpwnam('james').pw_dir):
+   try:
+    synchronization=subprocess.run(['/mnt/c/Windows/System32/wsl.exe','-d','Ubuntu-22.04','-u','root','--exec',
+       '/usr/bin/python3','-I','/opt/helio-beta-service/scripts/helio_isolated_admin.py','commands-sync'],
+       stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=45)
+    print(synchronization.stdout.strip() if synchronization.returncode==0 else
+          'ADMINISTRATION sync_unavailable: install or update the protected administration helpers')
+   except (OSError,subprocess.TimeoutExpired):
+    print('ADMINISTRATION sync_unavailable: the managed update succeeded; administration requires host access')
 def main():
  p=argparse.ArgumentParser(description=__doc__)
  p.add_argument('--home',type=Path,default=Path.home())

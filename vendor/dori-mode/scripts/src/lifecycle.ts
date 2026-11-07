@@ -1,59 +1,40 @@
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-
-import { capacityReasons, dequeue, ordered, readQueue } from "./admission.ts";
+import { capacityReasons, dequeue, occupiesSlot, ordered, readQueue } from "./admission.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { launchLane, LaunchBusyError, LaunchError, recordSession, wakeLane, withLaunchLock } from "./launch.ts";
+import { launchLane, LaunchBusyError, LaunchError, wakeLane, withLaunchLock } from "./launch.ts";
 import { monitorLine } from "./monitor.ts";
 import { listPanes, type Pane } from "./panes.ts";
 import { type Lane, statusOf, withStatus } from "./registry.ts";
 import { iso } from "./run.ts";
-
-const QUESTIONS_SETTLED = "('done','cancelled','expired','withdrawn')";
-
-/** A lane waiting on a human answer must stay awake to receive it. Unreadable question state counts as waiting. */
-export const waitingOnQuestion = (deps: FlowDeps, key: string): boolean => {
-  const path = join(deps.config.stateDir, "discord-questions.sqlite");
-  if (!existsSync(path)) return false;
-  try {
-    const db = new Database(path, { readonly: true });
-    try {
-      return db.query(`SELECT 1 FROM questions WHERE lane = ? AND status NOT IN ${QUESTIONS_SETTLED} LIMIT 1`).get(key) !== null;
-    } finally { db.close(); }
-  } catch {
-    return true;
-  }
-};
+import { reclaimLane } from "./reclaim.ts";
 
 const closeTab = async (deps: FlowDeps, lane: Lane): Promise<boolean> =>
   (await deps.run(lane.tab ? ["herdr", "tab", "close", lane.tab] : ["herdr", "pane", "close", lane.pane ?? ""])).code === 0;
 
 export const hibernateTick = async (deps: FlowDeps, panes: readonly Pane[]): Promise<string[]> => {
-  if (deps.config.hibernateAfterMin <= 0) return [];
   const out: string[] = [];
   const now = deps.clock.now();
-  for (let lane of await deps.registry.list()) {
-    if (statusOf(lane) !== "working" || !lane.pane || !lane.job) continue;
+  const lanes = await deps.registry.list();
+  const live = new Set(panes.map(pane => pane.pane_id));
+  let demand = Math.max(0, lanes.filter(lane => occupiesSlot(lane, live)).length +
+    (await readQueue(deps)).length - deps.config.maxWorkers);
+  for (const lane of lanes.sort((a, b) => (a.idleSince ?? Date.parse(a.openedAt)) - (b.idleSince ?? Date.parse(b.openedAt)))) {
+    if (!["working", "not-done"].includes(statusOf(lane)) || !lane.pane) continue;
     const pane = panes.find((p) => p.pane_id === lane.pane);
     if (!pane) continue;
-    if (pane.agent_status !== "idle") {
+    if (pane.agent_status !== "idle" || pane.execution?.status !== "idle") {
       if (lane.idleSince !== undefined) await deps.registry.write({ ...lane, idleSince: undefined });
       continue;
     }
     if (lane.idleSince === undefined) {
-      await deps.registry.write({ ...lane, idleSince: now });
-      continue;
+      const observed = Date.parse(pane.execution?.status === "idle" ? pane.execution.since : "");
+      await deps.registry.write({ ...lane, idleSince: Number.isFinite(observed) && observed <= now ? observed : now });
+      if (demand <= 0) continue;
     }
-    if (now - lane.idleSince < deps.config.hibernateAfterMin * 60_000) continue;
-    lane = await recordSession(deps, lane);
-    if (!lane.session || waitingOnQuestion(deps, lane.key)) continue;
-    if (!(await closeTab(deps, lane))) {
-      out.push(monitorLine(`LANE_HIBERNATE_FAILED ${lane.key} could not close ${lane.tab ?? lane.pane}`));
-      continue;
-    }
-    await deps.registry.write(withStatus(lane, "hibernated", `idle ${deps.config.hibernateAfterMin}+ minutes; session kept`, iso(deps.clock), { pane: undefined, tab: undefined, idleSince: undefined }));
-    out.push(monitorLine(`LANE_HIBERNATED ${lane.key} session kept; wake="dori resume ${lane.key}"`));
+    if (demand <= 0 && (deps.config.hibernateAfterMin <= 0 ||
+      now - (lane.idleSince ?? now) < deps.config.hibernateAfterMin * 60_000)) continue;
+    const result = await reclaimLane(deps, lane.key);
+    out.push(...result.lines.map(monitorLine));
+    if (result.released) demand--;
   }
   return out;
 };
@@ -63,6 +44,10 @@ export const retryCleanup = async (deps: FlowDeps, panes: readonly Pane[]): Prom
   const out: string[] = [];
   for (const lane of await deps.registry.list()) {
     if (statusOf(lane) !== "cleanup-pending") continue;
+    if (lane.release) {
+      out.push(...(await reclaimLane(deps, lane.key)).lines.map(monitorLine));
+      continue;
+    }
     const gone = !lane.pane || !panes.some((p) => p.pane_id === lane.pane) || await closeTab(deps, lane);
     if (!gone) continue;
     const at = iso(deps.clock);

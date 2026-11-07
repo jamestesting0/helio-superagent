@@ -12,6 +12,11 @@ export type ConversationOutcome = typeof CONVERSATION_OUTCOMES[number];
 export const CONVERSATION_MAX_IDLE_MS = 72 * 60 * 60 * 1000;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export type ConversationState = "waiting_on_requester" | "waiting_on_helio" | "on_hold" | "resolved" | "archived";
+export type ConversationAdminAction =
+  | { readonly kind: "hold"; readonly reason: string }
+  | { readonly kind: "resume" }
+  | { readonly kind: "close"; readonly outcome: ConversationOutcome }
+  | { readonly kind: "reopen" };
 
 export interface Conversation {
   readonly channel_id: string;
@@ -146,10 +151,11 @@ export class Conversations extends WorkingStore {
     ).get(channel, user);
   }
 
-  recentlyResolved(channel: string, user: string, now: number): Conversation | null {
-    return this.db.query<Conversation, [string, string, number]>(`SELECT * FROM conversations
+  recentlyResolved(channel: string, user: string, now: number, topic?: string): Conversation | null {
+    return this.db.query<Conversation, [string, string, number, string | null, string | null]>(`SELECT * FROM conversations
       WHERE channel_id=? AND user_id=? AND status='resolved' AND resolved_at>?
-      ORDER BY resolved_at DESC LIMIT 1`).get(channel, user, now - 7 * DAY_MS);
+      AND (? IS NULL OR anchor_message_id=?)
+      ORDER BY resolved_at DESC LIMIT 1`).get(channel, user, now - 7 * DAY_MS, topic ?? null, topic ?? null);
   }
 
   isOpen(channel: string, user: string): boolean { return this.get(channel, user) !== null; }
@@ -272,10 +278,10 @@ export class Conversations extends WorkingStore {
       WHERE channel_id=? AND user_id=? AND opened_at=? AND status='on_hold'`).run(channel, user, row.opened_at);
   }
 
-  reopen(channel: string, user: string, now: number): Conversation {
+  reopen(channel: string, user: string, now: number, topic?: string): Conversation {
     return this.db.transaction((): Conversation => {
       this.requireSlot(channel, user);
-      const row = this.recentlyResolved(channel, user, now);
+      const row = this.recentlyResolved(channel, user, now, topic);
       if (!row) throw new RangeError("No conversation resolved in the last 7 days; open a new one");
       this.db.query(`UPDATE conversations SET status='open',outcome=NULL,closed_at=NULL,resolved_at=NULL,
         revision=revision+1,waiting_on='',question_started_at=NULL,last_reply_key=NULL,reply_disposition=NULL,
@@ -284,6 +290,41 @@ export class Conversations extends WorkingStore {
       return { ...row, status: "open", outcome: null, closed_at: null, resolved_at: null,
         archived_at: null, last_activity: now, nudged_at: null, revision: row.revision + 1, waiting_on: "",
         question_started_at: null, last_reply_key: null, reply_disposition: null };
+    }).immediate();
+  }
+
+  administer(operation: string, actor: string, expected: TopicRevision, action: ConversationAdminAction, now: number): Conversation {
+    const fingerprint = JSON.stringify([actor, expected.channel_id, expected.user_id, expected.opened_at,
+      expected.anchor_message_id, expected.revision, action]);
+    return this.db.transaction(() => {
+      const applied = this.db.query<{ fingerprint: string; result: string }, [string]>(
+        "SELECT fingerprint,result FROM conversation_admin_operations WHERE id=?").get(operation);
+      if (applied) {
+        if (applied.fingerprint !== fingerprint) throw new RangeError("Administration operation was already used");
+        return JSON.parse(applied.result);
+      }
+      const row = this.byAnchor(expected.channel_id, expected.user_id, expected.anchor_message_id);
+      if (!row || row.opened_at !== expected.opened_at || row.revision !== expected.revision) {
+        throw new RangeError("Conversation changed; refresh its preview");
+      }
+      switch (action.kind) {
+        case "hold": this.hold(row.channel_id, row.user_id, action.reason, row.anchor_message_id); break;
+        case "resume":
+          if (row.status !== "on_hold") throw new RangeError("Conversation is not on hold");
+          this.resume(row.channel_id, row.user_id, row.anchor_message_id);
+          break;
+        case "close": this.close(row.channel_id, row.user_id, action.outcome, now, undefined, row.anchor_message_id); break;
+        case "reopen":
+          if (row.status !== "resolved") throw new RangeError("Conversation is not resolved");
+          this.reopen(row.channel_id, row.user_id, now, row.anchor_message_id);
+          break;
+        default: { const unreachable: never = action; return unreachable; }
+      }
+      const result = this.byAnchor(row.channel_id, row.user_id, row.anchor_message_id);
+      if (!result || result.opened_at !== row.opened_at) throw new RangeError("Conversation changed during administration");
+      this.db.query("INSERT INTO conversation_admin_operations VALUES (?,?,?,?)")
+        .run(operation, fingerprint, JSON.stringify(result), now);
+      return result;
     }).immediate();
   }
 

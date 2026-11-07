@@ -43,6 +43,8 @@ import { HOURGLASS, react, reactPendingBlocks, reconcileBlocks, strikeLinks } fr
 import { pendingReminder } from "./delivery/pending-reminder.ts";
 import { PromptStore, QuestionStore } from "./interactive/store.ts";
 import { closeExpired, discordCall, expireNow, handleInteraction, handlePlanReply, sweep, type Deps } from "./interactive/handler.ts";
+import { isAdminInteraction } from "./admin/protocol.ts";
+import { acknowledgePolicy, policyValues, runtimePolicy } from "./intake/runtime-policy.ts";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -112,6 +114,8 @@ const fetchReply = async (channel: string, id: string, signal: AbortSignal): Pro
   return withoutBlocked(await response.json() as ReplyMessage);
 };
 const stateDir = requireEnv("DORI_STATE_DIR");
+let appliedPolicy = runtimePolicy()?.revision;
+acknowledgePolicy("intake", appliedPolicy);
 const delivery = new Delivery(`${stateDir}/discord-delivery.sqlite`, LOCK_WAIT_MS);
 // A native monitor notification can coalesce events under an older timestamp.
 // Record readiness at its source, bound to this process even across PID reuse/namespaces.
@@ -124,7 +128,9 @@ const recordReadiness = (phase: "starting" | "ready") => {
 };
 recordReadiness("starting");
 function blockedAuthor(id: string | undefined): boolean {
-  return id !== undefined && id !== cfg.ownerId && !cfg.trustedIds?.has(id) && delivery.moderation.isBlocked(id);
+  const current = policyValues();
+  return id !== undefined && id !== current.DORI_DISCORD_OWNER_ID &&
+    !(current.DORI_DISCORD_TRUSTED_IDS ?? "").split(",").includes(id) && delivery.moderation.isBlocked(id);
 }
 // Context shown to Helio keeps the blocked message's place in the chain but none of its content.
 function withoutBlocked(message: ReplyMessage): ReplyMessage {
@@ -223,6 +229,33 @@ async function channelInfo(channelId: string): Promise<ChannelInfo | undefined> 
   return info;
 }
 const parentOf = async (channelId: string) => (await channelInfo(channelId))?.parent_id;
+let updatingPolicy: Promise<void> | undefined;
+function refreshPolicy(): Promise<void> {
+  if (updatingPolicy) return updatingPolicy;
+  if (runtimePolicy()?.revision === appliedPolicy) return Promise.resolve();
+  updatingPolicy = (async () => {
+    do {
+      const revision = runtimePolicy()?.revision;
+      const next = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user),
+        (channel, user, id) => conversations.workingAnchor(channel, user, id), channel => ownerPosts.get(channel),
+        (channel, user) => conversations.talkedRecently(channel, user, Date.now()));
+      if (cfg.botId !== undefined) next.botId = cfg.botId;
+      channels.clear();
+      await validateChannelPolicy(next, rest, warn);
+      cfg = next;
+      appliedPolicy = revision;
+      acknowledgePolicy("intake", revision);
+    } while (runtimePolicy()?.revision !== appliedPolicy);
+  })().finally(() => { updatingPolicy = undefined; });
+  return updatingPolicy;
+}
+if (appliedPolicy !== undefined) setInterval(() => {
+  void refreshPolicy().catch((error: unknown) => {
+    if (!(error instanceof Error)) throw error;
+    console.error(monitorLine(`INBOUND_ERROR policy update failed: ${error.message}`));
+    process.exit(1);
+  });
+}, 1000).unref();
 
 const tracked = new Set<string>();
 const delivered = new RecentIds();
@@ -285,6 +318,7 @@ function recordHelioReply(msg: IncomingMessage): void {
 }
 
 async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean> {
+  await refreshPolicy();
   if (delivered.has(msg.id)) return false;
   if (blockedAuthor(msg.author.id)) {
     delivered.add(msg.id);
@@ -400,10 +434,17 @@ async function enrich(msg: IncomingMessage, inbound: Inbound, staged: Inbound & 
   }
   const reply_context = inbound.channel_policy === "trusted" ? await replyContext(msg, fetchReply) : repliedTo(msg);
   const conversation = await conversationContext(msg);
-  const record = {
+  const assembled = {
     ...staged, ...body, preparation_complete: true,
     ...(reply_context ? { reply_context } : {}), ...(conversation ? { conversation } : {}),
   };
+  await refreshPolicy();
+  const authorized = await reauthorize(JSON.stringify(assembled), cfg, rest);
+  if (!authorized) {
+    await delivery.ignored.settle("inbound", msg.id, prepared, cfg.ignoredChannels, channelInfo);
+    return;
+  }
+  const record = { ...assembled, ...authorized };
   // Dismissed, blocked or acknowledged while it was being prepared: nothing more to deliver.
   if (!delivery.refresh(msg.id, prepared, JSON.stringify(record))) return;
   await sweepExpired(delivery, stateDir, warn);
@@ -552,6 +593,7 @@ enqueue("catch-up", async () => {
   const openGaps = delivery.gaps().length;
   if (openGaps) console.log(monitorLine(`INBOUND_GAPS_PENDING count=${openGaps} read="ack gaps"`));
   const upkeep = async () => {
+    await refreshPolicy();
     await reconcileBlocks({ delivery, conversations, rest, stateDir, warn });
     await sweepConversations({
       store: conversations, rest, now: Date.now(), emit: (line) => console.log(line),
@@ -600,11 +642,12 @@ const listener = new DiscordBotListener(client, {
 const prompts = new PromptStore(`${stateDir}/discord-prompts.sqlite`, 300);
 const clickDeps: Deps = {
   prompts, questions: () => QuestionStore.open(`${stateDir}/discord-questions.sqlite`, 300),
-  ownerId: cfg.ownerId, trusted: () => cfg.trustedIds ?? new Set<string>(), call: discordCall(token),
+  ownerId: cfg.ownerId, trusted: () => filterConfig(process.env).trustedIds ?? new Set<string>(), call: discordCall(token),
   now: () => Date.now(), emit: (line) => console.log(line), warn,
 };
 const upkeepDeps: Deps = { ...clickDeps, call: discordCall(token, 10_000) };
 listener.on("interaction_create", (event) => {
+  if (isAdminInteraction(event)) return;
   const click = event as { member?: { user?: { id?: string } }; user?: { id?: string } };
   if (blockedAuthor(click.member?.user?.id ?? click.user?.id)) return;
   void handleInteraction(event, clickDeps);

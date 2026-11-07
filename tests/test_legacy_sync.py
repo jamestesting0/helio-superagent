@@ -5,6 +5,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import runpy
+import subprocess
 import tempfile
 import unittest
 
@@ -149,3 +150,11 @@ class LegacySyncTests(unittest.TestCase):
         self.assertEqual((self.base / "release-approvers").read_text(), "owner reviewed approvers")
         self.assertEqual(self.launcher.read_text(), "owner isolation wrapper")
         self.assertEqual(json.loads((self.base / "config.json").read_text())["leadPane"], "active-pane")
+        loader = ROOT / "vendor/dori-mode/scripts/src/config.ts"
+        script = (f"import {{ loadConfig }} from {json.dumps(str(loader))}; "
+                  f"const config = await loadConfig({json.dumps(str(self.base / 'config.json'))}, {json.dumps(str(self.home))}); "
+                  "console.log(JSON.stringify({maxWorkers:config.maxWorkers,hibernateAfterMin:config.hibernateAfterMin}));")
+        loaded = subprocess.run(["bun", "--eval", script], capture_output=True, text=True, timeout=20)
+        self.assertEqual(loaded.returncode, 0, loaded.stderr)
+        config = json.loads((self.base / "config.json").read_text())
+        self.assertEqual(json.loads(loaded.stdout), {key: config[key] for key in ("maxWorkers", "hibernateAfterMin")})

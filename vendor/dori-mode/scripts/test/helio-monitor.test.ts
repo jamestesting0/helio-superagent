@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { defaultConfig } from "../src/config.ts";
@@ -16,7 +16,7 @@ const filters = setup.split("\n").filter((line) => line.startsWith("|")).flatMap
   return match?.[1] ? [new RegExp(match[1].replaceAll("\\|", "|"))] : [];
 });
 const call = async (args: readonly string[]) => {
-  const child = Bun.spawn([process.execPath, cli, ...args], { env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const child = Bun.spawn([join(state.dir, "bin/dori"), ...args], { env, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ code, err }).toEqual({ code: 0, err: "" });
   return out.trim();
@@ -28,6 +28,8 @@ beforeEach(async () => {
   await Bun.write(config, JSON.stringify({ ...defaultConfig(state.dir), stateDir: state.dir }));
   const bin = join(state.dir, "bin");
   mkdirSync(bin);
+  symlinkSync(process.execPath, join(bin, "bun"));
+  symlinkSync(cli, join(bin, "dori"));
   writeFileSync(join(bin, "herdr"), "#!/bin/sh\nprintf 'invalid-json\\n'\n", { mode: 0o700 });
   env = { ...process.env, DORI_CONFIG: config, DORI_STATE_DIR: state.dir, PATH: `${bin}:${process.env.PATH}` };
 });
@@ -68,4 +70,15 @@ test("monitor rendering bounds large multiline records to a single 1000-characte
   const line = monitorLine(`POSTED cli-lane ${"x\n".repeat(100_000)}`);
   expect(line.length).toBe(1000);
   expect(line.includes("\n")).toBe(false);
+});
+
+test("sync shows recorded work separately from execution and accepts a hibernated lane without a pane", async () => {
+  const deps = depsFor(newWorld(), fakeClock(0), state.dir);
+  await deps.registry.write({ key: "sleeping", title: "sleeping", thread: "none", brief: "/b",
+    done: "file /b", openedAt: new Date(0).toISOString(), status: "hibernated", session: "saved" });
+  writeFileSync(join(state.dir, "bin/herdr"), "#!/bin/sh\nprintf '{\"result\":{\"panes\":[]}}\\n'\n", { mode: 0o700 });
+  const output = await call(["sync"]);
+  expect(output).toContain("hibernated | missing: No linked pane");
+  expect(output).toContain("DRIFT none");
+  expect((await deps.registry.read("sleeping"))?.session).toBe("saved");
 });

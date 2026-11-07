@@ -116,26 +116,45 @@ inspect it before replacing it.
 
 ## 6. Browser: Chrome profile and BrowserSkill
 
-Helio does live beta QA through a dedicated Chrome profile named Helio, driven
-by the BrowserSkill extension (`bsk`).
+Helio does live beta QA through dedicated Chrome profiles qa-a, qa-b and qa-c,
+driven by the BrowserSkill extension (`bsk`). qa-a is the default and holds
+Dominik's Elo Manager account; the other profiles hold separate supplied accounts.
 
 1. Install BrowserSkill: put the `bsk` binary in `~/.local/bin/bsk` and the
    skill in `~/.pi/agent/skills/browser-skill` (follow BrowserSkill's own
    install instructions).
-2. Install Chrome for the profile. Helio uses a private Chrome unpacked under
-   `~/.local/share/helio-chrome/pkg` and launched by `isolation/bin/helio-chrome`:
+2. Install Chrome for the profiles. Helio uses a private Chrome unpacked under
+   `~/.local/share/helio-chrome/pkg`:
 
    ```sh
    mkdir -p ~/.local/share/helio-chrome && cd ~/.local/share/helio-chrome
    curl -fLO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
    dpkg-deb -x google-chrome-stable_current_amd64.deb pkg
-   install -m 700 ~/PythonProjects/helio-superagent/isolation/bin/helio-chrome ~/.local/bin/helio-chrome
-   helio-chrome     # sign in the QA Discord accounts and install the BrowserSkill extension
    ```
 
-Never copy browser cookies from another machine; sign in fresh.
+3. After installing Helio and provisioning the isolated runtime in parts 7-8,
+   run plain `helio` from the owner WSL shell to open its workspace. In an
+   isolated terminal, run:
 
-**Check:** `bsk --version` works and `helio-chrome` opens Chrome.
+   ```sh
+   source ~/.dori/elobot/browser-env
+   bsk daemon start
+   helio browser setup qa-a
+   ```
+
+   Install BrowserSkill in that Chrome window and sign into Dominik's Discord
+   account. Repeat `helio browser setup qa-b` and `helio browser setup qa-c`
+   with the other supplied accounts. The helper selects Wayland for WSLg;
+   do not launch Chrome directly.
+4. Copy each extension's **Copy profile instructions** output and record its
+   verified instance/account mapping in `~/.dori/elobot/qa-accounts.json`.
+   The setup command opens the window; it does not register that mapping.
+
+Never copy browser cookies from another machine; sign in fresh in each profile.
+
+**Check:** `helio browser ready --accounts 3` succeeds, `helio browser accounts`
+shows all three connected, and each profile has the expected Discord identity
+and Test-thread access. Connection readiness alone does not prove login.
 
 ## 7. Helio
 

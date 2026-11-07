@@ -2,6 +2,7 @@
 from pathlib import Path
 import runpy
 import stat
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -48,7 +49,7 @@ class HelioConfigTests(unittest.TestCase):
         self.assertIn("export HELIO_ANSWER_FOR_OWNER=on", env)
         self.assertIn("export HELIO_AUTOFIX_DENY='requirements*.txt,", env)
         bad = {"HELIO_AUTOFIX": "yes", "HELIO_OWNER_PRESENT_MINUTES": "0", "HELIO_AUTOFIX_MAX_LINES": "40 ",
-               "HELIO_AUTOFIX_DENY": "main.py,../outside"}
+               "HELIO_AUTOFIX_DENY": "main.py,../outside", "HELIO_AUTOBLOCK_WINDOW_H": "25"}
         issues = " ".join(CONFIG["problems"]({**SECRETS, **bad}))
         for key in bad:
             self.assertIn(key, issues)
@@ -71,13 +72,94 @@ class HelioConfigTests(unittest.TestCase):
     def test_render_writes_private_files_and_is_idempotent(self):
         self.write_settings(HELIO_TRUSTED_USERS="11111,22222")
         with redirect_stdout(StringIO()):
-            self.assertEqual(CONFIG["render"](self.home, False), 6)
+            self.assertEqual(CONFIG["render"](self.home, False), 8)
             self.assertFalse((self.home / ".dori").exists())
             CONFIG["render"](self.home, True)
             self.assertEqual(CONFIG["render"](self.home, True), 0)
         base = self.home / ".dori/elobot"
         self.assertEqual((base / "trusted-users").read_text(), "11111,22222\n")
         self.assertEqual(stat.S_IMODE((base / "env").stat().st_mode), 0o600)
+
+    def test_public_policy_has_current_authority_but_no_credentials(self):
+        values = {**SECRETS, "HELIO_TRUSTED_USERS": "11111,22222"}
+        files = CONFIG["generate"](values, self.home)
+        policy = json.loads(files["policy/policy.json"][0])
+        self.assertEqual(policy["values"]["HELIO_TRUSTED_USERS"], "11111,22222")
+        self.assertEqual(policy["revision"], CONFIG["policy_revision"](values, self.home))
+        self.assertEqual(files["policy/policy.json"][1], 0o644)
+        for key, secret in SECRETS.items():
+            self.assertNotIn(key, policy["values"])
+            self.assertNotIn(secret, files["policy/policy.json"][0].decode())
+
+    def test_owner_change_is_canonical_idempotent_and_survives_render(self):
+        self.write_settings(HELIO_TRUSTED_USERS="11111")
+        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+        with redirect_stdout(StringIO()):
+            result = CONFIG["change"](self.home, "grant-1", "653894110884921366",
+                                      revision, "trusted.add", "22222", "")
+            repeated = CONFIG["change"](self.home, "grant-1", "653894110884921366",
+                                        revision, "trusted.add", "22222", "")
+            CONFIG["render"](self.home, True)
+        self.assertEqual(result, repeated)
+        self.assertEqual(CONFIG["load"](self.home)["HELIO_TRUSTED_USERS"], "11111,22222")
+        self.assertEqual((self.home / ".dori/elobot/trusted-users").read_text(), "11111,22222\n")
+        self.assertNotEqual(result["revision"], revision)
+
+    def test_concurrent_owner_edits_cannot_overwrite_a_committed_revision(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+
+        self.write_settings(HELIO_TRUSTED_USERS="11111")
+        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+        barrier = Barrier(2)
+
+        def grant(target):
+            barrier.wait()
+            try:
+                CONFIG["change"](self.home, "race-" + target, "653894110884921366",
+                                 revision, "trusted.add", target, "")
+                return "saved"
+            except CONFIG["ConfigConflict"]:
+                return "conflict"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(grant, ("22222", "33333")))
+        self.assertCountEqual(outcomes, ["saved", "conflict"])
+        self.assertIn(set(CONFIG["load"](self.home)["HELIO_TRUSTED_USERS"].split(",")),
+                      ({"11111", "22222"}, {"11111", "33333"}))
+
+    def test_stale_or_unauthorized_setting_change_preserves_canonical_file(self):
+        self.write_settings()
+        before = CONFIG["config_path"](self.home).read_bytes()
+        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+        for actor, expected in (("11111", revision), ("653894110884921366", "0" * 64)):
+            with self.subTest(actor=actor, revision=expected), self.assertRaises(CONFIG["ConfigConflict"]):
+                CONFIG["change"](self.home, "denied-" + actor, actor, expected,
+                                 "timeout.set", "HELIO_HIBERNATE_AFTER_MIN", "45")
+        self.assertEqual(CONFIG["config_path"](self.home).read_bytes(), before)
+
+    def test_channel_policy_change_updates_all_overlapping_lists_together(self):
+        self.write_settings(DORI_DISCORD_ALLOWED="11111",
+                            DORI_DISCORD_TRUSTED_CHANNELS="11111",
+                            DORI_DISCORD_NORMAL_CHANNELS="",
+                            DORI_DISCORD_IGNORED_CHANNELS="22222")
+        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+        with redirect_stdout(StringIO()):
+            CONFIG["change"](self.home, "channel-1", "653894110884921366", revision,
+                             "channels.set", "22222", "trusted")
+        values = CONFIG["load"](self.home)
+        self.assertEqual(values["DORI_DISCORD_ALLOWED"], "11111,22222")
+        self.assertEqual(values["DORI_DISCORD_TRUSTED_CHANNELS"], "11111,22222")
+        self.assertEqual(values["DORI_DISCORD_IGNORED_CHANNELS"], "")
+        self.assertEqual(CONFIG["problems"](values), [])
+
+    def test_timer_edit_rejects_a_nudge_after_the_timeout(self):
+        self.write_settings()
+        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+        with self.assertRaises(CONFIG["ConfigConflict"]):
+            CONFIG["change"](self.home, "timer-1", "653894110884921366", revision,
+                             "timeout.set", "HELIO_CONVERSATION_NUDGE_HOURS", "100")
+        self.assertNotIn("HELIO_CONVERSATION_NUDGE_HOURS", CONFIG["load"](self.home))
 
     def test_render_refuses_a_world_readable_settings_file(self):
         self.write_settings()

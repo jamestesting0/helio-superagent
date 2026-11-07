@@ -124,5 +124,12 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
         ORDER BY length(message_id) DESC,message_id DESC LIMIT 1),anchor_message_id);
       PRAGMA user_version=5`);
   }).immediate();
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 6) return;
+    db.exec(`CREATE TABLE conversation_admin_operations (
+      id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL
+    ); PRAGMA user_version=6`);
+  }).immediate();
   return db;
 }

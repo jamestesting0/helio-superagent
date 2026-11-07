@@ -36,6 +36,13 @@ Inside the isolated workspace (`helio-wsl`): `helio start|resume`, `helio update
 `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`.
 These last three run inside the isolated workspace (or owner installation), not through the host launcher.
 
+Live beta browser work uses `helio browser ready`, which defaults to qa-a.
+Use `helio browser ready --accounts 2` or `--accounts 3` for multiple supplied
+accounts. The helper uses Wayland in the isolated WSL runtime; do not launch
+Chrome directly or fall back to the legacy Helio profile. Bind BrowserSkill
+sessions to the verified QA instance/account map and close only profiles opened
+by the task. See the installed `docs/discord-qa-workflow.md` for setup and cleanup.
+
 `helio doctor --json` is the first check when a greeting reports incomplete
 readiness. It works from either shell and does not start or repair anything.
 An old failed lane is a work-state warning, separate from receiving new requests.

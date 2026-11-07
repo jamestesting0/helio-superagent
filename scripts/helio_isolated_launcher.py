@@ -102,6 +102,8 @@ signal.signal(signal.SIGTERM,interrupted)
 signal.signal(signal.SIGHUP,interrupted)
 try:
     policy=refresh_owner_policy()
+    if '--start' in sys.argv[1:] or '--resume' in sys.argv[1:]:
+        runpy.run_path(str(Path(__file__).resolve().parent/'helio_admin_lifecycle.py'))['report'](True)
     fw('iptables','-N',CHAIN);made=True
     fw('iptables','-A',CHAIN,'-m','addrtype','--dst-type','LOCAL','-j','REJECT')
     for net in ('0.0.0.0/8','10.0.0.0/8','100.64.0.0/10','127.0.0.0/8','169.254.0.0/16','172.16.0.0/12','192.168.0.0/16','198.18.0.0/15','224.0.0.0/4','240.0.0.0/4'):
@@ -144,9 +146,7 @@ try:
              # Bind stable directories so broker socket replacements remain visible.
              '--ro-bind','/run/helio-beta-service','/run/helio-beta-service',
              '--ro-bind','/run/helio-release-service','/run/helio-release-service',
-             '--ro-bind',str(policy/'trusted-users'),'/home/james/.dori/elobot/trusted-users',
-             '--ro-bind',str(policy/'release-approvers'),'/home/james/.dori/elobot/release-approvers',
-             '--ro-bind',str(policy/'report-channels'),'/home/james/.dori/elobot/report-channels',
+              '--ro-bind',str(policy),'/home/james/.dori/elobot/policy',
              '--tmpfs','/tmp','--proc','/proc','--dev','/dev','--bind',control,'/control','--chdir','/home/james/PythonProjects/elo-bot',
              '--','/bin/sh','-c','while [ ! -f /control/ready ]; do sleep 0.1; done; exec "$@"','helio',*command]
         interactive=not any(x in sys.argv[1:] for x in ('--check','--integration-check','--model-check','--worker-check','--sync-check','--suite-check','--connectivity-check'))

@@ -1,8 +1,9 @@
 import type { Conversation, Conversations } from "./conversations.ts";
-import { CONVERSATION_MAX_IDLE_MS, DAY_MS } from "./conversations.ts";
+import { CONVERSATION_MAX_IDLE_MS } from "./conversations.ts";
 import { monitorLine } from "../delivery/monitor-summary.ts";
 import { DiscordRestError, IgnoredChannelError, type Rest } from "../discord/rest.ts";
 import type { NoticeIntent } from "./notice-store.ts";
+import { policyValues } from "../intake/runtime-policy.ts";
 
 /** Missing history or nonce means unknown delivery, never permission for a second POST. */
 async function findNotice(rest: Rest, intent: NoticeIntent): Promise<string | undefined> {
@@ -29,11 +30,17 @@ export async function sweepConversations(options: {
   readonly hasNewInput?: (row: Conversation) => boolean;
 }): Promise<void> {
   const { store, rest, now, emit } = options;
+  const values = policyValues();
+  const nudgeMs = Number(values.HELIO_CONVERSATION_NUDGE_HOURS ?? 24) * 3_600_000;
+  const timeoutMs = Number(values.HELIO_CONVERSATION_TIMEOUT_HOURS ?? CONVERSATION_MAX_IDLE_MS / 3_600_000) * 3_600_000;
+  if (!Number.isSafeInteger(nudgeMs) || !Number.isSafeInteger(timeoutMs) || nudgeMs <= 0 || timeoutMs <= nudgeMs) {
+    throw new TypeError("Invalid conversation courtesy timers");
+  }
   for (const row of store.list()) {
     if (store.state(row) !== "waiting_on_requester" || row.question_started_at === null || options.hasNewInput?.(row)) continue;
     const idle = now - row.question_started_at;
-    const closing = idle >= CONVERSATION_MAX_IDLE_MS;
-    if (!closing && (idle < DAY_MS || row.nudged_at !== null)) continue;
+    const closing = idle >= timeoutMs;
+    if (!closing && (idle < nudgeMs || row.nudged_at !== null)) continue;
     let intent: NoticeIntent | undefined;
     try {
       const channel = await rest<{ guild_id?: string }>(`/channels/${row.channel_id}`);

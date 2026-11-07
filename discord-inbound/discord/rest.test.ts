@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { discordRest, IgnoredChannelError } from "./rest.ts";
 
-test.each(["GET", "POST", "DELETE"])("ignored channel refuses %s before any Discord request", async (method) => {
+test.each(["GET", "POST", "DELETE"].flatMap(method => [false, true].map(allowIgnoredMetadata => ({ method, allowIgnoredMetadata }))))(
+  "ignored channel refuses content access before any Discord request: %s", async ({ method, allowIgnoredMetadata }) => {
   const previous = process.env.DORI_DISCORD_IGNORED_CHANNELS;
   process.env.DORI_DISCORD_IGNORED_CHANNELS = "100";
   const calls: string[] = [];
@@ -10,9 +11,12 @@ test.each(["GET", "POST", "DELETE"])("ignored channel refuses %s before any Disc
     return Response.json({ id: "10" });
   }, { preconnect: fetch.preconnect }));
   try {
-    const result = await discordRest("fixture")("/channels/100/messages/10", { method })
-      .then(() => undefined, (error: unknown) => error);
-    expect(result).toBeInstanceOf(IgnoredChannelError);
+    const rest = discordRest("fixture", { allowIgnoredMetadata, metadataActor: "11111" });
+    for (const path of ["/channels/100/messages/10", "/channels/100/thread-members/22222", "/channels/100/thread-members",
+      ...(method !== "GET" || !allowIgnoredMetadata ? ["/channels/100/thread-members/11111"] : [])]) {
+      const result = await rest(path, { method }).then(() => undefined, (error: unknown) => error);
+      expect(result).toBeInstanceOf(IgnoredChannelError);
+    }
     expect(calls).toEqual([]);
   } finally {
     fetcher.mockRestore();

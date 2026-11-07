@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@discordjs/rest": "2.6.3",
     "agent-messenger": "2.40.0",
     "sharp": "0.35.5"
   },

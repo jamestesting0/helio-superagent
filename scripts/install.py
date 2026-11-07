@@ -50,6 +50,9 @@ def plan(home: Path, project: Path, profile: str) -> list[tuple[Path, bytes, int
         *(((project / ".omo/settings.json", (ROOT / "omo/settings.json").read_bytes(), 0o644),)
           if not (project / ".omo/settings.json").exists() else ()),
     ]
+    if not PAYLOAD["CONFIG"]["config_path"](home).is_file():
+        data, mode = PAYLOAD["CONFIG"]["generate"](mapping, home)["policy/lane-settings.json"]
+        files.append((base / "policy/lane-settings.json", data, mode))
     if not (project / "AGENTS.md").exists():
         files.append((project / "AGENTS.md", (ROOT / "elobot-checkout/AGENTS.md").read_bytes(), 0o644))
     return files
@@ -62,6 +65,7 @@ def update_baseline(home: Path, files: list[tuple[Path, bytes, int]], profile: s
     keys.update({home / ".dori/discord-inbound" / name: "@inbound/" + name for name in INBOUND_FILES})
     keys.update({base / "vendor/dori-mode/scripts/src/messenger" / name: "@messenger/" + name
                  for name in PAYLOAD["MESSENGER"]})
+    keys.update({base / "vendor/dori-mode" / name: "@vendor/" + name for name in PAYLOAD["VENDOR_MANAGED"]})
     recorded = {keys[path]: hashlib.sha256(data).hexdigest() for path, data, _ in files if path in keys}
     recorded.update(_configLeadPane="", _profile=profile)
     return (json.dumps(recorded, indent=2) + "\n").encode()
