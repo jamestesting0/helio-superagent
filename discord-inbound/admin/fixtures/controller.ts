@@ -53,7 +53,14 @@ export async function fixture(dm = false) {
           response = { records: [{ id: "55555", channel: "55555", title: "Server room", state: "normal",
             summary: "Configured channel", revision: "1" }] };
         }
-        else response = { records: query.target ? records.filter(row => row.id === query.target) : records, revision: policy.revision };
+        else {
+          let visible = query.target ? records.filter(row => row.id === query.target) : records;
+          const filters = object(query.filters);
+          for (const key of ["user", "channel"] as const) {
+            if (filters[key]) visible = visible.filter(row => row[key] === filters[key]);
+          }
+          response = { records: visible, revision: policy.revision };
+        }
       }
       if (request.kind === "configure") {
         configurationChanges += 1;

@@ -5,7 +5,7 @@ import { Access, autocomplete, interaction, type Interaction } from "./interacti
 import { Panels, position, type Panel } from "./panels.ts";
 import { AdminError, isAdminInteraction, object, section, text, type AdminPolicy, type AdminRecord } from "./protocol.ts";
 import { actions, render, terminal } from "./render.ts";
-import { loadPanel } from "./panel-read.ts";
+import { listFilters, loadPanel } from "./panel-read.ts";
 
 export class Controller {
   private readonly access = new Access();
@@ -41,12 +41,7 @@ export class Controller {
     await this.call("POST", `/interactions/${event.id}/${event.token}/callback`, { type: 5, data: { flags: 64 } });
     let panel: Panel | undefined;
     try {
-      const filters: Record<string, string> = {};
-      for (const name of ["state", "user", "channel", "source"]) if (event.options[name]) filters[name] = event.options[name];
-      if (event.options.policy) filters.state = event.options.policy;
-      if (event.options.actor) filters.user = event.options.actor;
-      if (event.options.action) filters.action = event.options.action;
-      if (event.section === "conversations" && event.command === "list" && !filters.state) filters.state = "active";
+      const filters = listFilters(event);
       panel = {
         id: randomBytes(12).toString("hex"), actor: event.actor, channel: event.channel,
         ...(event.guild === undefined ? {} : { guild: event.guild }),

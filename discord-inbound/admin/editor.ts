@@ -6,7 +6,7 @@ import { actions } from "./render.ts";
 
 const confirmationLabels: Readonly<Record<string, string>> = {
   "conversations.close": "Close conversation", "lanes.abandon": "Stop and abandon",
-  "trusted.add": "Grant trust", "trusted.remove": "Remove trust", "channels.set": "Save channel policy",
+  "trusted.add": "Grant trust", "trusted.remove": "Remove trust", "channels.set": "Save policy",
 };
 const ownerAction = (action: string) => action.startsWith("trusted.") || action.startsWith("channels.") ||
   action === "timeout.set" || action === "lanes.abandon";
@@ -30,7 +30,7 @@ export class Editor {
     const proposal: Proposal = {
       action, target, input: action === "channels.set" ? { value: values.value ?? values.policy ?? "" } : values,
       expected: ownerAction(action) && action !== "lanes.abandon" ? policy.revision : current?.revision ?? "",
-      operation: this.event.id, label: confirmationLabels[action] ?? label ?? (action === "blocks.add" ? "Block user" : "Apply change"),
+      operation: this.event.id, label: confirmationLabels[action] ?? label ?? (action === "blocks.add" ? "Block user" : "Apply"),
     };
     if (confirmationLabels[action] || input.confirmation) {
       panel.proposal = proposal;
@@ -141,6 +141,7 @@ export class Editor {
         proposed.action === "channels.set" ? `Channel policy set to ${proposed.input.value}.` : "Setting saved."} ${text(outcome.application, 200)}` :
       text(outcome.notice, 1000);
     delete panel.pending;
+    position(panel).ids = [];
     position(panel).selected = proposed.target;
     panel.screen = "detail";
     panel.contentPage = 0;

@@ -85,6 +85,8 @@ test("all list sections fit eight records and never emit an empty selector", () 
     expect(previous?.emoji?.name).toBe("\u25C0\uFE0F");
     expect(next?.emoji?.name).toBe("\u25B6\uFE0F");
     expect(message.components.flatMap(row => row.components ?? []).some(component => component.custom_id?.endsWith(":close"))).toBe(false);
+    expect(message.components.flatMap(row => row.components ?? []).some(component =>
+      component.custom_id?.endsWith(":add") || component.custom_id?.endsWith(":choose-channel"))).toBe(false);
     const empty = render({ ...panel, positions: { [section]: { ids: [], page: 0, filters: {} } } }, [], policy);
     expect(empty.components.flatMap(row => row.components ?? []).some(component => component.placeholder === "Open item")).toBe(false);
   }

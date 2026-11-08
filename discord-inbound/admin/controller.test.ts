@@ -91,15 +91,11 @@ test("DM autocomplete does not dispatch runtime work after its shared request bu
   } finally { clock.mockRestore(); }
 });
 
-test.each([
-  { section: "trusted", verb: "add", command: "/trusted add" },
-  { section: "channels", verb: "choose-channel", command: "/channels show" },
-  { section: "conversations", verb: "filters", command: "/conversations list" },
-])("DM inputs provide usable commands instead of guild-only pickers: %s", async ({ section, verb, command }) => {
+test("DM filters provide a usable command instead of guild-only pickers", async () => {
   const f = await fixture(true);
-  await f.controller.handle(f.event({ name: section, options: [{ type: 1, name: "list" }] }, "22222", 2));
-  await f.click(verb, [], "22222");
-  expect(JSON.stringify(f.last())).toContain(command);
+  await f.controller.handle(f.event({ name: "conversations", options: [{ type: 1, name: "list" }] }, "22222", 2));
+  await f.click("filters", [], "22222");
+  expect(JSON.stringify(f.last())).toContain("/conversations list");
   const rows = f.last().components;
   if (!Array.isArray(rows)) throw new Error("Missing DM controls");
   const types = rows.flatMap(row => {
@@ -234,11 +230,11 @@ test("expiring a panel removes its controls without changing domain state", asyn
   expect(f.mutations()).toBe(0);
 });
 
-test("native user selection previews an owner grant and preserves pending application feedback", async () => {
+test("the trust command previews an owner grant and preserves pending application feedback", async () => {
   const f = await fixture();
-  await f.controller.handle(f.event({ name: "trusted", options: [{ type: 1, name: "list" }] }, "22222", 2));
-  await f.click("add", [], "22222");
-  await f.click("entity-user", ["33333"], "22222");
+  await f.controller.handle(f.event({ name: "trusted", options: [
+    { type: 1, name: "add", options: [{ type: 6, name: "user", value: "33333" }] },
+  ] }, "22222", 2));
   expect(f.configurationChanges()).toBe(0);
   expect(JSON.stringify(f.last())).toContain("Grant trust");
   await f.click("commit", [], "22222");

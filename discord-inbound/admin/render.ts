@@ -65,9 +65,9 @@ export function actions(section: Section, record: AdminRecord, owner: boolean): 
     case "overview": case "audit": break;
   }
   return entries.filter(value => !record.blockedActions?.[value]).map(value => ({ label: ({
-    hold: "Put on hold", resume: "Resume", close: section === "lanes" ? "Verify and close lane" : "Close conversation",
-    reopen: "Reopen topic", pause: "Pause lane", abandon: "Stop and abandon", remove: section === "trusted" ? "Remove trust" : "Unblock user",
-    normal: "Set normal policy", trusted: "Set trusted policy", ignored: "Set ignored policy", set: "Set value", check: "Check GitHub",
+    hold: "Hold", resume: "Resume", close: section === "lanes" ? "Verify and close" : "Close",
+    reopen: "Reopen", pause: "Pause", abandon: "Stop and abandon", remove: section === "trusted" ? "Remove trust" : "Unblock",
+    normal: "Normal", trusted: "Trusted", ignored: "Ignored", set: "Set value", check: "Check access",
   })[value] ?? value, value }));
 }
 
@@ -116,7 +116,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
   if (panel.screen === "pending") {
     title = "Checking change";
     fields.push({ name: "Operation", value: panel.pending?.operation ?? "" });
-    controls.push(row(button(panel, "refresh", "Check outcome")));
+    controls.push(row(button(panel, "refresh", "Refresh")));
   } else if (panel.screen === "filters") {
     title += " filters";
     const draft = panel.draft ?? saved.filters;
@@ -135,8 +135,8 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     if (panel.guild === undefined) description = [description, panel.section === "conversations" ?
       "Set user/channel filters with `/conversations list user:<user> channel:<channel ID>`. Channel autocomplete searches the configured server." :
       panel.section === "audit" ? "Set the actor filter with `/audit list actor:<user>`." : ""].filter(Boolean).join("\n\n");
-    controls.push(row(button(panel, "apply-filters", "Apply filters", false, 1),
-      button(panel, "clear-filters", "Clear filters"), button(panel, "back", "Back")));
+    controls.push(row(button(panel, "apply-filters", "Apply", false, 1),
+      button(panel, "clear-filters", "Clear"), button(panel, "back", "Back")));
   } else if (panel.screen === "confirm") {
     title = panel.proposal?.label ?? "Review change";
     description = [description, selected ? `**${escapeMarkdown(selected.title)}**\n${selected.summary}` : panel.proposal?.target,
@@ -149,7 +149,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     const proposed = proposalFields(panel.proposal);
     const pages = Math.max(1, Math.ceil(proposed.length / 5)), page = Math.min(panel.contentPage, pages - 1);
     fields.push(...proposed.slice(page * 5, page * 5 + 5));
-    controls.push(row(button(panel, "commit", panel.proposal?.label ?? "Save change", false,
+    controls.push(row(button(panel, "commit", panel.proposal?.label ?? "Save", false,
       ["conversations.close", "lanes.abandon", "trusted.remove"].includes(panel.proposal?.action ?? "") ? 4 : 1),
       button(panel, "cancel", "Cancel")));
     if (pages > 1) controls.push(row(button(panel, "content-prev", previous, page === 0),
@@ -189,8 +189,8 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       if (pages > 1) controls.push(row(button(panel, "content-prev", previous, page === 0),
         button(panel, "content-next", next, page + 1 >= pages)));
     }
-    controls.push(row(button(panel, "back", "Back to results"),
-      ...(selected?.url ? [{ type: 2, style: 5, label: "Open source", url: selected.url }] : []),
+    controls.push(row(button(panel, "back", "Back"),
+      ...(selected?.url ? [{ type: 2, style: 5, label: "Source", url: selected.url }] : []),
       button(panel, "refresh", "Refresh")));
   } else if (panel.section === "overview") {
     const overview = records[0];
@@ -222,8 +222,6 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     controls.push(row(button(panel, "prev", previous, page === 0), button(panel, "next", next, (page + 1) * 8 >= listed.length),
       ...(filterOptions(panel.section).length ? [button(panel, "filters", "Filters")] : []),
       button(panel, "refresh", "Refresh")));
-    if (panel.section === "blocks" || owner && panel.section === "trusted") controls.push(row(button(panel, "add", panel.section === "blocks" ? "Block user" : "Grant trust")));
-    if (owner && panel.section === "channels") controls.push(row(button(panel, "choose-channel", "Choose channel")));
     footer = `Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | As of ${new Date(panel.snapshot).toISOString().slice(11, 16)} UTC`;
   }
   const footerText = footer || "Helio administration";
@@ -240,5 +238,5 @@ export function terminal(description: string, panel?: Panel): Message {
   return { content: "", allowed_mentions: { parse: [] },
     embeds: [{ title: panel?.proposal?.label ?? "Helio", description: short(description, budget), fields, footer: { text: "Helio administration" } }],
     components: panel ? [row(button(panel, "refresh", "Refresh"),
-      ...(!panel.pending ? [button(panel, "back", "Back to results")] : []))] : [] };
+      ...(!panel.pending ? [button(panel, "back", "Back")] : []))] : [] };
 }

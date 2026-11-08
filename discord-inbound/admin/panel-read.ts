@@ -1,6 +1,17 @@
 import type { Access, Interaction } from "./interaction.ts";
 import { position, type Panel } from "./panels.ts";
-import type { AdminRecord } from "./protocol.ts";
+import type { AdminRecord, Fields } from "./protocol.ts";
+
+export function listFilters(event: Interaction): Fields {
+  const filters: Record<string, string> = {};
+  if (event.command !== "list") return filters;
+  for (const name of ["state", "user", "channel", "source"]) if (event.options[name]) filters[name] = event.options[name];
+  if (event.options.policy) filters.state = event.options.policy;
+  if (event.options.actor) filters.user = event.options.actor;
+  if (event.options.action) filters.action = event.options.action;
+  if (event.section === "conversations" && !filters.state) filters.state = "active";
+  return filters;
+}
 
 export async function loadPanel(access: Access, panel: Panel, event: Interaction, refresh: boolean): Promise<AdminRecord[]> {
   const saved = position(panel);
