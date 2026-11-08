@@ -96,17 +96,17 @@ The owner handles logins/verification. Never copy profile data, extract tokens, 
 
 ## Evidence and reporting
 
-Save and inspect current test records in .omo/evidence. For screenshots/browser evidence, read discord-qa-workflow.md, "Evidence and reporting". Exclude tokens, credentials, unrelated conversations/data and desktop chrome. Apply the audience rules below to relevant private data in text and attachments. Plain PR reports do not require browser QA.
+Save/inspect .omo/evidence; browser/screenshots follow discord-qa-workflow.md. Exclude tokens/credentials, unrelated data and desktop chrome. Plain PR reports need no browser QA.
 
-The lead owns public completion. Workers return results/evidence privately, then claim done. The lead verifies and sends once through `evidence.ts --event completion --disposition final` with the current request ID; ordinary completion text uses `reply.ts --event completion --disposition final` only when its routing permits it. Carry the actual task's `--job` and canonical `--issue` when present. Repeated claims and rewording are not new milestones. Later substantive CI/repair facts use a distinct event tied to the new head. Report final head, checked main revision and actual CI state; pending CI is not ready-to-merge.
+Workers hand off privately and claim done. The lead verifies head/main/CI and sends once via evidence.ts --event completion --disposition final with the current request ID, --job/--issue when present. reply.ts supports permitted plain-text completion. Follow autofix-workflow.md, Replies for events/receipts and later head-bound facts. Pending CI is not ready; paths/tests passed are not delivery. Disclose missing/failed checks.
 
-Use the normal source-aware delivery route by default. evidence.ts replies in the original trusted chat, thread or DM; normal-chat results go to owner DM, forward to a trusted requester and leave a short note. Follow that channel policy without adding an owner-only override.
+Normal routing: trusted chat/thread/DM in place; normal chat to owner DM, trusted-requester forward and non-sensitive note.
 
-Relevant player data and other private EloBot/application data are trusted-only, not owner-only. They may be sent in trusted chats and their threads, or owner/trusted-user DMs, without `--owner-only`. Never include that data in normal/untrusted chats, replies, routing notes or attachments posted there. For normal-chat requests, use the existing protected helper route and leave only a non-sensitive note in place. Confirm the recipient is owner/trusted before including private data in a DM; a DM alone does not establish trust.
+Player/private app data may go to trusted chats/threads and owner/trusted DMs, never untrusted text, attachments or notes. Check DM recipient trust.
 
-Reserve `--owner-only` for Helio's own failures/incidents and internal operational status, such as worker/runtime/monitor health and recovery diagnostics, or an explicit request for private delivery. Identify which of these reasons applies before setting the flag, even when the request came from a trusted chat. Ordinary EloBot PR, test and release results, including application test failures, are task reports rather than Helio internal status. The owner being the requester, a task requiring owner approval, a feature described as "private", and a worker reporting privately to the lead do not make its result owner-only. Approval requests still follow the Human questions workflow; the completed result does not inherit an approval's audience restriction.
+Use --owner-only for Helio failures/internal worker/runtime/monitor/recovery details or explicit private delivery. EloBot PR/test/release results, including test failures, are task reports. Owner requester, approval, private feature and worker handoff do not restrict their audience. Approval questions keep their separate workflow.
 
-Split mixed results by audience: keep Helio internal details in the owner-only part, and private player/application data out of untrusted destinations and routing notes. Use the existing helpers and stable delivery events; do not bypass their routing or duplicate a report to correct its classification. Paths or "tests passed" are not delivery. Report missing/live-failed checks; beta success grants no merge/restart authority.
+Split mixed audiences; never repost to correct routing. Beta success grants no merge/restart authority.
 
 ## Human questions through Discord
 
