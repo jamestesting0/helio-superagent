@@ -1,14 +1,90 @@
 """Real operation storage protects issue edits and resumes notification failures."""
 import json
+import os
 from pathlib import Path
 import runpy
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 M = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_issues.py"))
 SYNC = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_issue_sync.py"))
 CLI = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio-issue.py"))
 STATUS = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_github_status.py"))
+
+class GithubTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        self.calls = root / "calls"
+        executable = root / "gh"
+        executable.write_text(f"""#!{sys.executable}
+import json,os,sys
+from pathlib import Path
+p=Path({str(self.calls)!r})
+count=int(p.read_text())+1 if p.exists() else 1
+p.write_text(str(count))
+mode=os.environ["GH_FIXTURE_MODE"]
+if mode=="transient" and count>1:
+ print(json.dumps({{"number":10,"state":"open"}}))
+else:
+ print("HTTP 401: Bad credentials" if mode=="authentication" else
+       "HTTP 403: Forbidden" if mode=="permission" else
+       "error connecting to api.github.com",file=sys.stderr)
+ sys.exit(1)
+""")
+        executable.chmod(0o700)
+        environment = patch.dict(os.environ, {"PATH": str(root) + os.pathsep + os.environ["PATH"],
+                                               "GH_FIXTURE_MODE": "transient"})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_transient_read_connection_error_recovers_before_the_sync_is_left_pending(self):
+        result = M["Issues"]("o/r", Path(self.temp.name)).get(10)
+        self.assertEqual(result["state"], "open")
+        self.assertEqual(self.calls.read_text(), "2")
+
+    def test_read_recovery_is_bounded_and_never_retries_authentication_or_permission_refusals(self):
+        for mode, attempts in (("outage", 3), ("authentication", 1), ("permission", 1)):
+            with self.subTest(mode=mode), patch.dict(os.environ, GH_FIXTURE_MODE=mode):
+                self.calls.write_text("0")
+                with self.assertRaises(M["Refused"]):
+                    M["Issues"]("o/r", Path(self.temp.name)).get(10)
+                self.assertEqual(self.calls.read_text(), str(attempts))
+
+    def test_a_connection_error_on_a_write_is_uncertain_and_never_reissued(self):
+        for options in (["--method", "PATCH", "--input", "-"], ["--method=PATCH"],
+                        ["-X", "PATCH"], ["-XPATCH"], ["-f", "body=updated"]):
+            with self.subTest(options=options):
+                self.calls.write_text("0")
+                with self.assertRaises(M["Refused"]) as caught:
+                    M["run"](["gh", "api", "repos/o/r/issues/10", *options], "{}")
+                self.assertTrue(caught.exception.uncertain)
+                self.assertEqual(self.calls.read_text(), "1")
+
+    def test_read_recovery_does_not_reset_the_original_request_deadline(self):
+        import subprocess
+
+        clock = [0.0]
+        requests = []
+
+        def request(*args, **kwargs):
+            requests.append(True)
+            clock[0] += 44
+            return subprocess.CompletedProcess([], 1, "", "error connecting to api.github.com")
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        with patch("time.monotonic", side_effect=lambda: clock[0]), patch("time.sleep", side_effect=advance), \
+                patch.object(subprocess, "run", side_effect=request):
+            with self.assertRaises(M["Refused"]):
+                M["Issues"]("o/r", Path(self.temp.name)).get(10)
+
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(clock[0], 45)
 
 
 class SyncReportingTests(unittest.TestCase):

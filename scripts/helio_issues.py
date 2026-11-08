@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from typing import TypedDict
 START = "<!-- helio-status:start -->"
 END = "<!-- helio-status:end -->"
 HASH = re.compile(r"\n?<!-- helio-body-sha256:([0-9a-f]{64}) -->\s*\Z")
+SYNC = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
 
 
 class Refused(Exception):
@@ -78,21 +80,46 @@ def only_status_refreshed(current: str, written: str) -> bool:
 
 
 def run(argv: list[str], stdin: str | None = None) -> str:
-    method = argv[argv.index("--method") + 1] if "--method" in argv else "GET"
+    method = "GET" if argv[1] == "api" or argv[1:3] in (["issue", "view"], ["pr", "view"]) else "UNKNOWN"
+    explicit = next((part.partition("=")[2] for part in argv if part.startswith("--method=")), None)
+    if explicit is not None:
+        method = explicit.upper()
+    elif "--method" in argv or "-X" in argv:
+        option = "--method" if "--method" in argv else "-X"
+        method = argv[argv.index(option) + 1].upper()
+    elif any(part.startswith("-X") for part in argv):
+        method = next(part[2:].upper() for part in argv if part.startswith("-X"))
+    elif argv[1] == "api" and any(part.split("=", 1)[0] in ("--input", "--field", "--raw-field") or part.startswith(("-f", "-F")) for part in argv):
+        method = "POST"
+    readonly = method in ("GET", "HEAD")
     endpoint = next((part for part in argv if part.startswith("repos/")), "")
     resource = "comment" if "/comments" in endpoint else "issue_timeline" if endpoint.endswith("/timeline") else \
         "issue" if "/issues" in endpoint or argv[1:3] == ["issue", "view"] else \
         "pr" if argv[1:3] == ["pr", "view"] else "identity" if argv[1:3] == ["api", "user"] else "github"
-    stage = resource + ("_read" if method in ("GET", "HEAD") else "_write")
+    stage = resource + ("_read" if readonly else "_write")
     if os.environ.get("HELIO_SYNC_DIAGNOSTICS") == "1":
         print(f"ISSUE_SYNC_STAGE {stage}", file=sys.stderr, flush=True)
-    try:
-        result = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=45)
-    except subprocess.TimeoutExpired as error:
-        raise Refused("GitHub request timed out; inspect its saved operation before retrying", stage, method not in ("GET", "HEAD")) from error
-    if result.returncode:
-        raise Refused((result.stderr or result.stdout).strip()[-2000:] or "GitHub unavailable", stage)
-    return result.stdout
+    deadline = time.monotonic() + 45
+    attempts = 3 if readonly else 1
+    detail = "GitHub request timed out; inspect its saved operation before retrying"
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise Refused("GitHub request timed out; inspect its saved operation before retrying", stage, not readonly) from error
+        if result.returncode == 0:
+            return result.stdout
+        detail = (result.stderr or result.stdout).strip()[-2000:] or "GitHub unavailable"
+        if SYNC["failure_kind"](detail) != "transport" or attempt + 1 == attempts:
+            break
+        delay = min(2 ** attempt, deadline - time.monotonic())
+        if delay <= 0:
+            break
+        time.sleep(delay)
+    raise Refused(detail, stage, not readonly and SYNC["failure_kind"](detail) == "transport")
 
 
 class Issues:
