@@ -181,7 +181,7 @@ def perform(request,config,ssh_config,db_path,fetch=get_json,inspect=inspect_rem
         state=inspect(ssh_config)
         result={k:state.get(k) for k in ('clean','ignored_pip_cache','head','tip','branch','update_on_start','start_file','expected_service','active','restart_permission','bot_login_verified',
              'phase','invocation','process_started_at','restart_count','login_evidence','login_observed_at','running_revision','revision_evidence','gateway_health','observed_at')}
-        result['broker_version']=__import__('hashlib').sha256(Path(__file__).read_bytes()+Path(__file__).with_name('helio_approval.py').read_bytes()).hexdigest()[:16]
+        result['broker_version']=__import__('hashlib').sha256(Path(__file__).read_bytes()+Path(__file__).with_name('helio_approval.py').read_bytes()+Path(__file__).with_name('helio_discord_text.py').read_bytes()).hexdigest()[:16]
         return result
     if set(request)!={'action','channel_id','message_id','revision'} or request.get('action')!='restart':raise Refused('unsupported action')
     channel=str(request['channel_id']);message=str(request['message_id']);revision=str(request['revision'])

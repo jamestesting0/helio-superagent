@@ -232,14 +232,8 @@ def reconcile_pending(db):
   db.execute("UPDATE questions SET status='answered',answer_id=?,answer_author=?,answer_role=?,answer_scope=?,answer_text=?,answer_source='reply',updated=? WHERE id=? AND status='awaiting_answer' AND updated>?",(message['message_id'],author,role,scope,message['content'],now,row['id'],now-QUESTION_TTL_MS))
   db.commit()
 
-def format_links(text):
- pattern=r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[0-9]+(?:[/?#][^\s<>()]*)?'
- def replace(m):
-  url=m.group();suffix=re.search(r'[.,!?;:]+$',url);tail=suffix.group() if suffix else ''
-  core=url[:-len(tail)] if tail else url
-  if m.start()>0 and text[m.start()-1]=='<' and text[m.start()+len(core):m.start()+len(core)+1]=='>':return url
-  return '<'+core+'>'+tail
- return re.sub(pattern,replace,text,flags=re.I)
+TEXT=runpy.run_path(str(Path(__file__).with_name('helio_discord_text.py')))
+format_links,clip_links=TEXT['format_links'],TEXT['clip_links']
 
 def send_question(db,id):
  row=db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone()
@@ -257,7 +251,8 @@ def send_question(db,id):
  pings=[x for x in dict.fromkeys([OWNER,*sorted(trusted_now())]) if ID.fullmatch(x)] if row['audience']=='staff' else []
  mention=' '.join(f'<@{x}>' for x in pings)
  hint='Choose below or reply to this message.' if json.loads(row['options'] or '[]') else 'Please reply directly to this message so I can route your answer to the right task.'
- content=(mention+'\n' if mention else '')+f"Question [{id}]\n{format_links(row['question'])}\n\n{hint}"
+ prefix=(mention+'\n' if mention else '')+f"Question [{id}]\n"
+ content=prefix+clip_links(format_links(row['question']),2000-len(prefix)-len(hint)-2)+'\n\n'+hint
  body={'content':content,'allowed_mentions':{'parse':[],**({'users':pings[:100]} if pings else {})},'nonce':id,'enforce_nonce':True}
  if row['components'] and json.loads(row['components']):body['components']=json.loads(row['components'])
  try:

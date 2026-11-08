@@ -220,6 +220,7 @@ export interface Question {
   readonly components: string | null; readonly answer_author: string | null; readonly answer_text: string | null;
   readonly answer_source: string | null; readonly announced_at: number | null; readonly cleared_at: number | null;
   readonly pending_by: string | null; readonly pending_at: number | null;
+  readonly answer_display?: string | null;
 }
 export interface ComponentAnswer {
   readonly id: string; readonly author: string; readonly role: string; readonly scope: string; readonly text: string;

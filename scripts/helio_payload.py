@@ -64,8 +64,8 @@ INBOUND_FILES = (
     # owner-side controller and isolated administration bridge
     "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts",
     "admin/editor.ts", "admin/interaction.ts", "admin/lane-session.ts", "admin/main.ts", "admin/manifest.ts", "admin/panels.ts", "admin/panel-read.ts",
-    "admin/forms.ts", "admin/forms.test.ts", "admin/panel-output.ts",
-    "admin/records.test.ts",
+    "admin/forms.ts", "admin/forms.test.ts", "admin/panel-output.ts", "admin/display-fields.ts",
+    "admin/records.test.ts", "admin/references.test.ts",
     "admin/protocol.ts", "admin/render.ts", "admin/render.test.ts", "admin/runtime.ts",
     "admin/lane-records.ts", "admin/lane-evidence.ts", "admin/policy-records.ts", "admin/record-format.ts",
     "admin/github-status.ts",
@@ -97,7 +97,7 @@ INBOUND_FILES = (
     "messages/image-worker.test.ts", "messages/image-worker.ts", "messages/images.test.ts", "messages/images.ts",
     "messages/linked-files.test.ts", "messages/linked-files.ts", "messages/links.test.ts",
     "messages/message-text.test.ts", "messages/message-text.ts", "messages/reply-context.test.ts",
-    "messages/reply-context.ts",
+    "messages/reply-context.ts", "messages/references.ts", "messages/references.test.ts",
     # conversations
     "conversations/conversation-context.ts", "conversations/conversation-db.test.ts",
     "conversations/conversation-db.ts", "conversations/conversation-upkeep.test.ts",

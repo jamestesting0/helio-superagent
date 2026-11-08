@@ -1,4 +1,5 @@
 import { object } from "./monitor-summary.ts";
+import { messageUrl, referenceLink } from "../messages/references.ts";
 
 export const SECTION_NAMES = ["turn", "conversation", "channel_since_last_claim", "reply_chain", "preceding"] as const;
 export type SectionName = typeof SECTION_NAMES[number];
@@ -13,7 +14,7 @@ function boundedEntry(entry: Record<string, unknown>, budget: number) {
     if (!key) break;
     const value = result[key];
     result.truncated = true;
-    if (typeof value === "string" && value.length > 32) {
+    if (typeof value === "string" && value.length > 32 && !["message_url", "author_reference"].includes(key)) {
       result[key] = value.slice(0, Math.max(0, value.length - Math.max(32, size - budget)));
     } else if (Array.isArray(value) && value.length > 1) {
       result[key] = value.slice(0, -1);
@@ -48,13 +49,27 @@ const entries = (value: unknown) => Array.isArray(value) ? value.map(object) : [
 export function contextSections(messages: readonly Record<string, unknown>[]) {
   const last = messages.at(-1);
   if (!last) throw new RangeError("No authorized messages to render");
+  const origin = last.discord_origin ? object(last.discord_origin) : {};
+  const guild = typeof origin.guild_id === "string" ? origin.guild_id : origin.guild_id === null ? "@me" :
+    typeof last.guild_id === "string" ? last.guild_id : undefined;
+  const withReferences = (entry: Record<string, unknown>): Record<string, unknown> => ({
+    ...entry,
+    ...(guild !== undefined && /^(?:@me|\d{1,30})$/.test(guild) && typeof last.channel_id === "string" &&
+      /^\d{1,30}$/.test(last.channel_id) && typeof entry.message_id === "string" && /^\d{1,30}$/.test(entry.message_id) ?
+      { message_url: messageUrl(guild, last.channel_id, entry.message_id) } : {}),
+    ...(typeof entry.author_id === "string" && /^\d{1,30}$/.test(entry.author_id) && typeof entry.author === "string" ?
+      { author_reference: referenceLink({ kind: "user", id: entry.author_id, label: entry.author }) } : {}),
+    ...(entry.mentioned_users ? { user_references: Object.fromEntries(Object.entries(object(entry.mentioned_users))
+      .filter((pair): pair is [string, string] => /^\d{1,30}$/.test(pair[0]) && typeof pair[1] === "string")
+      .map(([id, label]) => [id, referenceLink({ kind: "user", id, label })])) } : {}),
+  });
   const conversation = last.conversation ? object(last.conversation) : {};
-  const transcript = entries(conversation.transcript);
+  const transcript = entries(conversation.transcript).map(withReferences);
   const lastEntry = transcript.at(-1);
   const activity = typeof conversation.last_activity === "number" ? conversation.last_activity :
     typeof lastEntry?.sent_at === "string" ? Date.parse(lastEntry.sent_at) :
     typeof conversation.opened_at === "string" ? Date.parse(conversation.opened_at) : undefined;
-  const recent = entries(conversation.recent).filter((entry) =>
+  const recent = entries(conversation.recent).map(withReferences).filter((entry) =>
     typeof lastEntry?.message_id !== "string" || typeof entry.message_id !== "string" ||
     BigInt(entry.message_id) > BigInt(lastEntry.message_id));
   const chain = messages.flatMap((message) => {
@@ -62,10 +77,10 @@ export function contextSections(messages: readonly Record<string, unknown>[]) {
     const all = entries(reply.messages);
     return message.channel_policy === "normal" ? all.slice(-1) : all;
   });
-  const unique = [...new Map(chain.map((entry) => [entry.message_id, entry])).values()];
+  const unique = [...new Map(chain.map((entry) => [entry.message_id, entry])).values()].map(withReferences);
   const turn = messages.map((message) => Object.fromEntries(Object.entries(message)
-    .filter(([key]) => !["conversation", "reply_context", "preceding", "turn", "discord_origin", "preparation_complete"].includes(key))));
-  const preceding = messages.flatMap((message) => entries(message.preceding));
+    .filter(([key]) => !["conversation", "reply_context", "preceding", "turn", "discord_origin", "preparation_complete"].includes(key)))).map(withReferences);
+  const preceding = messages.flatMap((message) => entries(message.preceding)).map(withReferences);
   return {
     turn,
     conversation: [{

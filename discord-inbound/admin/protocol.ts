@@ -1,3 +1,5 @@
+import type { DiscordReference } from "../messages/references.ts";
+
 export const SECTIONS = ["overview", "conversations", "lanes", "blocks", "trusted", "channels", "timeouts", "settings", "audit"] as const;
 export type Section = typeof SECTIONS[number];
 export type Fields = Readonly<Record<string, string>>;
@@ -27,9 +29,11 @@ export interface AdminRecord {
   readonly source?: string;
   readonly url?: string;
   readonly blockedActions?: Fields;
-  readonly fields?: readonly { readonly name: string; readonly value: string }[];
-  readonly activity?: readonly { readonly title: string; readonly text: string }[];
+  readonly fields?: readonly DisplayField[];
+  readonly activity?: readonly { readonly title: string; readonly text: string; readonly fields?: readonly DisplayField[] }[];
 }
+
+export interface DisplayField { readonly name: string; readonly value: string | DiscordReference }
 
 export type RuntimeQuery =
   | { readonly kind: "read"; readonly section: Section; readonly target?: string; readonly filters: Fields; readonly suggest?: boolean }
@@ -97,6 +101,22 @@ export function fields(value: unknown): Fields {
   return result;
 }
 
+function displayFields(value: unknown): DisplayField[] {
+  if (!Array.isArray(value)) throw new AdminError("invalid", "Invalid display fields");
+  return value.map(entry => {
+    const item = object(entry), name = text(item.name, 256);
+    if (typeof item.value === "string") return { name, value: text(item.value, 12000) };
+    const link = object(item.value), id = text(link.id, 30), label = text(link.label, 100);
+    if (!/^\d+$/.test(id)) throw new AdminError("invalid", "Invalid reference ID");
+    if (link.kind === "user") return { name, value: { kind: "user", id, label } };
+    const channel = text(link.channel, 30), guild = text(link.guild, 30);
+    if (link.kind !== "message" || !/^\d+$/.test(channel) || !/^(?:@me|\d+)$/.test(guild)) {
+      throw new AdminError("invalid", "Invalid message reference");
+    }
+    return { name, value: { kind: "message", id, label, channel, guild } };
+  });
+}
+
 export function policy(value: unknown): AdminPolicy {
   const row = object(value);
   const revision = text(row.revision, 64);
@@ -129,11 +149,10 @@ export function record(value: unknown): AdminRecord {
     ...(row.source === undefined ? {} : { source: text(row.source, 100) }),
     ...(row.url === undefined ? {} : { url: text(row.url, 500) }),
     ...(row.blockedActions === undefined ? {} : { blockedActions: fields(row.blockedActions) }),
-    ...(Array.isArray(details) ? { fields: details.map(entry => {
-      const item = object(entry); return { name: text(item.name, 256), value: text(item.value, 12000) };
-    }) } : {}),
+    ...(Array.isArray(details) ? { fields: displayFields(details) } : {}),
     ...(Array.isArray(activity) ? { activity: activity.map(entry => {
-      const item = object(entry); return { title: text(item.title, 256), text: text(item.text, 12000) };
+      const item = object(entry); return { title: text(item.title, 256), text: text(item.text, 12000),
+        ...(item.fields === undefined ? {} : { fields: displayFields(item.fields) }) };
     }) } : {}),
   };
 }

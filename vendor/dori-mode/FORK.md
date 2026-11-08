@@ -33,6 +33,7 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 | File | Change | Why |
 |---|---|---|
 | `scripts/src/cli.ts`, `scripts/src/messenger/discord.ts` | `dori send discord --to user:ID` (or the owner ID) opens the DM channel first (`Discord.openDm`) | Discord rejects posting to a user ID as a channel (404 Unknown Channel), so DMs to the owner failed |
+| `scripts/src/cli.ts`, `scripts/src/messenger/discord.ts` | Discord sends accept an explicit `--ping ID,...` allowlist; GitHub issue/PR URLs become descriptive masked links while existing links and code remain intact | Ordinary references stay silent while deliberate recipients can be notified, and linked issue/PR numbers are readable without previews |
 | `scripts/src/host-guard.ts` | Disk free is measured at the home directory instead of `/` | Inside a sandbox `/` is a small in-memory root, which made the guard hold every lane |
 | `scripts/src/config.ts`, `cli.ts` | Optional `runtimeConfigFile` supplies worker capacity/hibernation; watch reloads it per tick and records the applied revision with process identity | Owner-published setting changes must reach admission and hibernation without restarting a lead |
 | `scripts/src/session-state.ts`, `panes.ts`, `sync.ts` | Bind foreground Senpi PIDs/session identities to authenticated current TUI lifecycle observations; passive monitor waits are idle and unavailable observations remain unknown | Herdr's persistent process label reported inactive workers as working and generated false paused-worker alerts |

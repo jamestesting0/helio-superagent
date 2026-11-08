@@ -66,7 +66,9 @@ export function guildFixture(visible: boolean, privateThreadMember?: boolean): v
       case "/guilds/99999/members/22222": return Response.json({ roles: [] });
       case "/guilds/99999/roles": return Response.json([{ id: "99999", permissions: "66560" }]);
       case "/guilds/99999": return Response.json({ owner_id: "22222" });
-      default: throw new Error(`Unexpected offline request: ${path}`);
+      default:
+        if (/^\/users\/\d+$/.test(path)) return Response.json({ id: path.slice(7), username: `Fixture user ${path.slice(7)}` });
+        throw new Error(`Unexpected offline request: ${path}`);
     }
   }, { preconnect: realFetch.preconnect }));
 }

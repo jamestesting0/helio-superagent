@@ -9,6 +9,7 @@ export const stateName = (state: string) => ({
   idle: "Idle", blocked: "Blocked", missing: "Missing",
   normal: "Normal", trusted: "Trusted", ignored: "Ignored", hard_excluded: "Privacy excluded", outside_scope: "Outside scope",
 }[state] ?? state);
-export const escapeMarkdown = (value: string) => value.replace(/[\\`*_~|[\]()]/g, "\\$&");
+export const escapeMarkdown = escapeText;
 export const clipText = (value: string, size: number) => value.length <= size ? value :
   `${value.slice(0, Math.max(0, size - 3)).replace(/[\uD800-\uDBFF]$/, "")}...`;
+import { escapeText } from "../messages/references.ts";

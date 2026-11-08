@@ -13,14 +13,17 @@ const SHA = "9f45e57" + "a".repeat(33);
 let dir: string, prompts: PromptStore, now: number, lines: string[], warnings: string[], calls: { method: string; path: string; body: any }[];
 let replies: Array<[RegExp, (body: any) => unknown]>;
 let sequence = 1000;
+let restoreClock: () => void;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "helio-interactive-"));
   prompts = new PromptStore(join(dir, "discord-prompts.sqlite"), 50);
   now = Date.parse("2026-11-04T12:00:00Z");
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  restoreClock = () => clock.mockRestore();
   lines = []; warnings = []; calls = []; replies = [];
 });
-afterEach(async () => { prompts.close(); await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { restoreClock(); prompts.close(); await rm(dir, { recursive: true, force: true }); });
 
 const deps = (): Deps => ({
   prompts, questions: () => QuestionStore.open(join(dir, "discord-questions.sqlite"), 50), ownerId: OWNER,
@@ -28,6 +31,7 @@ const deps = (): Deps => ({
   call: async (method, path, body) => {
     calls.push({ method, path, body });
     for (const [pattern, reply] of replies) if (pattern.test(`${method} ${path}`)) return reply(body);
+    if (/^\/users\/\d+$/.test(path)) return { username: `User ${path.slice(7)}` };
     if (path.includes("/callback")) return { resource: { message: { id: "700" } } };
     return undefined;
   },
@@ -45,7 +49,7 @@ function prompt(kind: "confirm" | "plan" = "confirm", action = "merge"): string 
 function event(customId: string, user: string, extra: Record<string, unknown> = {}) {
   return {
     type: 3, id: String(sequence++), application_id: "88", token: "tok", channel_id: "100", guild_id: "300",
-    member: { user: { id: user } }, message: { id: PROMPT_MESSAGE }, data: { custom_id: customId }, ...extra,
+    member: { user: { id: user, username: `User ${user}` } }, message: { id: PROMPT_MESSAGE }, data: { custom_id: customId }, ...extra,
   };
 }
 const callbacks = () => calls.filter((call) => call.path.includes("/callback")).map((call) => call.body);
@@ -74,7 +78,7 @@ const questionRow = (id: string) => {
 test("thread questions accept only their recipient or the owner", async () => {
   const qid = question(["yes", "no"], "thread");
   await handleInteraction(event(`h1:q:${qid}:o0`, STRANGER, { message: { id: QUESTION_MESSAGE } }), deps());
-  expect(callbacks().at(-1)?.data.content).toBe(`This one's for <@${TRUSTED}>.`);
+  expect(callbacks().at(-1)?.data.content).toBe(`This one's for **[Recipient](<https://discord.com/users/${TRUSTED}>)**.`);
 });
 
 
@@ -87,7 +91,8 @@ test("an answer acknowledged before its public post keeps its text until the pos
   replies = [[/messages\?after/, () => []]];
   now += 10 * 60_000;
   await sweep(deps());
-  expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages").at(-1)?.body.content).toBe(`<@${OWNER}>: 8 hours`);
+  expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages").at(-1)?.body.content)
+    .toBe(`**[User ${OWNER}](<https://discord.com/users/${OWNER}>)**: 8 hours`);
   expect(questionRow(qid)).toMatchObject({ status: "done", answer_text: null, announced_at: now });
 });
 
@@ -151,7 +156,7 @@ test("typed replies clear buttons once after restart and identify the answerer",
   await sweep(deps());
   await sweep(deps());
   expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{
-    content: `Question\nHow long?\nAnswered by <@${TRUSTED}> (typed reply)`, components: [], allowed_mentions: { parse: [] },
+    content: `Question\nHow long?\nAnswered by **[User ${TRUSTED}](<https://discord.com/users/${TRUSTED}>)** (typed reply)`, components: [], allowed_mentions: { parse: [] },
   }]);
   expect(questionRow(qid).cleared_at).toBe(now);
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(0);
@@ -181,6 +186,32 @@ test("simultaneous option taps record only the first answer", async () => {
   ]);
   expect(questionRow(qid)).toMatchObject({ status: "answered", answer_author: OWNER, answer_text: "8 hours" });
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(1);
+});
+
+test.each([false, true])("uncertain answer posts survive a rename and reconcile old presentation: legacy=%s", async legacy => {
+  const qid = question();
+  let accepted = "";
+  replies = [[/POST \/channels\/100\/messages$/, body => {
+    accepted = body.content;
+    throw new CallError(undefined, "accepted but response lost");
+  }]];
+  await handleInteraction(event(`h1:q:${qid}:o0`, OWNER, { message: { id: QUESTION_MESSAGE } }), deps());
+  if (legacy) {
+    using db = new Database(join(dir, "discord-questions.sqlite"));
+    db.query("UPDATE questions SET answer_display=NULL WHERE id=?").run(qid);
+  }
+  now += 11 * 60_000;
+  replies = [
+    [/GET \/users\/99$/, () => ({ username: "Renamed user" })],
+    [/GET \/channels\/100\/messages\?after=/, () => [{ id: "900", author: { bot: true },
+      message_reference: { message_id: QUESTION_MESSAGE }, content: legacy ? `<@${OWNER}>: 8 hours` : accepted }]],
+  ];
+
+  await sweep(deps());
+
+  expect(questionRow(qid).announced_at).toBe(now);
+  expect(calls.filter(call => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(1);
+  expect(calls.filter(call => call.path === "/users/99")).toHaveLength(legacy ? 1 : 0);
 });
 
 test.each(["button", "reply"])("a %s answer at seventy-one hours still counts", async (source) => {
@@ -237,5 +268,5 @@ test("unauthorized option clicks and typed replies leave a question unanswered",
     scope: "answer-only", content: "tomorrow", reply_to: QUESTION_MESSAGE })).toBeUndefined();
   await handleInteraction(event(`h1:q:${qid}:o0`, STRANGER, { message: { id: QUESTION_MESSAGE } }), deps());
   expect(questionRow(qid).status).toBe("awaiting_answer");
-  expect(callbacks().at(-1)?.data.content).toBe(`This one's for <@${OWNER}>.`);
+  expect(callbacks().at(-1)?.data.content).toBe(`This one's for **[Owner](<https://discord.com/users/${OWNER}>)**.`);
 });

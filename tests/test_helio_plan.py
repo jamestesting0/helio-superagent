@@ -299,7 +299,7 @@ class PostTests(PlanCase):
         self.assertTrue(self.gh_fake.label_created and self.gh_fake.labels == {12})
         text = (self.dir / "announce.txt").read_text().strip()
         self.assertLessEqual(len(text), 500)
-        self.assertEqual(P["PLAN_PATTERN"].match(text).groups(), ("12", "1"))
+        self.assertTrue(text.startswith(f"📋 Plan for [Issue #12](<https://github.com/{REPO}/issues/12>) (r1)"))
         self.assertIn("2 changes · 2 decisions (1 ⚑ Helio's call) · Live beta: not planned", text)
         self.assertEqual(self.run_cli("check", "--issue", "12"), (1, f"PLAN_AWAITING issue=12 revision=1 url={self.gh_fake.comments[0]['url']}"))
 
@@ -333,7 +333,7 @@ class PostTests(PlanCase):
         code, out = self.post(plan={**PLAN, "in_short": "Players get 6 hours to confirm.", "change_note": "window 8 to 6 hours"}, now=later)
         self.assertEqual(code, 0, out)
         self.assertIn("PLAN_APPROVAL_RESET", out)
-        self.assertTrue((self.dir / "announce.txt").read_text().startswith("📋 Plan for #12 (r2): changed: window 8 to 6 hours."))
+        self.assertTrue((self.dir / "announce.txt").read_text().startswith(f"📋 Plan for [Issue #12](<https://github.com/{REPO}/issues/12>) (r2): changed: window 8 to 6 hours."))
 
 
 class ApprovalTests(PlanCase):
@@ -403,7 +403,8 @@ class ApprovalTests(PlanCase):
     def test_owner_reply_to_the_announcement_approves_the_current_revision(self):
         self.post()
         sent = POSTED + datetime.timedelta(hours=1)
-        code, out = self.approve(POSTED + datetime.timedelta(hours=3), sent, referenced=announcement_of(1))
+        code, out = self.approve(POSTED + datetime.timedelta(hours=3), sent,
+                                 referenced={"author": {"id": BOT}, "content": (self.dir / "announce.txt").read_text()})
         self.assertEqual(code, 0, out)
         self.assertIn("by=James", out)
         self.assertEqual(self.run_cli("check", "--issue", "12")[1].split()[0], "PLAN_APPROVED")
@@ -439,7 +440,7 @@ class ApprovalTests(PlanCase):
     def test_open_questions_block_approval(self):
         self.post(plan={**PLAN, "open_questions": ["Should old matches keep 24 hours?"]})
         self.assertEqual(self.run_cli("check", "--issue", "12")[1].split()[0], "PLAN_DRAFT")
-        self.assertTrue((self.dir / "announce.txt").read_text().startswith("📋 Plan for #12 (r1) needs answers"))
+        self.assertTrue((self.dir / "announce.txt").read_text().startswith(f"📋 Plan for [Issue #12](<https://github.com/{REPO}/issues/12>) (r1) needs answers"))
         later = POSTED + datetime.timedelta(hours=1)
         self.assertEqual(self.approve(later, later, referenced=announcement_of(1))[0], 1)
 

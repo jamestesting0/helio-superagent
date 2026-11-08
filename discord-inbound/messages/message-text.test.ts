@@ -40,8 +40,9 @@ test("Components V2 layouts and controls read in display order, capped", () => {
 });
 
 test("mention names are offered beside the text, not substituted into it", () => {
-  expect(mentionedUsers([{ id: "1", username: "jpk", global_name: "JPK" }, { id: "2", username: "x" }, { id: "bad", username: "y" }]))
-    .toEqual({ "1": "JPK", "2": "x" });
+  expect(mentionedUsers([{ id: "1", username: "jpk", global_name: "JPK", member: { nick: "Server JPK" } },
+    { id: "2", username: "x" }, { id: "bad", username: "y" }]))
+    .toEqual({ "1": "Server JPK", "2": "x" });
   expect(mentionedUsers([{ id: "3" }])).toBeUndefined();
 });
 

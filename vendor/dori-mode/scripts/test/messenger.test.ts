@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { Discord, discordPresence } from "../src/messenger/discord.ts";
+import { Discord, discordPresence, discordText } from "../src/messenger/discord.ts";
 import { type Http, type HttpRequest, type HttpResponse, MessengerError, UnsafeMessageError } from "../src/messenger/http.ts";
 import { Slack } from "../src/messenger/slack.ts";
 import { slackPresence } from "../src/messenger/slack-presence.ts";
@@ -185,11 +185,35 @@ test("Discord presence identifies as online after hello, heartbeats with the las
   expect(t.live.size).toBe(0);
 });
 
-test("Discord sends and edits suppress GitHub issue and pull request previews", async () => {
+test("Discord sends and edits label GitHub issue and PR links without previews", async () => {
   const { http, seen } = fakeHttp(() => ok({ id: "123" }));
   const discord = new Discord(http, fakeClock(0), "fake");
   await discord.send("9", "PR https://github.com/jamestesting0/elo-bot/pull/17.");
   await discord.edit("9", "123", "Issue <https://github.com/jamestesting0/elo-bot/issues/4>");
-  expect(JSON.parse(String(seen[0]?.body)).content).toBe("PR <https://github.com/jamestesting0/elo-bot/pull/17>.");
-  expect(JSON.parse(String(seen[1]?.body)).content).toBe("Issue <https://github.com/jamestesting0/elo-bot/issues/4>");
+  expect(JSON.parse(String(seen[0]?.body)).content).toBe("PR [PR #17](<https://github.com/jamestesting0/elo-bot/pull/17>).");
+  expect(JSON.parse(String(seen[1]?.body)).content).toBe("Issue [Issue #4](<https://github.com/jamestesting0/elo-bot/issues/4>)");
+});
+
+test.each([
+  ["https://github.com/o/r/pull/21#discussion_r123", "[PR #21](<https://github.com/o/r/pull/21#discussion_r123>)"],
+  ["<https://github.com/o/r/issues/8>", "[Issue #8](<https://github.com/o/r/issues/8>)"],
+  ["[Review](<https://github.com/o/r/pull/21>)", "[Review](<https://github.com/o/r/pull/21>)"],
+  ["`https://github.com/o/r/pull/21`", "`https://github.com/o/r/pull/21`"],
+  ["```\nhttps://github.com/o/r/issues/8\n```", "```\nhttps://github.com/o/r/issues/8\n```"],
+  ["> https://github.com/o/r/pull/21\nSee https://github.com/o/r/issues/8", "> https://github.com/o/r/pull/21\nSee [Issue #8](<https://github.com/o/r/issues/8>)"],
+  ["https://github.com/o/r/pull/21extra", "https://github.com/o/r/pull/21extra"],
+])("Discord GitHub formatting preserves destinations and existing formatting: %s", (input, expected) => {
+  expect(discordText(input)).toBe(expected);
+  expect(discordText(discordText(input))).toBe(expected);
+});
+
+test("unsolicited Discord messages ping only explicit user recipients", async () => {
+  const { http, seen } = fakeHttp(() => ok({ id: "123" }));
+  const discord = new Discord(http, fakeClock(0), "fake");
+
+  await discord.send("9", "<@111> please review; **[James](<https://discord.com/users/222>)** reported it. @everyone", ["111"]);
+
+  expect(JSON.parse(String(seen[0]?.body)).allowed_mentions).toEqual({ parse: [], users: ["111"] });
+  await expect(discord.send("9", "@everyone", ["everyone"])).rejects.toBeInstanceOf(UnsafeMessageError);
+  expect(seen).toHaveLength(1);
 });

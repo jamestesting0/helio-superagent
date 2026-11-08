@@ -25,6 +25,31 @@ def snowflake(at):
 
 
 class ClickTests(unittest.TestCase):
+    def test_linked_confirmation_binds_the_visible_target_destination_and_clicker(self):
+        actor = "**[James](<https://discord.com/users/42>)**"
+        target = f"[PR #6](<https://github.com/{REPO}/pull/6>)"
+        prompt = f"Merge {target} · `a1b2c3d`?"
+        result = f"✅ {actor} confirmed merge {target} · `a1b2c3d`"
+        self.assertEqual(A["check_click"]("merge", *self.click(prompt, result), BOT, 6, HEAD, now=NOW, repo=REPO)[0], "42")
+        for changed_prompt, changed_result in (
+            (prompt.replace(REPO, "other/repository"), result),
+            (prompt.replace("PR #6", "PR #7"), result),
+            (prompt.replace("PR #6", "Issue #6").replace("/pull/", "/issues/"), result),
+            (prompt, result.replace("/users/42", "/users/43")),
+            (prompt, result.replace("/pull/6", "/pull/7")),
+        ):
+            with self.subTest(prompt=changed_prompt, result=changed_result), self.assertRaises(A["Refused"]):
+                A["check_click"]("merge", *self.click(changed_prompt, changed_result), BOT, 6, HEAD, now=NOW, repo=REPO)
+
+    def test_linked_plan_announcement_still_authorizes_only_its_issue_and_revision(self):
+        target = f"[Issue #12](<https://github.com/{REPO}/issues/12>)"
+        prompt = f"📋 Plan for {target} (r2): shorter"
+        result = f"✅ **[James](<https://discord.com/users/42>)** approved the plan for {target} (r2)"
+        self.assertEqual(A["check_click"]("plan", *self.click(prompt, result), BOT, 12, "2", now=NOW, repo=REPO)[0], "42")
+        A["check_intent"]("plan", message("yes", referenced=helio_says(prompt)), BOT, REPO, 12, now=NOW)
+        with self.assertRaises(A["Refused"]):
+            A["check_intent"]("merge", message("yes", referenced=helio_says(prompt)), BOT, REPO, 12, now=NOW)
+
     def test_used_plan_click_revalidates_proof_and_current_trust_without_spending_again(self):
         import os
         import sqlite3

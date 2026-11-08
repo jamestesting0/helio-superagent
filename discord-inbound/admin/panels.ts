@@ -16,6 +16,7 @@ export interface Proposal {
   readonly input: Fields;
   readonly operation: string;
   readonly label: string;
+  readonly targetLabel?: string;
 }
 export interface Panel {
   readonly id: string;
@@ -44,7 +45,8 @@ export interface Panel {
 function proposal(value: unknown): Proposal {
   const saved = object(value);
   return { action: text(saved.action, 60), target: text(saved.target, 120), expected: text(saved.expected, 100),
-    input: fields(saved.input), operation: text(saved.operation, 100), label: text(saved.label, 100) };
+    input: fields(saved.input), operation: text(saved.operation, 100), label: text(saved.label, 100),
+    ...(saved.targetLabel === undefined ? {} : { targetLabel: text(saved.targetLabel, 100) }) };
 }
 
 function decode(value: unknown): Panel {

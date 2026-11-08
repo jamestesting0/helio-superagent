@@ -14,6 +14,7 @@ interface Role { readonly id: string; readonly permissions: string }
 export class RuntimeAccess {
   private readonly channels = new Map<string, Promise<Channel>>();
   private readonly visibility = new Map<string, Promise<boolean>>();
+  private readonly users = new Map<string, Promise<string>>();
   private memberInfo: Promise<{ readonly member: Member; readonly roles: readonly Role[]; readonly owner: string }> | undefined;
 
   constructor(private readonly proof: RuntimeProof, private readonly rest: Rest) {}
@@ -49,14 +50,23 @@ export class RuntimeAccess {
     return current;
   }
 
-  async userLabel(id: string): Promise<string> {
-    try {
-      const user = await this.rest<{ readonly username: string; readonly global_name?: string | null }>(`/users/${id}`);
-      return user.global_name || user.username;
-    } catch (error) {
-      if (error instanceof DiscordRestError && error.status === 404) return "Unavailable user";
-      throw error;
+  userLabel(id: string, knownName?: string): Promise<string> {
+    if (knownName?.trim()) {
+      const known = Promise.resolve(knownName);
+      this.users.set(id, known);
+      return known;
     }
+    let current = this.users.get(id);
+    if (!current) {
+      current = this.rest<{ readonly username: string; readonly global_name?: string | null }>(`/users/${id}`)
+        .then(user => user.global_name || user.username)
+        .catch(error => {
+          if (error instanceof DiscordRestError && error.status === 404) return "Unavailable user";
+          throw error;
+        });
+      this.users.set(id, current);
+    }
+    return current;
   }
 
   private async checkRead(channelId: string, user?: string, content = true): Promise<boolean> {

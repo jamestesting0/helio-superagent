@@ -11,6 +11,7 @@ export type ReplyMessage = ReplySource & {
   embeds?: readonly Embed[];
   components?: readonly Component[];
   mentions?: readonly MentionedUser[];
+  readonly member?: { readonly nick?: string | null };
 };
 export type FetchReply = (channel: string, id: string, signal: AbortSignal) => Promise<ReplyMessage>;
 
@@ -34,7 +35,7 @@ export function describeMessage(msg: ReplyMessage, budget: number) {
   return {
     entry: {
       message_id: msg.id, author_id: msg.author.id,
-      author: (msg.author.global_name || msg.author.username || "").slice(0, 100),
+      author: (msg.member?.nick || msg.author.global_name || msg.author.username || "").slice(0, 100),
       bot: msg.author.bot === true, sent_at: msg.timestamp,
       ...(msg.message_reference?.message_id && msg.message_reference.type !== 1 ? { reply_to: msg.message_reference.message_id } : {}),
       content, attachment_count: msg.attachments?.length ?? 0,

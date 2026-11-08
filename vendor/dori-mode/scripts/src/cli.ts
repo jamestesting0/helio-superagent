@@ -60,7 +60,7 @@ const USAGE = `dori <command> [options]
   guard [--loop MIN]                   host load, memory, disk and pane-count alerts
   heavy <label> -- <command ...>       run a heavy command when a slot is free and load is low
   can-launch                           exit 0 if the host has room for a new lane, else print why and exit 4
-  send <slack|telegram|discord> --to TARGET (--text TEXT | --text-file PATH) [--thread ID] [--edit ID]   (discord: TARGET user:ID or the owner ID sends a DM)
+  send <slack|telegram|discord> --to TARGET (--text TEXT | --text-file PATH) [--thread ID] [--edit ID] [--ping ID,...]   (discord: TARGET user:ID or the owner ID sends a DM; --ping is for new Discord messages)
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN)
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
@@ -87,7 +87,7 @@ const flags = parseArgs({
     job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" }, verify: { type: "boolean" }, stop: { type: "boolean" },
     source: { type: "string" }, repository: { type: "string" }, channel: { type: "string" },
     manifest: { type: "string" }, failed: { type: "string" }, replacement: { type: "string" },
-    to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" },
+    to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" }, ping: { type: "string" },
   },
 });
 const opt = (name: string): string | undefined => {
@@ -292,7 +292,7 @@ try {
       const textFile = opt("text-file");
       const text = textFile ? (await Bun.file(textFile).text()).replace(/\s+$/, "") || die("--text-file is empty") : need("text");
       const thread = opt("thread");
-      const edit = opt("edit");
+      const edit = opt("edit"); if (opt("ping") && (platform !== "discord" || edit)) die("--ping is for new Discord messages");
       const token = (name: string) => process.env[name] ?? die(`${name} is not set`);
       if (platform === "slack") {
         const slack = new Slack(fetchHttp, realClock, { token: token("DORI_SLACK_TOKEN"), cookie: process.env.DORI_SLACK_COOKIE }, undefined, new ThreadLedger(`${config.stateDir}/slack-threads.json`));
@@ -308,7 +308,7 @@ try {
         const user = to.startsWith("user:") ? to.slice(5) : to === process.env.DORI_DISCORD_OWNER_ID ? to : undefined;
         const channel = user ? await dc.openDm(user) : to;
         if (edit) await dc.edit(channel, edit, text);
-        else console.log(`SENT ${await dc.send(thread ?? channel, text)}`);
+        else console.log(`SENT ${await dc.send(thread ?? channel, text, (opt("ping") ?? "").split(",").map(id => id.trim()).filter(Boolean))}`);
       } else die(`unknown platform ${platform}`);
       break;
     }

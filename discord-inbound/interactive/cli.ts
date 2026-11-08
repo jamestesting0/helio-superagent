@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { DiscordRestError, discordRest, type Rest } from "../discord/rest.ts";
 import { PromptStore, newId, type Prompt } from "./store.ts";
 import { confirmButtons, planButtons, promptLine, type ConfirmAction } from "./text.ts";
+import { githubReferences } from "../messages/references.ts";
 
 const USAGE = `Usage: helio confirm ask --action merge|restart|pr --target T --revision SHA --channel ID [--reply-to ID] [--note TEXT]
        helio confirm plan --issue N --revision R --text-file PATH --channel ID [--reply-to ID]
@@ -116,7 +117,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (merged !== undefined) return merged;
       const id = newId();
       return report(await post(store, api, {
-        id, kind: "confirm", action, target, revision, content: promptLine(action, target, revision) + (note ? `\n${note}` : ""),
+        id, kind: "confirm", action, target, revision, content: promptLine(action, target, revision) + (note ? `\n${githubReferences(note)}` : ""),
         channel_id: channel, ...(replyTo ? { reply_to: replyTo } : {}), now: Date.now(),
       }, confirmButtons(id, action), [...new Set([...(note ?? "").matchAll(/<@(\d{1,30})>/g)].map((m) => m[1]!))].slice(0, 100)));
     }
@@ -126,8 +127,11 @@ export async function main(argv: readonly string[]): Promise<number> {
       const replyTo = o.get("--reply-to");
       if (!/^[1-9][0-9]*$/.test(issue) || !/^[1-9][0-9]*$/.test(revision) || !SNOWFLAKE.test(channel) ||
           (replyTo !== undefined && !SNOWFLAKE.test(replyTo)) || !o.get("--text-file")) throw new Refused(USAGE);
-      const content = (await Bun.file(o.get("--text-file")!).text()).trim();
-      if (!content.startsWith(`📋 Plan for #${issue} (r${revision})`)) throw new Refused("announcement does not match this issue and revision");
+      let content = githubReferences((await Bun.file(o.get("--text-file")!).text()).trim());
+      const previous = `📋 Plan for #${issue} (r${revision})`;
+      const header = `📋 Plan for [Issue #${issue}](<https://github.com/${repo}/issues/${issue}>) (r${revision})`;
+      if (content.startsWith(previous)) content = header + content.slice(previous.length);
+      if (!content.startsWith(header)) throw new Refused("announcement does not match this issue and revision");
       if (content.length > 1900) throw new Refused("announcement is longer than 1900 characters");
       const target = `${repo}#${issue}`;
       const known = existing(store, "plan", "plan", target, revision, channel);

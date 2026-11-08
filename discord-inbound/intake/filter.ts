@@ -45,6 +45,7 @@ export interface IncomingMessage extends MessageBody {
   channel_id: string;
   guild_id?: string;
   author: { id: string; username: string; global_name?: string | null; bot?: boolean };
+  readonly member?: { readonly nick?: string | null };
   timestamp: string;
   readonly mentions?: readonly { readonly id: string }[];
   readonly referenced_message?: { readonly author: { readonly id: string } } | null;
@@ -143,7 +144,7 @@ export async function classify(
     message_id: msg.id,
     channel_id: msg.channel_id,
     author_id: msg.author.id,
-    author: msg.author.global_name ?? msg.author.username,
+    author: msg.member?.nick || msg.author.global_name || msg.author.username,
     content: msg.content,
     sent_at: msg.timestamp,
     reply_to: replyTo,

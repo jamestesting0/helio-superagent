@@ -308,6 +308,27 @@ class QuestionTests(unittest.TestCase):
    self.m['create_question'](self.db,'lead','owner','','Rotate the production token?')
   self.assertEqual(calls[-1][2]['allowed_mentions'],{'parse':[]})
   self.assertFalse(calls[-1][2]['content'].startswith('<@'))
+ def test_expanding_question_links_fit_the_final_payload_without_changing_stored_source(self):
+  text=('https://github.com/o/r/pull/1 '*60)[:1500].rstrip()
+  for audience,options in [('owner',None),('staff',['Continue','Stop'])]:
+   with self.subTest(audience=audience):
+    posts=[]
+    def request(method,path,body=None):
+     if path=='/users/@me/channels':return {'id':'200'}
+     posts.append(body)
+     self.assertLessEqual(len(body['content']),2000)
+     return {'id':'300'}
+    with patch.dict(self.g,{'request':request,'STAFF':'100'}),patch.dict(os.environ,{'DORI_DISCORD_TRUSTED_IDS':'77,78'}):
+     sent=self.m['create_question'](self.db,'lead',audience,'',text,options)
+    self.assertEqual(sent['status'],'awaiting_answer')
+    row=self.db.execute('SELECT * FROM questions WHERE id=?',(sent['id'],)).fetchone()
+    self.assertEqual(row['question'],text)
+    content=posts[0]['content']
+    self.assertIn(f"Question [{sent['id']}]\n",content)
+    self.assertIn('[PR #1](<https://github.com/o/r/pull/1>)',content)
+    self.assertEqual(content.count('[PR #1]('),content.count('https://github.com/o/r/pull/1>)'))
+    self.assertTrue(content.endswith('Choose below or reply to this message.' if options else 'Please reply directly to this message so I can route your answer to the right task.'))
+    self.assertEqual(posts[0]['allowed_mentions'],{'parse':[],'users':['99','77','78']} if audience=='staff' else {'parse':[]})
  def test_thread_question_uses_registered_allowed_lane(self):
   (self.state/'lanes').mkdir();(self.state/'lanes/lane-one.json').write_text(json.dumps({'thread':'discord:101'}))
   calls=[]
@@ -383,8 +404,11 @@ class QuestionTests(unittest.TestCase):
   self.assertEqual(self.db.execute('SELECT status FROM questions').fetchone()['status'],'awaiting_answer')
  def test_github_question_links_suppress_embeds(self):
   format_links=self.m['format_links']
-  self.assertEqual(format_links('See https://github.com/jamestesting0/elo-bot/issues/12.'),'See <https://github.com/jamestesting0/elo-bot/issues/12>.')
-  self.assertEqual(format_links('See <https://github.com/jamestesting0/elo-bot/pull/4>'),'See <https://github.com/jamestesting0/elo-bot/pull/4>')
+  self.assertEqual(format_links('See https://github.com/jamestesting0/elo-bot/issues/12.'),'See [Issue #12](<https://github.com/jamestesting0/elo-bot/issues/12>).')
+  self.assertEqual(format_links('See <https://github.com/jamestesting0/elo-bot/pull/4>'),'See [PR #4](<https://github.com/jamestesting0/elo-bot/pull/4>)')
+  for text in ('`https://github.com/o/r/pull/4`','```\nhttps://github.com/o/r/pull/4\n```','> https://github.com/o/r/pull/4','https://github.com/o/r/pull/4extra',
+               '[Review](<https://github.com/o/r/pull/4>)'):
+   with self.subTest(text=text):self.assertEqual(format_links(text),text)
  def test_disallowed_thread_never_receives_a_question(self):
   (self.state/'lanes').mkdir();(self.state/'lanes/lane-one.json').write_text(json.dumps({'thread':'discord:101'}));calls=[]
   def request(method,path,body=None):

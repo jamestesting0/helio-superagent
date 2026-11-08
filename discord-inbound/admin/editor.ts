@@ -31,6 +31,7 @@ export class Editor {
       action, target, input: action === "channels.set" ? { value: values.value ?? values.policy ?? "" } : values,
       expected: ownerAction(action) && action !== "lanes.abandon" ? policy.revision : current?.revision ?? "",
       operation: this.event.id, label: confirmationLabels[action] ?? label ?? (action === "blocks.add" ? "Block user" : "Apply"),
+      ...(this.event.users?.[target] ? { targetLabel: this.event.users[target] } : {}),
     };
     if (confirmationLabels[action] || input.confirmation) {
       panel.proposal = proposal;

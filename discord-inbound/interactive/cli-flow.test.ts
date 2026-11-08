@@ -54,7 +54,7 @@ test("ask posts one prompt with buttons and a nonce, and asking again reuses it"
   expect(await main(argv)).toBe(0);
   expect(posts).toHaveLength(1);
   const body = posts[0]!.body;
-  expect(body).toMatchObject({ content: "Merge #6 · `9f45e57`?", enforce_nonce: true, allowed_mentions: { parse: [] },
+  expect(body).toMatchObject({ content: "Merge [PR #6](<https://github.com/o/r/pull/6>) · `9f45e57`?", enforce_nonce: true, allowed_mentions: { parse: [] },
     message_reference: { message_id: "42", fail_if_not_exists: false } });
   expect(body.components[0].components.map((b: { label: string; custom_id: string }) => b.label)).toEqual(["Merge", "Cancel"]);
   const s = store();
@@ -72,13 +72,13 @@ test("disallowed places, bad targets and merged PRs never post a prompt", async 
 test("trusted DMs are allowed and PR prompts skip the release preflight", async () => {
   process.env.HELIO_RELEASE_CHECK = await checker(2);
   expect(await main(["ask", "--action", "pr", "--target", "o/r#4", "--revision", SHA, "--channel", "300"])).toBe(0);
-  expect(posts[0]?.body.content).toBe("Open PR for #4 · `9f45e57`?");
+  expect(posts[0]?.body.content).toBe("Open PR for [Issue #4](<https://github.com/o/r/issues/4>) · `9f45e57`?");
 });
 
 test("a note adds one line that pings only the users it names, and PR prompts stay open for 72 hours", async () => {
   const note = "<@99> <@77> <https://github.com/o/r/issues/4>";
   expect(await main(["ask", "--action", "pr", "--target", "o/r#4", "--revision", SHA, "--channel", "100", "--note", note])).toBe(0);
-  expect(posts[0]?.body).toMatchObject({ content: `Open PR for #4 · \`9f45e57\`?\n${note}`, allowed_mentions: { parse: [], users: ["99", "77"] } });
+  expect(posts[0]?.body).toMatchObject({ content: "Open PR for [Issue #4](<https://github.com/o/r/issues/4>) · `9f45e57`?\n<@99> <@77> [Issue #4](<https://github.com/o/r/issues/4>)", allowed_mentions: { parse: [], users: ["99", "77"] } });
   const s = store();
   try { const row = s.get(posts[0]!.body.nonce)!; expect(row.expires_at - row.created_at).toBe(72 * 3_600_000); } finally { s.close(); }
   for (const bad of ["❌ Cancelled", "a\nb", "x".repeat(301)]) {
@@ -164,7 +164,7 @@ test("a click reaches the running intake watcher and is answered outside the mes
   });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-  expect(stdout).toContain(`TEST_CALLBACK {"type":4,"data":{"content":"✅ <@99> confirmed merge #6 · \`9f45e57\`"`);
+  expect(stdout).toContain(`TEST_CALLBACK {"type":4,"data":{"content":"✅ **[Unavailable user](<https://discord.com/users/99>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · \`9f45e57\`","allowed_mentions":{"parse":[]}}}`);
   expect(stdout).toContain(`TEST_PATCH /api/v10/channels/100/messages/500 {"components":[]}`);
   const confirm = stdout.split("\n").find((line) => line.startsWith("INBOUND_CONFIRM "));
   expect(JSON.parse(confirm!.slice("INBOUND_CONFIRM ".length))).toMatchObject({ id, outcome: "confirmed", by: "99", result_message_id: "701" });

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { AdminError, object, text, type AdminRecord } from "./protocol.ts";
 import { escapeMarkdown, sourceUrl, stamp, stateName } from "./record-format.ts";
+import { githubReferences } from "../messages/references.ts";
 
 export interface Lane {
   readonly key: string;
@@ -26,7 +27,7 @@ export interface Lane {
   readonly history?: readonly { readonly at: string; readonly status: string; readonly note: string }[];
 }
 
-export function readLanes(stateDirectory: string, guild: string): { readonly lane: Lane; readonly record: AdminRecord }[] {
+export function readLanes(stateDirectory: string, guild: string, repository?: string): { readonly lane: Lane; readonly record: AdminRecord }[] {
   const directory = join(stateDirectory, "lanes");
   const records: { readonly lane: Lane; readonly record: AdminRecord }[] = [];
   for (const folder of [directory, join(directory, "archive")]) {
@@ -70,7 +71,8 @@ export function readLanes(stateDirectory: string, guild: string): { readonly lan
       const source = /^discord:(\d+):(\d+)$/.exec(lane.source ?? "");
       const channel = source?.[1] ?? lane.thread.replace(/^discord:/, "");
       const issue = /^issue-(\d+)$/.exec(lane.job ?? "")?.[1];
-      const issueLabel = issue && !new RegExp(`\\bissue\\s*#?\\s*${issue}\\b`, "i").test(lane.title) ? `Issue #${issue}` : undefined;
+      const issueLabel = issue && !new RegExp(`\\bissue\\s*#?\\s*${issue}\\b`, "i").test(lane.title) ?
+        repository ? githubReferences(`https://github.com/${repository}/issues/${issue}`) : `Issue #${issue}` : undefined;
       const review = state === "done-claimed" && !lane.claim?.acknowledgedAt ? "Awaiting acknowledgment" : undefined;
       records.push({ lane, record: {
         id: lane.key, title: lane.title, revision: stamp(raw), state,

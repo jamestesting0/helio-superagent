@@ -7,11 +7,11 @@ import { object, type AdminRecord, type Section } from "./protocol.ts";
 import type { Panel } from "./panels.ts";
 import { render } from "./render.ts";
 
-function listFields(records: readonly AdminRecord[], section: Section = "lanes") {
+function listFields(records: readonly AdminRecord[], section: Section = "lanes", selected?: string) {
   const panel: Panel = { id: "a".repeat(24), actor: "22222", guild: "99999", channel: "44444",
     application: "88888", message: "77777", token: "offline", expires: 600000, revision: 1, section,
-    positions: { [section]: { ids: records.map(record => record.id), filters: {}, page: 0 } },
-    screen: "list", contentPage: 0, snapshot: 0 };
+    positions: { [section]: { ids: records.map(record => record.id), filters: {}, page: 0, ...(selected ? { selected } : {}) } },
+    screen: selected ? "detail" : "list", contentPage: 0, snapshot: 0 };
   return render(panel, records, { version: 1, revision: "a".repeat(64),
     values: { DORI_DISCORD_OWNER_ID: "22222" }, timing: [] }).embeds[0]?.fields;
 }
@@ -21,6 +21,8 @@ test.each([
   { state: "hibernated", linked: true, execution: "missing", title: "Issue #8 Elo facts rotation", job: "issue-8", summary: "Hibernated" },
   { state: "closed", linked: true, execution: "missing", title: "PR 1 live beta QA", summary: "Closed" },
   { state: "hibernated", linked: false, execution: "missing", title: "Handle scheduled match confirmation errors", job: "issue-10", summary: "Hibernated | Issue #10" },
+  { state: "hibernated", linked: false, execution: "missing", title: "Handle errors", job: "issue-10", repo: "o/r",
+    summary: "Hibernated | [Issue #10](<https://github.com/o/r/issues/10>)" },
   { state: "working", linked: true, execution: "working", title: "Issue 8 Elo facts rotation", job: "issue-8", summary: "Working" },
   { state: "working", linked: false, execution: "missing", title: "Issue 8 Elo facts rotation", job: "issue-8", summary: "Working | Session not linked" },
   { state: "working", linked: true, execution: "missing", title: "Issue 8 Elo facts rotation", job: "issue-8", summary: "Working | Session missing" },
@@ -28,6 +30,7 @@ test.each([
   { state: "working", linked: true, execution: "unavailable", title: "Issue 8 Elo facts rotation", job: "issue-8", summary: "Working | Session unavailable" },
 ])("lane lists show one work status and retain meaningful session differences: $state/$execution/$linked", async row => {
   const f = laneFixture();
+  if (row.repo) f.publish("11111", "a".repeat(64), { HELIO_GITHUB_REPO: row.repo });
   const saved = object(await Bun.file(f.path).json());
   writeFileSync(f.path, JSON.stringify({ ...saved, title: row.title, status: row.state,
     ...(row.job ? { job: row.job } : {}), ...(row.linked ? { pane: "fixture-pane" } : {}),
@@ -67,7 +70,8 @@ test("trusted-user list rows avoid repeating the name but retain the user link i
   const records = (await executeProof(f.proof({ kind: "read", section: "trusted", filters: {} }, "read-trusted", "22222"))).records;
 
   expect(listFields(records, "trusted")).toEqual([{ name: "Offline fixture user", value: "Contributor access" }]);
-  expect(records[0]?.fields?.find(field => field.name === "User")?.value).toBe("<@33333>");
+  expect(listFields(records, "trusted", "33333")?.find(field => field.name === "User")?.value)
+    .toBe("**[Offline fixture user](<https://discord.com/users/33333>)**");
 });
 
 test("channel list rows show the policy once and retain the channel link in details", async () => {
@@ -89,7 +93,8 @@ test("blocked-user list rows keep the reason and source without repeating the us
   const records = (await executeProof(f.proof({ kind: "read", section: "blocks", filters: {} }, "read-blocks"))).records;
 
   expect(listFields(records, "blocks")).toEqual([{ name: "Offline fixture user", value: "Manual | Repeated unrelated pings" }]);
-  expect(records[0]?.fields?.find(field => field.name === "User")?.value).toBe("<@33333>");
+  expect(listFields(records, "blocks", "33333")?.find(field => field.name === "User")?.value)
+    .toBe("**[Offline fixture user](<https://discord.com/users/33333>)**");
 });
 
 test("compact lane lists retain work, session and completion evidence in the opened item", async () => {

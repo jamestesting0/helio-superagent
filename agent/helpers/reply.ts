@@ -26,18 +26,18 @@ export async function sendReply(
   })).id;
 }
 
-const USAGE = "Usage: bun reply.ts CHANNEL_ID MESSAGE_ID (--text-file PATH | TEXT) [--event KEY --disposition final|progress|question [--waiting-on TEXT] [--job KEY] [--issue URL]] [--covers ID,...] [--seen ID,...]; events require DORI_STATE_DIR";
+const USAGE = "Usage: bun reply.ts CHANNEL_ID MESSAGE_ID (--text-file PATH | TEXT) [--event KEY --disposition final|progress|question [--waiting-on TEXT] [--job KEY] [--issue URL]] [--covers ID,...] [--seen ID,...] [--ping ID,...]; events require DORI_STATE_DIR";
 
 // --text-file keeps reply text away from any shell: inside a shell command string, `code` and $(...) are executed and vanish.
 export function parseArgs(argv: readonly string[]):
-  { channel_id: string; message_id: string; text: string; text_file?: string; event?: string; covers: string[]; seen: string[];
+  { channel_id: string; message_id: string; text: string; text_file?: string; event?: string; covers: string[]; seen: string[]; ping?: string[];
     meaning?: { disposition: "final" | "progress" | "question"; waiting_on?: string; job?: string; issue?: string } } | undefined {
   const positional: string[] = [];
   let textFile: string | undefined;
   let event: string | undefined;
   let disposition: "final" | "progress" | "question" | undefined;
   let waiting_on: string | undefined, job: string | undefined, issue: string | undefined;
-  const lists: Record<"--covers" | "--seen", string[]> = { "--covers": [], "--seen": [] };
+  const lists: Record<"--covers" | "--seen" | "--ping", string[]> = { "--covers": [], "--seen": [], "--ping": [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (positional.length === 2 && textFile === undefined && arg === "--text-file") {
@@ -59,7 +59,7 @@ export function parseArgs(argv: readonly string[]):
     } else if ((positional.length === 3 || textFile !== undefined) && arg === "--issue") {
       issue = argv[++i];
       if (!issue || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*$/.test(issue)) return undefined;
-    } else if ((positional.length === 3 || textFile !== undefined) && (arg === "--covers" || arg === "--seen")) {
+    } else if ((positional.length === 3 || textFile !== undefined) && (arg === "--covers" || arg === "--seen" || arg === "--ping")) {
       const ids = (argv[++i] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
       if (!ids.length || ids.some((id) => !/^[0-9]{1,30}$/.test(id))) return undefined;
       lists[arg].push(...ids);
@@ -72,6 +72,7 @@ export function parseArgs(argv: readonly string[]):
       ((job || issue) && !disposition)) return undefined;
   return { channel_id, message_id, text: text ?? "", ...(textFile !== undefined ? { text_file: textFile } : {}),
     ...(event ? { event } : {}), covers: lists["--covers"], seen: lists["--seen"],
+    ...(lists["--ping"].length ? { ping: [...new Set(lists["--ping"])] } : {}),
     ...(disposition ? { meaning: { disposition, ...(waiting_on ? { waiting_on } : {}), ...(job ? { job } : {}), ...(issue ? { issue } : {}) } } : {}) };
 }
 
@@ -91,7 +92,7 @@ if (import.meta.main) {
     await requireReplyChannel(args.channel_id, filterConfig(process.env), rest);
     const discord = new Discord(fetchHttp, realClock, token);
     const send = (mentions: readonly string[]) =>
-      sendReply(discord, { channel_id: args.channel_id, message_id: args.message_id }, args.text, mentions);
+      sendReply(discord, { channel_id: args.channel_id, message_id: args.message_id }, args.text, [...mentions, ...(args.ping ?? [])]);
     if (!state) {
       console.log("REPLY_WARN DORI_STATE_DIR is not set; sending without the newer-message check");
       console.log(`SENT ${await send([])}`);

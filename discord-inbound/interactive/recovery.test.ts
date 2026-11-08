@@ -9,6 +9,7 @@ import { LAPSE_MS, PromptStore, QuestionStore, CONFIRM_TTL_MS } from "./store.ts
 
 const OWNER = "99", TRUSTED = "77", STRANGER = "66", PROMPT_MESSAGE = "500", QUESTION_MESSAGE = "600";
 const SHA = "9f45e57" + "a".repeat(33);
+const PROOF = "✅ **[User 99](<https://discord.com/users/99>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · `9f45e57`";
 let dir: string, prompts: PromptStore, now: number, lines: string[], warnings: string[], calls: { method: string; path: string; body: any }[];
 let replies: Array<[RegExp, (body: any) => unknown]>;
 let sequence = 1000;
@@ -27,6 +28,7 @@ const deps = (): Deps => ({
   call: async (method, path, body) => {
     calls.push({ method, path, body });
     for (const [pattern, reply] of replies) if (pattern.test(`${method} ${path}`)) return reply(body);
+    if (/^\/users\/\d+$/.test(path)) return { username: `User ${path.slice(7)}` };
     if (path.includes("/callback")) return { resource: { message: { id: "700" } } };
     return undefined;
   },
@@ -44,7 +46,7 @@ function prompt(kind: "confirm" | "plan" = "confirm", action = "merge"): string 
 function event(customId: string, user: string, extra: Record<string, unknown> = {}) {
   return {
     type: 3, id: String(sequence++), application_id: "88", token: "tok", channel_id: "100", guild_id: "300",
-    member: { user: { id: user } }, message: { id: PROMPT_MESSAGE }, data: { custom_id: customId }, ...extra,
+    member: { user: { id: user, username: `User ${user}` } }, message: { id: PROMPT_MESSAGE }, data: { custom_id: customId }, ...extra,
   };
 }
 const callbacks = () => calls.filter((call) => call.path.includes("/callback")).map((call) => call.body);
@@ -102,7 +104,7 @@ test("callback transport failures preserve uncertainty without exposing interact
 test("a server error after an accepted callback is reconciled before releasing the claim", async () => {
   const id = prompt();
   replies = [[/callback/, () => { throw new CallError(503, "server error"); }],
-    [/@original/, () => ({ id: "701", content: `✅ <@${OWNER}> confirmed merge #6 · \`9f45e57\`` })]];
+    [/@original/, () => ({ id: "701", content: PROOF })]];
   await handleInteraction(event(`h1:c:${id}:confirm`, OWNER), deps());
   expect(prompts.get(id)).toMatchObject({ status: "confirmed", result_message_id: "701" });
 });
@@ -122,7 +124,7 @@ test("an outcome Discord cannot confirm survives a watcher restart and settles f
   await handleInteraction(event(`h1:c:${first}:cancel`, TRUSTED), deps());
   expect(callbacks().at(-1)?.data.content).toBe("Someone is answering this.");
   replies = [
-    [/\/t0\/messages\/@original/, () => ({ id: "702", content: `✅ <@${OWNER}> confirmed merge #6 · \`9f45e57\`` })],
+    [/\/t0\/messages\/@original/, () => ({ id: "702", content: PROOF })],
     [/\/t1\/messages\/@original/, () => { throw new CallError(404, "unknown message"); }],
     [/@original/, () => { throw new CallError(undefined, "timeout"); }],
   ];
@@ -151,7 +153,7 @@ test("a refused callback reverts; an unknown outcome is settled by Discord's sto
   expect(prompts.get(id)?.status).toBe("open");
 
   replies = [[/callback/, () => { throw new CallError(undefined, "timeout"); }],
-    [/@original/, () => ({ id: "701", content: `✅ <@${OWNER}> confirmed merge #6 · \`9f45e57\`` })]];
+    [/@original/, () => ({ id: "701", content: PROOF })]];
   await handleInteraction(event(`h1:c:${id}:confirm`, OWNER), deps());
   expect(prompts.get(id)).toMatchObject({ status: "confirmed", result_message_id: "701" });
 });

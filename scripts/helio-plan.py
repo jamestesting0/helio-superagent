@@ -34,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
 WORK = runpy.run_path(str(HERE / "helio-work.py"))
 FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
+DISCORD_TEXT = runpy.run_path(str(HERE / "helio_discord_text.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 MARKER = "<!-- helio-plan v1 -->"
 DATA = re.compile(r"<!-- helio-plan-data:([A-Za-z0-9+/=]+) -->\s*\Z")
@@ -220,11 +221,11 @@ def intact(issue: int, body: str, data: dict | None) -> bool:
 
 
 def announcement(issue: int, data: dict, url: str) -> str:
-    head = f"📋 Plan for #{issue} (r{data['revision']})"
+    head = f"📋 Plan for [Issue #{issue}](<https://github.com/{REPO}/issues/{issue}>) (r{data['revision']})"
     if data["open_questions"]:
         prefix = f"{head} "
         lead = "needs answers before it can be approved: " + "; ".join(data["open_questions"])
-        tail = f" · <{url}>"
+        tail = f" · [Read plan](<{url}>)"
     else:
         prefix = f"{head}: "
         changes, decisions = len(data["scope"]["changes"]), len(data["decisions"])
@@ -232,12 +233,11 @@ def announcement(issue: int, data: dict, url: str) -> str:
         beta = "not planned" if data["live_beta"] == "Not planned" else "requested (details in plan)"
         facts = [f"{changes} change{'s' * (changes != 1)}",
                  f"{decisions} decision{'s' * (decisions != 1)}" + (f" ({helio} ⚑ Helio's call)" if helio else ""),
-                 f"Live beta: {beta}", f"<{url}>"]
+                 f"Live beta: {beta}", f"[Read plan](<{url}>)"]
         tail = " · " + " · ".join(facts) + "\nReply **approve** to start, or tell me what to change."
         lead = data["in_short"] if data["revision"] == 1 else f"changed: {data['history'][0]['note']}. {data['in_short']}"
     room = ANNOUNCE_LIMIT - len(prefix) - len(tail)
-    if len(lead) > room:
-        lead = lead[:max(room - 1, 0)].rstrip() + "…"
+    lead = DISCORD_TEXT["clip_links"](DISCORD_TEXT["format_links"](lead), room)
     return f"{prefix}{lead}{tail}"
 
 
@@ -537,7 +537,7 @@ def approve(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict]
     is_source = (source.get("message") == args.message and source.get("author") == message["payload"]["author_id"]
                  and source.get("channel") == message["live"]["channel_id"] and source.get("content") == message["live"]["content"])
     referenced = str((message["live"].get("referenced_message") or {}).get("content", ""))
-    answered = PLAN_PATTERN.match(referenced)
+    answered = PLAN_PATTERN.match(DISCORD_TEXT["bot_text"](referenced, REPO, pull=False))
     if answered and int(answered.group(2)) != data["revision"] and not is_source:
         raise Refused(f"that approves r{answered.group(2)}; the current plan is r{data['revision']} "
                       f"({data['history'][0]['note']}); ask for approval of r{data['revision']}")

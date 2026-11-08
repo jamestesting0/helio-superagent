@@ -50,6 +50,14 @@ function msg(over: Partial<IncomingMessage> & { authorId?: string; bot?: boolean
 }
 
 describe("classify", () => {
+  test("provided server names take precedence without changing message identity or content", async () => {
+    const event = msg({ authorId: OWNER, author: { id: OWNER, username: "account", global_name: "Global name" },
+      member: { nick: "Server name" }, content: "<@300> help" });
+    const result = await classify(event, cfg, parentOf);
+    expect(result?.author).toBe("Server name");
+    expect([result?.author_id, result?.content]).toEqual([OWNER, "<@300> help"]);
+  });
+
   test.each([4, 6, 18])("system event type %i is never an owner work request", async (type) => {
     const event = Object.assign(msg({ authorId: OWNER, content: "Base Storage" }), { type });
     expect(await classify(event, cfg, parentOf)).toBeNull();

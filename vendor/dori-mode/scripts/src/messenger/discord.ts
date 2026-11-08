@@ -1,16 +1,18 @@
 import type { Clock } from "../run.ts";
-import { DEFAULT_RETRY, guardText, type Http, MessengerError, withBackoff } from "./http.ts";
+import { DEFAULT_RETRY, guardText, type Http, MessengerError, UnsafeMessageError, withBackoff } from "./http.ts";
 
 
-/** Suppress Discord previews for GitHub issue and PR links, without double-wrapping existing autolinks. */
+/** Label GitHub references without previews; existing links and code remain intact. */
 export function discordText(text: string): string {
   const safe = guardText(text);
-  return safe.replace(/https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:issues|pull)\/\d+(?:[/?#][^\s<>()]*)?/gi,
-    (url, offset, full: string) => {
+  return safe.replace(/```[\s\S]*?(?:```|(?![\s\S]))|`[^`\n]*`|^[ \t]*>>>[\s\S]*$|^[ \t]*>[^\n]*(?:\n|$)|\[(?:\\.|[^\]\\\n])*\]\((?:<[^>\n]*>|[^)\n]*)\)|<?https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/[1-9]\d*(?![\w-])(?:[/?#][^\s<>)]+)?>?/gim,
+    token => {
+      const url = token.replace(/^<|>$/g, "");
+      const github = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(issues|pull)\/([1-9]\d*)/i.exec(url);
+      if (!github || url.length > 500) return token;
       const suffix = /[.,!?;:]+$/.exec(url)?.[0] ?? "";
       const core = suffix ? url.slice(0, -suffix.length) : url;
-      if (full[offset - 1] === "<" && full[offset + core.length] === ">") return url;
-      return `<${core}>${suffix}`;
+      return `[${github[1]?.toLowerCase() === "pull" ? "PR" : "Issue"} #${github[2]}](<${core}>)${suffix}`;
     });
 }
 
@@ -43,8 +45,9 @@ export class Discord {
     return (await this.call<{ id: string }>("POST", "/users/@me/channels", { recipient_id: userId })).id;
   }
 
-  async send(channelId: string, content: string): Promise<string> {
-    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: discordText(content), allowed_mentions: { parse: [] } })).id;
+  async send(channelId: string, content: string, ping: readonly string[] = []): Promise<string> {
+    if (ping.some(id => !/^\d{1,30}$/.test(id)) || ping.length > 100) throw new UnsafeMessageError("Invalid Discord ping recipients");
+    return (await this.call<{ id: string }>("POST", `/channels/${channelId}/messages`, { content: discordText(content), allowed_mentions: { parse: [], ...(ping.length ? { users: [...new Set(ping)] } : {}) } })).id;
   }
 
   async edit(channelId: string, messageId: string, content: string): Promise<void> {

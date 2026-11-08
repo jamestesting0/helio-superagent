@@ -15,7 +15,8 @@ export class PolicyRecords {
       case "trusted":
         return Promise.all(values.HELIO_TRUSTED_USERS.split(",").filter(Boolean).map(async id => ({
           id, title: await access.userLabel(id), user: id, revision, summary: "Contributor access",
-          fields: [{ name: "User", value: `<@${id}>` }, { name: "Scope", value: "Trusted contributor; owner-only settings remain protected" }],
+          fields: [{ name: "User", value: { kind: "user", id, label: await access.userLabel(id) } },
+            { name: "Scope", value: "Trusted contributor; owner-only settings remain protected" }],
         })));
       case "timeouts":
         return published.timing.map(setting => ({

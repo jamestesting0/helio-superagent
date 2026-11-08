@@ -200,11 +200,14 @@ test("private conversation inspection returns only the acting user's DM topics",
   conversations.dispose();
   spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0]) => {
     const url = String(input);
+    if (url === "https://discord.com/api/v10/users/11111") return Response.json({ id: "11111", username: "Requester" });
     if (!/^https:\/\/discord.com\/api\/v10\/channels\/(44444|55555)$/.test(url)) throw new Error(`Unexpected offline request: ${url}`);
     return Response.json({ id: url.split("/").at(-1), type: 1 });
   }, { preconnect: realFetch.preconnect }));
   const response = await executeProof(f.proof({ kind: "read", section: "conversations", filters: {} }));
   expect(response.records.map(row => row.title)).toEqual(["Own request"]);
+  expect(response.records[0]?.summary).toContain("**[Requester](<https://discord.com/users/11111>)**");
+  expect(response.records[0]?.url).toBe("https://discord.com/channels/@me/44444/66666");
   expect(JSON.stringify(response)).not.toContain("Other private request");
 });
 
@@ -228,7 +231,8 @@ test("a conversation commit survives a lost outer receipt and reconciles after r
   const conversations = new Conversations(join(f.state, "discord-conversations.sqlite"));
   conversations.open("44444", "11111", "66666", "Own request", Date.now());
   conversations.dispose();
-  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ id: "44444", type: 1 }),
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0]) => Response.json(String(input).endsWith("/users/11111") ?
+    { id: "11111", username: "Requester" } : { id: "44444", type: 1 }),
     { preconnect: realFetch.preconnect }));
   const topic = (await executeProof(f.proof({ kind: "read", section: "conversations", filters: {} }, "inspect"))).records[0];
   if (!topic) throw new Error("Missing fixture conversation");
@@ -257,7 +261,8 @@ test.each(["resume", "close", "reopen"])("conversation %s changes the retained t
   if (action === "resume") conversations.hold("44444", "11111", "Waiting", "66666");
   if (action === "reopen") conversations.close("44444", "11111", "answered", Date.now(), undefined, "66666");
   conversations.dispose();
-  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ id: "44444", type: 1 }),
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0]) => Response.json(String(input).endsWith("/users/11111") ?
+    { id: "11111", username: "Requester" } : { id: "44444", type: 1 }),
     { preconnect: realFetch.preconnect }));
   const current = (await executeProof(f.proof({ kind: "read", section: "conversations", filters: {} }))).records[0];
   if (!current) throw new Error("Missing conversation");

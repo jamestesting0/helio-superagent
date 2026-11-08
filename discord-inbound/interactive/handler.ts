@@ -5,6 +5,8 @@ import type { Answer } from "../conversations/question-answer.ts";
 import { announceQuestion, onQuestion } from "./questions.ts";
 import { CallError, TOKEN_LIFE_MS, busy, callback, edit, id, notice, original, parseInteraction, postOnce, record, settle,
   type Click, type Deps, type Reply } from "./transport.ts";
+import { userReference } from "./transport.ts";
+import { githubReferences, referenceLink } from "../messages/references.ts";
 export { CallError, discordCall, parseInteraction, type Deps, type Call, type Click } from "./transport.ts";
 
 const MESSAGE = 4, UPDATE = 7;
@@ -14,7 +16,8 @@ const approver = (deps: Deps, user: string) => user === deps.ownerId || deps.tru
 function explainPrompt(row: Prompt | undefined): string {
   if (!row) return NOTICE.inactive;
   if (row.status === "pending") return NOTICE.pending;
-  if (row.status === "confirmed" || row.status === "used" || row.status === "cancelled") return NOTICE.answered(row.decided_by);
+  if (row.status === "confirmed" || row.status === "used" || row.status === "cancelled") return NOTICE.answered(row.decided_by ?
+    referenceLink({ kind: "user", id: row.decided_by, label: "Previous responder" }) : null);
   if (row.status === "expired" || row.status === "lapsed" || (row.status === "open")) return NOTICE.expired;
   return NOTICE.inactive;
 }
@@ -28,8 +31,9 @@ function emitPrompt(deps: Deps, row: Prompt, outcome: string, by: string | null,
 
 async function decide(deps: Deps, click: Click, row: Prompt): Promise<void> {
   const accept = click.verb === "confirm" || click.verb === "approve";
-  const result = resultLine(row.kind, row.action, row.target, row.revision, click.userId);
-  const cancelled = `${row.content}\n❌ Cancelled by <@${click.userId}>`;
+  const actor = await userReference(deps, click.userId, click.userName || "Unavailable user");
+  const result = resultLine(row.kind, row.action, row.target, row.revision, actor);
+  const cancelled = `${githubReferences(row.content)}\n❌ Cancelled by ${actor}`;
   const expected = accept ? result : cancelled;
   const blocked = deps.prompts.begin(row.id, click.userId, deps.now(), { app: click.appId, token: click.token, accept, expected });
   if (blocked) { await notice(deps, click, explainPrompt(blocked)); return; }
@@ -102,7 +106,7 @@ async function onPrompt(deps: Deps, click: Click): Promise<void> {
   if (!row || row.kind !== (click.kind === "c" ? "confirm" : "plan") || row.channel_id !== click.channelId || (click.messageId && row.message_id !== click.messageId)) {
     await notice(deps, click, NOTICE.inactive); return;
   }
-  if (!approver(deps, click.userId)) { await notice(deps, click, NOTICE.forUser(deps.ownerId)); return; }
+  if (!approver(deps, click.userId)) { await notice(deps, click, NOTICE.forUser(referenceLink({ kind: "user", id: deps.ownerId, label: "Owner" }))); return; }
   await decide(deps, click, row);
 }
 
@@ -122,7 +126,8 @@ export function handlePlanReply(reply: Answer, deps: Deps): void {
 }
 
 /** Handles one click. Errors are reported, never thrown: a bad click must not stop intake. */
-export async function handleInteraction(raw: unknown, deps: Deps): Promise<void> {
+export async function handleInteraction(raw: unknown, base: Deps): Promise<void> {
+  const deps: Deps = { ...base, userNames: new Map() };
   const click = parseInteraction(raw);
   if (!click) return;
   let store: QuestionStore | undefined;
@@ -149,7 +154,7 @@ export async function handleInteraction(raw: unknown, deps: Deps): Promise<void>
 async function closePrompt(deps: Deps, row: Prompt): Promise<void> {
   const suffix = CLOSE_SUFFIX[row.status];
   await edit(deps, `prompt:${row.id}`, () => deps.call("PATCH", `/channels/${row.channel_id}/messages/${row.message_id}`, {
-    ...(suffix ? { content: `${row.content}\n${suffix}`, allowed_mentions: { parse: [] } } : {}), components: [],
+    ...(suffix ? { content: `${githubReferences(row.content)}\n${suffix}`, allowed_mentions: { parse: [] } } : {}), components: [],
   }), () => deps.prompts.cleared(row.id, deps.now()));
 }
 
@@ -164,7 +169,8 @@ export async function closeExpired(deps: Deps): Promise<void> {
   for (const row of deps.prompts.toClose().filter((row) => row.status === "expired")) await closePrompt(deps, row);
 }
 
-export async function sweep(deps: Deps): Promise<void> {
+export async function sweep(base: Deps): Promise<void> {
+  const deps: Deps = { ...base, userNames: new Map() };
   await settlePrompts(deps);
   expireNow(deps);
   const store = deps.questions();

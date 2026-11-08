@@ -20,7 +20,7 @@ ADMIN_BUNDLE = (
     "helio_admin_recovery.py", "helio_admin_lifecycle.py", "helio_admin_install.py",
 )
 BUNDLE = ("helio-beta.py", "helio_beta_backup.py", "helio_beta_broker.py", "helio_beta_service.py",
-          "helio_beta_vault.py", "helio_release_service.py", "helio_approval.py", *ADMIN_BUNDLE)
+          "helio_beta_vault.py", "helio_release_service.py", "helio_approval.py", "helio_discord_text.py", *ADMIN_BUNDLE)
 TARGET = Path("/opt/helio-beta-service/scripts")
 UNITS = ("helio-release.service", "helio-beta-maintenance.service", "helio-admin.service", "helio-admin-controller.service")
 UNIT_TARGET = Path("/etc/systemd/system")
@@ -73,7 +73,7 @@ def main() -> int:
     # Stop no services until all files are installed; production EloBot is never touched.
     if any(name in changed for name in UNITS):
         subprocess.run(["systemctl", "daemon-reload"], check=True, timeout=30)
-    if any(name in changed for name in ("helio_release_service.py", "helio_approval.py", "helio-release.service")):
+    if any(name in changed for name in ("helio_release_service.py", "helio_approval.py", "helio_discord_text.py", "helio-release.service")):
         subprocess.run(["systemctl", "restart", "helio-release.service"], check=True, timeout=30)
     if any(name in changed for name in ("helio-beta.py", "helio_beta_backup.py", "helio_beta_broker.py", "helio_beta_service.py", "helio_beta_vault.py", "helio-beta-maintenance.service")):
         subprocess.run(["systemctl", "restart", "helio-beta-maintenance.service"], check=True, timeout=30)

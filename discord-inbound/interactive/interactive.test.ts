@@ -28,6 +28,7 @@ const deps = (): Deps => ({
   call: async (method, path, body) => {
     calls.push({ method, path, body });
     for (const [pattern, reply] of replies) if (pattern.test(`${method} ${path}`)) return reply(body);
+    if (/^\/users\/\d+$/.test(path)) return { username: `User ${path.slice(7)}` };
     if (path.includes("/callback")) return { resource: { message: { id: "700" } } };
     return undefined;
   },
@@ -45,7 +46,7 @@ function prompt(kind: "confirm" | "plan" = "confirm", action = "merge"): string 
 function event(customId: string, user: string, extra: Record<string, unknown> = {}) {
   return {
     type: 3, id: String(sequence++), application_id: "88", token: "tok", channel_id: "100", guild_id: "300",
-    member: { user: { id: user } }, message: { id: PROMPT_MESSAGE }, data: { custom_id: customId }, ...extra,
+    member: { user: { id: user, username: `User ${user}` } }, message: { id: PROMPT_MESSAGE }, data: { custom_id: customId }, ...extra,
   };
 }
 const callbacks = () => calls.filter((call) => call.path.includes("/callback")).map((call) => call.body);
@@ -93,7 +94,7 @@ test("clicks in the shape agent-messenger emits are understood", () => {
 test("only the owner or trusted users can decide; others get a private notice and nothing changes", async () => {
   const id = prompt();
   await handleInteraction(event(`h1:c:${id}:confirm`, STRANGER), deps());
-  expect(callbacks()).toEqual([{ type: 4, data: { content: `This one's for <@${OWNER}>.`, flags: 64, allowed_mentions: { parse: [] } } }]);
+  expect(callbacks()).toEqual([{ type: 4, data: { content: `This one's for **[Owner](<https://discord.com/users/${OWNER}>)**.`, flags: 64, allowed_mentions: { parse: [] } } }]);
   expect(prompts.get(id)?.status).toBe("open");
 });
 
@@ -101,7 +102,7 @@ test("only the owner or trusted users can decide; others get a private notice an
 test("a confirm posts the public proof, records its message and removes the buttons", async () => {
   const id = prompt();
   await handleInteraction(event(`h1:c:${id}:confirm`, TRUSTED), deps());
-  expect(callbacks()[0]).toEqual({ type: 4, data: { content: `✅ <@${TRUSTED}> confirmed merge #6 · \`9f45e57\``, allowed_mentions: { parse: [] } } });
+  expect(callbacks()[0]).toEqual({ type: 4, data: { content: `✅ **[User ${TRUSTED}](<https://discord.com/users/${TRUSTED}>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · \`9f45e57\``, allowed_mentions: { parse: [] } } });
   expect(prompts.get(id)).toMatchObject({ status: "confirmed", decided_by: TRUSTED, result_message_id: "700", cleared_at: now });
   expect(calls.at(-1)).toEqual({ method: "PATCH", path: `/channels/100/messages/${PROMPT_MESSAGE}`, body: { components: [] } });
   expect(JSON.parse(lines[0]!.slice("INBOUND_CONFIRM ".length))).toMatchObject({ id, outcome: "confirmed", by: TRUSTED, result_message_id: "700" });
@@ -115,7 +116,7 @@ test("a second click while one is in flight, or after a decision, cannot change 
   expect(callbacks().at(-1)?.data.content).toBe("Someone is answering this.");
   prompts.finish(id, OWNER, "confirmed", now, "700", true);
   await handleInteraction(event(`h1:c:${id}:cancel`, TRUSTED), deps());
-  expect(callbacks().at(-1)?.data.content).toBe(`Already answered by <@${OWNER}>.`);
+  expect(callbacks().at(-1)?.data.content).toBe(`Already answered by **[Previous responder](<https://discord.com/users/${OWNER}>)**.`);
   expect(prompts.get(id)?.status).toBe("confirmed");
 });
 
@@ -124,7 +125,7 @@ test("cancel edits the prompt in place and creates no proof message", async () =
   const id = prompt();
   await handleInteraction(event(`h1:c:${id}:cancel`, OWNER), deps());
   expect(callbacks()).toEqual([{ type: 7, data: {
-    content: `Merge #6 · \`9f45e57\`?\n❌ Cancelled by <@${OWNER}>`, components: [], allowed_mentions: { parse: [] } } }]);
+    content: `Merge #6 · \`9f45e57\`?\n❌ Cancelled by **[User ${OWNER}](<https://discord.com/users/${OWNER}>)**`, components: [], allowed_mentions: { parse: [] } } }]);
   expect(prompts.get(id)).toMatchObject({ status: "cancelled", result_message_id: null, cleared_at: now });
 });
 
@@ -225,7 +226,7 @@ test.each([
 test("plan approval and cancellation retain their public decision behavior", async () => {
   const approved = prompt("plan");
   await handleInteraction(event(`h1:p:${approved}:approve`, OWNER), deps());
-  expect(callbacks().at(-1)?.data.content).toBe(`✅ <@${OWNER}> approved the plan for #6 (r2)`);
+  expect(callbacks().at(-1)?.data.content).toBe(`✅ **[User ${OWNER}](<https://discord.com/users/${OWNER}>)** approved the plan for [Issue #6](<https://github.com/o/r/issues/6>) (r2)`);
   expect(prompts.use(approved, now + PLAN_LATE)).toBe(true);
   const cancelled = prompt("plan");
   await handleInteraction(event(`h1:p:${cancelled}:cancel`, TRUSTED), deps());

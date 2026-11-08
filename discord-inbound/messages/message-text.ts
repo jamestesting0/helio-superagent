@@ -25,6 +25,7 @@ export interface MentionedUser {
   readonly id: string;
   readonly username?: string;
   readonly global_name?: string | null;
+  readonly member?: { readonly nick?: string | null };
 }
 
 const MAX_COMPONENT_CHARS = 4000;
@@ -89,6 +90,7 @@ export function componentText(components: readonly Component[] | undefined): str
 
 // Names travel beside the text: the text itself must stay byte-exact (approvals compare it to the live message).
 export function mentionedUsers(mentions: readonly MentionedUser[] | undefined): Record<string, string> | undefined {
-  const named = (mentions ?? []).filter((user) => /^[0-9]+$/.test(user.id) && (user.global_name || user.username));
-  return named.length ? Object.fromEntries(named.map((user) => [user.id, String(user.global_name || user.username).slice(0, 100)])) : undefined;
+  const name = (user: MentionedUser) => user.member?.nick || user.global_name || user.username;
+  const named = (mentions ?? []).filter((user) => /^[0-9]+$/.test(user.id) && name(user));
+  return named.length ? Object.fromEntries(named.map((user) => [user.id, String(name(user)).slice(0, 100)])) : undefined;
 }

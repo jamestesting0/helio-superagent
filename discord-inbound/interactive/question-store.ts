@@ -22,6 +22,10 @@ export class QuestionStore {
     const db = openPrivate(path, busyMs, false);
     const names = new Set(db.query<{ name: string }, []>("PRAGMA table_info(questions)").all().map((row) => row.name));
     if (!COLUMNS.every((name) => names.has(name))) { db.close(); return undefined; }
+    db.transaction(() => {
+      const current = db.query<{ name: string }, []>("PRAGMA table_info(questions)").all();
+      if (!current.some(column => column.name === "answer_display")) db.exec("ALTER TABLE questions ADD COLUMN answer_display TEXT");
+    }).immediate();
     // Only the retired draft flow used this state; old unsubmitted choices become replyable again.
     db.query("UPDATE questions SET status='awaiting_answer',pending_by=NULL,pending_at=NULL WHERE status='answering'").run();
     return new QuestionStore(db);
@@ -38,6 +42,15 @@ export class QuestionStore {
       answer_text=?,answer_source='component',announced_at=NULL,pending_by=NULL,pending_at=NULL,updated=?
       WHERE id=? AND status='awaiting_answer' AND updated>?`)
       .run(answer.id, answer.author, answer.role, answer.scope, answer.text, now, questionId, now - QUESTION_TTL_MS).changes === 1;
+  }
+
+  /** Freeze presentation before posting, so a rename cannot change an uncertain send's identity. */
+  bindAnswerDisplay(questionId: string, author: string, display: string): string {
+    const saved = this.db.query<{ answer_display: string }, [string, string, string]>(
+      "UPDATE questions SET answer_display=coalesce(answer_display,?) WHERE id=? AND answer_author=? RETURNING answer_display")
+      .get(display, questionId, author);
+    if (!saved) throw new RangeError("The question changed before its answer could be displayed");
+    return saved.answer_display;
   }
 
   expireDue(now: number): Question[] {

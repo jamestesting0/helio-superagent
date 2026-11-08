@@ -11,7 +11,7 @@ export function syncWarning(state: string, repo: string): string | undefined {
   if (!columns.includes("last_outcome")) return "GitHub synchronization has no durable outcome history.";
   const row = db.query<{ issue: number; last_outcome: string }, [string]>(
     "SELECT issue,last_outcome FROM tracked WHERE repo=? AND last_outcome IN ('failed','partial','uncertain') ORDER BY attempted_at DESC,issue LIMIT 1").get(repo);
-  return row ? `GitHub issue #${row.issue} synchronization is ${row.last_outcome}.` : undefined;
+  return row ? `GitHub https://github.com/${repo}/issues/${row.issue} synchronization is ${row.last_outcome}.` : undefined;
 }
 
 export async function probeGithub(home: string): Promise<RuntimeResult> {

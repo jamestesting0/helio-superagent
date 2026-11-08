@@ -1,9 +1,11 @@
-import type { Panel, Proposal } from "./panels.ts";
+import type { Panel } from "./panels.ts";
 import { position } from "./panels.ts";
 import { SECTIONS, type AdminPolicy, type AdminRecord, type Section } from "./protocol.ts";
 import { clipText as short, escapeMarkdown } from "./record-format.ts";
 import { readCommandSync } from "./command-sync-state.ts";
 import { join } from "node:path";
+import { contentFields, proposalFields } from "./display-fields.ts";
+import { clipReferences, githubReferences, referenceLink } from "../messages/references.ts";
 
 interface Field { readonly name: string; readonly value: string }
 interface Component {
@@ -83,28 +85,6 @@ export function filterOptions(section: Section): readonly string[] {
   }
 }
 
-function contentFields(source: readonly Field[]): Field[] {
-  return source.flatMap(field => {
-    const value = escapeMarkdown(field.value || "(empty)");
-    const chunks: Field[] = [];
-    for (let offset = 0; offset < value.length;) {
-      let end = Math.min(offset + 780, value.length);
-      if (end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1] ?? "")) end -= 1;
-      chunks.push({ name: short(escapeMarkdown(field.name) + (offset ? " (continued)" : ""), 100), value: value.slice(offset, end) });
-      offset = end;
-    }
-    return chunks;
-  });
-}
-
-function proposalFields(proposed: Proposal | undefined): Field[] {
-  if (!proposed) return [];
-  return contentFields([{ name: "Target", value: proposed.target },
-    ...Object.entries(proposed.input).filter(([name, value]) =>
-      !["topic", "lane", "entry", "channel", "setting", "user"].includes(name) || value !== proposed.target)
-      .map(([name, value]) => ({ name, value }))]);
-}
-
 export function render(panel: Panel, records: readonly AdminRecord[], policy: AdminPolicy): Message {
   if (panel.screen === "closed") return terminal("Panel closed.");
   if (panel.screen === "unavailable") return terminal(panel.notice ?? "This source is unavailable. Refresh to check again.", panel);
@@ -135,7 +115,10 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     }));
     const dmIds = panel.guild === undefined && (panel.section === "conversations" || panel.section === "audit");
     if (dmIds) {
-      fields.push({ name: panel.section === "audit" ? "Actor ID" : "Requester ID", value: draft.user || "Any" });
+      const named = records.flatMap(record => record.fields ?? []).map(field => field.value)
+        .find(value => typeof value !== "string" && value.kind === "user" && value.id === draft.user);
+      fields.push({ name: panel.section === "audit" ? "Actor" : "Requester", value: draft.user ?
+        referenceLink(typeof named === "object" ? named : { kind: "user", id: draft.user, label: "Selected user" }) : "Any" });
       if (panel.section === "conversations") fields.push({ name: "Channel ID", value: draft.channel || "Any" });
     }
     controls.push(row(...(dmIds ? [button(panel, "filter-ids", panel.section === "audit" ? "Actor" : "Requester / channel")] : []),
@@ -143,14 +126,14 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       button(panel, "clear-filters", "Clear"), button(panel, "back", "Back")));
   } else if (panel.screen === "confirm") {
     title = panel.proposal?.label ?? "Review change";
-    description = [description, selected ? `**${escapeMarkdown(selected.title)}**\n${selected.summary}` : panel.proposal?.target,
+    description = [description, selected ? `**${escapeMarkdown(selected.title)}**\n${selected.summary}` : undefined,
       panel.proposal?.action === "conversations.close" ? "Closing removes the retained transcript." :
       panel.proposal?.action === "lanes.abandon" ? "Stops a safely paused or idle agent after verifying its checkpoint, then records abandonment. The worktree and checkpoint are retained." :
       panel.proposal?.action === "trusted.add" ? "This grants contributor administration access." :
       panel.proposal?.action === "trusted.remove" ? "This revokes contributor administration access." :
       panel.proposal?.action === "channels.set" ? `${selected?.state ?? "Current policy"} -> ${panel.proposal.input.value}` : "",
     ].filter(Boolean).join("\n\n");
-    const proposed = proposalFields(panel.proposal);
+    const proposed = proposalFields(panel.proposal, selected);
     const pages = Math.max(1, Math.ceil(proposed.length / 5)), page = Math.min(panel.contentPage, pages - 1);
     fields.push(...proposed.slice(page * 5, page * 5 + 5));
     controls.push(row(button(panel, "commit", panel.proposal?.label ?? "Save", false,
@@ -179,7 +162,8 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     } else {
       title = short(escapeMarkdown(selected.title), 200);
       const activity = panel.screen === "activity";
-      const raw = activity ? selected.activity?.map(entry => ({ name: entry.title, value: entry.text })) : selected.fields;
+      const raw = activity ? selected.activity?.flatMap(entry =>
+        [{ name: entry.title, value: entry.text }, ...(entry.fields ?? [])]) : selected.fields;
       const source = contentFields(raw?.length ? raw : [{ name: activity ? "Activity" : "Summary",
         value: activity ? "Transcript unavailable under retention rules." : selected.summary }]);
       const pages = Math.ceil(source.length / 5);
@@ -209,7 +193,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
         (value.retryAt ? `; retry <t:${Math.floor(value.retryAt / 1000)}:R>` : "")),
       `Checked <t:${Math.floor(observation.checkedAt / 1000)}:R>. Runtime readiness is reported separately.`,
     ].filter(Boolean).join("\n"), 900) : "No registration observation yet." });
-    fields.push(...(overview?.fields ?? []).map(field => ({ name: field.name, value: short(field.value, 900) })));
+    fields.push(...contentFields(overview?.fields ?? []));
     controls.push(row(button(panel, "refresh", "Refresh")));
   } else {
     const byId = new Map(records.map(record => [record.id, record]));
@@ -218,7 +202,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     const visible = listed.slice(page * 8, page * 8 + 8);
     const applied = Object.entries(saved.filters).filter(([, value]) => value && value !== "all");
     if (applied.length) description = [description, applied.map(([key, value]) => `${key}: ${escapeMarkdown(value)}`).join(" | ")].filter(Boolean).join("\n");
-    fields.push(...visible.map(record => ({ name: short(escapeMarkdown(record.title), 100), value: short(record.summary, 350) || "(empty)" })));
+    fields.push(...visible.map(record => ({ name: short(escapeMarkdown(record.title), 100), value: clipReferences(githubReferences(record.summary), 350) || "(empty)" })));
     if (!visible.length) description = [description, applied.length ? `No ${labels[panel.section].toLowerCase()} match these filters.` :
       `No ${labels[panel.section].toLowerCase()}.`].filter(Boolean).join("\n");
     if (visible.length) controls.push(row(select(panel, "item", "Open item",
@@ -232,7 +216,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
   const descriptionBudget = Math.min(1400, 5000 - title.length - footerText.length -
     fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0));
   return { content: "", allowed_mentions: { parse: [] },
-    embeds: [{ title, ...(description ? { description: short(description, descriptionBudget) } : {}), fields: fields.slice(0, 10), footer: { text: footerText },
+    embeds: [{ title, ...(description ? { description: clipReferences(githubReferences(description), descriptionBudget) } : {}), fields: fields.slice(0, 10), footer: { text: footerText },
       ...(panel.screen === "list" && panel.section !== "overview" ? { timestamp: new Date(panel.snapshot).toISOString() } : {}) }],
     components: controls };
 }

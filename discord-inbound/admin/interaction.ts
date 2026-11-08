@@ -17,12 +17,22 @@ export interface Interaction {
   readonly section: Section;
   readonly options: Fields;
   readonly focused?: string;
+  readonly users?: Fields;
 }
 
 export function interaction(input: unknown): Interaction {
   const row = object(input), data = object(row.data);
   const guild = row.guild_id === undefined ? undefined : text(row.guild_id, 30);
   const user = object(guild === undefined ? row.user : object(row.member).user);
+  const users: Record<string, string> = {};
+  const resolved = data.resolved === undefined ? {} : object(data.resolved);
+  for (const [id, entry] of Object.entries(resolved.users === undefined ? {} : object(resolved.users))) {
+    const named = object(entry);
+    const member = resolved.members === undefined ? undefined : object(resolved.members)[id];
+    const nick = member === undefined ? undefined : object(member).nick;
+    const label = typeof nick === "string" && nick ? nick : named.global_name || named.username;
+    if (label !== undefined && label !== null) users[id] = text(label, 100);
+  }
   const options: Record<string, string> = {};
   const group = data.name === undefined || data.name === "status" ? "overview" : section(data.name);
   let command = "status", focused: string | undefined;
@@ -63,6 +73,7 @@ export function interaction(input: unknown): Interaction {
     ...(data.custom_id === undefined ? {} : { custom: text(data.custom_id, 100) }),
     values: Array.isArray(data.values) ? data.values.map(value => text(value, 120)) : [],
     command, section: group, options, ...(focused === undefined ? {} : { focused }),
+    ...(Object.keys(users).length ? { users } : {}),
   };
 }
 

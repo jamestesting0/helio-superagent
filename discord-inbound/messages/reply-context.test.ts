@@ -4,9 +4,10 @@ const root={id:"30",channel_id:"100",guild_id:"300",message_reference:{message_i
 const original:ReplyMessage={id:"10",channel_id:"100",guild_id:"300",content:"Run the Final test",author:{id:"99",username:"owner"}};
 const bot:ReplyMessage={id:"20",channel_id:"100",guild_id:"300",content:"Final test blocked: no browser",author:{id:"88",username:"Helio",bot:true},message_reference:{message_id:"10",channel_id:"100",guild_id:"300"}};
 test("traces the bot reply and original request chronologically",async()=>{
- const calls:string[]=[];const result=await replyContext(root,async(channel,id)=>{calls.push(`${channel}/${id}`);return id==="20"?bot:original});
+ const calls:string[]=[];const result=await replyContext(root,async(channel,id)=>{calls.push(`${channel}/${id}`);return id==="20"?bot:{...original,member:{nick:"Server owner"}}});
  expect(calls).toEqual(["100/20","100/10"]);expect(result?.status).toBe("complete");
  expect(result?.messages.map(m=>[m.message_id,m.content,m.bot])).toEqual([["10","Run the Final test",false],["20","Final test blocked: no browser",true]]);
+ expect(result?.messages[0]?.author).toBe("Server owner");
 });
 test("never follows cross-channel, cross-guild, or forwarded sources",async()=>{
  let calls=0;const f=async()=>{calls++;return bot};

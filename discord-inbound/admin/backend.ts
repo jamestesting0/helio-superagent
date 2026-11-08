@@ -73,7 +73,7 @@ export class RuntimeAdmin {
       if (prior.status === "done" && prior.result) return JSON.parse(prior.result);
       throw new AdminError("uncertain", "This operation has an unresolved receipt; inspect it before repeating the action");
     }
-    const current = (await this.records.read(section)).find(row => row.id === request.target);
+    const current = (await this.records.read(section, undefined, true)).find(row => row.id === request.target);
     if (request.action !== "blocks.add" && (!current || current.revision !== request.expected)) {
       throw new AdminError("changed", "The selected record changed; refresh its preview");
     }

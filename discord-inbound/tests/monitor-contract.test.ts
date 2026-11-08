@@ -183,10 +183,26 @@ test("a malformed retained delivery stays visible to the pending safety net", as
   } finally { queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test.each(["300", null])("authorized turn references include message destinations and named profiles without changing source (%s)", guild => {
+  const raw = { message_id: "500", channel_id: "104", author_id: "66", author: "James [staff]",
+    content: "Literal <@77>", mentioned_users: { "77": "Other user" },
+    discord_origin: { guild_id: guild }, channel_policy: "trusted" };
+  const before = JSON.stringify(raw);
+
+  const rendered = JSON.parse(renderTurn([raw]).slice("ACK_TURN ".length)).turn.messages[0];
+
+  expect(rendered.message_url).toBe(`https://discord.com/channels/${guild ?? "@me"}/104/500`);
+  expect(rendered.author_reference).toBe("**[James \\[staff\\]](<https://discord.com/users/66>)**");
+  expect(rendered.user_references["77"]).toBe("**[Other user](<https://discord.com/users/77>)**");
+  expect(rendered.content).toBe("Literal <@77>");
+  expect(JSON.stringify(raw)).toBe(before);
+});
+
 test.each(["trusted", "normal"])("render-time budgets bound legacy context and expose section pagination (%s)", (policy) => {
-  const entry = (i: number) => ({ message_id: String(i), content: "c".repeat(10_000), sent_at: "2026-11-02T12:00:00Z" });
+  const entry = (i: number) => ({ message_id: String(i), author_id: "66", author: "[".repeat(100),
+    content: "c".repeat(10_000), sent_at: "2026-11-02T12:00:00Z" });
   const raw = message("500", {
-    channel_policy: policy, content: "t".repeat(40_000),
+    channel_policy: policy, content: "t".repeat(40_000), discord_origin: { guild_id: "300" },
     conversation: { topic: "Existing topic", summary: "s".repeat(600), state: "on_hold",
       recently_resolved: { topic: "Previous request", summary: "r".repeat(600), outcome: "answered" },
       anchor_message_id: "1", opened_at: "2026-11-01",
@@ -201,6 +217,11 @@ test.each(["trusted", "normal"])("render-time budgets bound legacy context and e
     expect(JSON.stringify(result[name]).length).toBeLessThanOrEqual(limit);
     expect(result[name].truncated).toBe(true);
     expect(result[name].read_more).toContain(`--section ${name}`);
+    const entries = result[name].messages ?? result[name].transcript ?? [];
+    for (const entry of entries) {
+      if (entry.author_reference !== undefined) expect(entry.author_reference).toMatch(/>\)\*\*$/);
+      if (entry.message_url !== undefined) expect(entry.message_url).toBe(`https://discord.com/channels/300/100/${entry.message_id}`);
+    }
   }
   expect(result.reply_chain.messages).toHaveLength(policy === "normal" ? 1 : 6);
   expect(result.conversation.earlier_entries).toBe(94);
@@ -236,8 +257,14 @@ test("inbound section pages expose omitted legacy transcript entries after autho
       conversation: { transcript: Array.from({ length: 100 }, (_, i) => ({ message_id: String(i), content: `entry ${i}` })) },
     })));
     const { stdout } = await invoke(dir, ["show", "inbound", "500", "--section", "conversation"]);
-    const page = JSON.parse(stdout.slice("ACK_SECTION ".length));
-    expect(JSON.parse(page.content)[0].transcript.map((entry: { message_id: string }) => entry.message_id))
+    let page = JSON.parse(stdout.slice("ACK_SECTION ".length));
+    let content = page.content;
+    while (page.read_more) {
+      const next = await invoke(dir, page.read_more.split(" ").slice(1));
+      page = JSON.parse(next.stdout.slice("ACK_SECTION ".length));
+      content += page.content;
+    }
+    expect(JSON.parse(content)[0].transcript.map((entry: { message_id: string }) => entry.message_id))
       .toEqual(Array.from({ length: 100 }, (_, i) => String(i)));
   } finally { queue.close(); await rm(dir, { recursive: true, force: true }); }
 });

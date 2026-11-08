@@ -156,7 +156,8 @@ def load_click(prompt_id,action,target,revision,now=None,not_before=None,*,accep
  # and current trust without turning elapsed implementation time into reapproval.
  try:
   if accepted_plan: now=APPROVAL['snowflake_time'](result['id'])
-  clicker,clicked=APPROVAL['check_click'](action,result,prompt,bot_id,number,revision,now=now,not_before=not_before)
+  clicker,clicked=APPROVAL['check_click'](action,result,prompt,bot_id,number,revision,now=now,not_before=not_before,
+                                      repo=target.rsplit('#',1)[0] if action!='restart' else None)
  except APPROVAL['Refused'] as e: raise Refused(str(e)) from None
  if not location(channel_id,token,allowed)[0]: raise Refused('the confirmation is outside permitted channels')
  if clicker!=owner and clicker not in ids(BASE/'trusted-users'): raise Refused('the person who clicked is not currently the owner or a trusted user')

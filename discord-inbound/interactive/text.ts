@@ -1,20 +1,24 @@
-// The exact prompt and result wording is also checked by scripts/helio_approval.py: change both together.
+// Approval checks normalize generated links before comparing the canonical wording.
+import { githubReferences } from "../messages/references.ts";
+
 export type ConfirmAction = "merge" | "restart" | "pr";
 
 const number = (target: string): string => target.slice(target.lastIndexOf("#") + 1);
 const short = (revision: string): string => `\`${revision.slice(0, 7)}\``;
+const targetLink = (target: string, pull: boolean) =>
+  githubReferences(`https://github.com/${target.slice(0, target.lastIndexOf("#"))}/${pull ? "pull" : "issues"}/${number(target)}`);
 
 export function promptLine(action: ConfirmAction, target: string, revision: string): string {
-  if (action === "merge") return `Merge #${number(target)} · ${short(revision)}?`;
+  if (action === "merge") return `Merge ${targetLink(target, true)} · ${short(revision)}?`;
   if (action === "restart") return `Restart Elo Bot on ${short(revision)}?`;
-  return `Open PR for #${number(target)} · ${short(revision)}?`;
+  return `Open PR for ${targetLink(target, false)} · ${short(revision)}?`;
 }
 
 export function resultLine(kind: "confirm" | "plan", action: string, target: string, revision: string, user: string): string {
-  if (kind === "plan") return `✅ <@${user}> approved the plan for #${number(target)} (r${revision})`;
-  if (action === "merge") return `✅ <@${user}> confirmed merge #${number(target)} · ${short(revision)}`;
-  if (action === "restart") return `✅ <@${user}> confirmed restart on ${short(revision)}`;
-  return `✅ <@${user}> confirmed PR for #${number(target)} · ${short(revision)}`;
+  if (kind === "plan") return `✅ ${user} approved the plan for ${targetLink(target, false)} (r${revision})`;
+  if (action === "merge") return `✅ ${user} confirmed merge ${targetLink(target, true)} · ${short(revision)}`;
+  if (action === "restart") return `✅ ${user} confirmed restart on ${short(revision)}`;
+  return `✅ ${user} confirmed PR for ${targetLink(target, false)} · ${short(revision)}`;
 }
 
 export const BUTTON_LABEL: Record<ConfirmAction, string> = { merge: "Merge", restart: "Restart", pr: "Open PR" };
@@ -29,8 +33,8 @@ export const NOTICE = {
   busy: "Busy, try again.",
   pending: "Someone is answering this.",
   lapsed: "⌛ Not done in time. Ask again.",
-  forUser: (user: string) => `This one's for <@${user}>.`,
-  answered: (user: string | null) => user ? `Already answered by <@${user}>.` : "Already answered.",
+  forUser: (user: string) => `This one's for ${user}.`,
+  answered: (user: string | null) => user ? `Already answered by ${user}.` : "Already answered.",
 } as const;
 
 const button = (style: number, label: string, custom_id: string) => ({ type: 2, style, label, custom_id });

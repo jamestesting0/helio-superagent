@@ -12,8 +12,13 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import runpy
+from pathlib import Path
 import urllib.error
 import urllib.request
+
+TEXT = runpy.run_path(str(Path(__file__).with_name("helio_discord_text.py")))
+prompt_line, result_line, bot_text, Refused = (TEXT[name] for name in ("prompt_line", "result_line", "bot_text", "Refused"))
 
 MAX_AGE_SECONDS = 12 * 3600
 WORK_MAX_AGE_SECONDS = 72 * 3600
@@ -30,10 +35,6 @@ PLAN_ANNOUNCEMENT = re.compile(r"^\W*Plan for #(\d+) \(r(\d+)\)")
 AFFIRMATIVE = re.compile(
     r"^\s*(yes|yep|yeah|yup|y|ok|okay|sure|go|go ahead|do it|confirm(ed)?|approved?|ship it|lgtm)\b", re.I)
 HEDGE = re.compile(r"\b(no|not|wait|hold|later|but|stop|cancel|if|unless|when|after|before|once|maybe|pending|until|tomorrow)\b|n't|\?", re.I)
-
-
-class Refused(Exception):
-    pass
 
 
 def instruction_text(content: str) -> str:
@@ -80,7 +81,8 @@ def check_intent(action: str, message: dict, bot_id: str, repo: str, pr: int | N
         raise Refused("confirmation is conditional or asks a question; ask for a clear go-ahead")
     affirmative = AFFIRMATIVE.match(content) is not None and len(content) <= 80
     referenced = message.get("referenced_message") or {}
-    referenced_text = instruction_text(str(referenced.get("content", "")))
+    referenced_text = instruction_text(bot_text(str(referenced.get("content", "")), repo,
+                                              pull=(action == "merge") if action in ("merge", "plan") else None))
     replies_to_helio = bool(referenced) and str((referenced.get("author") or {}).get("id", "")) == bot_id
     # "@James merge #12" asks James, not Helio: a message naming another person must also name or answer Helio.
     mentioned = ({str(user.get("id", "")) for user in message.get("mentions") or []}
@@ -156,7 +158,7 @@ def check_revision(revision: str, message: dict, repo: str, branch: str, activit
     number = combined_pr(message, repo, bot_id) if branch == "main" else None
     referenced = message.get("referenced_message") or {}
     if str((referenced.get("author") or {}).get("id", "")) == bot_id:
-        prompt = instruction_text(str(referenced.get("content", ""))).split("\n")[0]
+        prompt = instruction_text(bot_text(str(referenced.get("content", "")), repo)).split("\n")[0]
         pinned = re.fullmatch(r"(?:Merge #\d+ ·|Restart Elo Bot on) `([0-9a-f]{7,40})`\?", prompt)
         if pinned and number is None:
             if not revision.startswith(pinned.group(1)):
@@ -224,31 +226,9 @@ def snowflake_time(value: object) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(((int(str(value)) >> 22) + DISCORD_EPOCH_MS) / 1000, datetime.timezone.utc)
 
 
-# Must match discord-inbound/interactive/text.ts exactly: the person saw this text when clicking.
-def prompt_line(action: str, number: int | None, revision: str) -> str:
-    short = f"`{revision[:7]}`"
-    if action == "merge":
-        return f"Merge #{number} · {short}?"
-    if action == "restart":
-        return f"Restart Elo Bot on {short}?"
-    if action == "pr":
-        return f"Open PR for #{number} · {short}?"
-    raise Refused("unsupported action")
-
-
-def result_line(action: str, number: int | None, revision: str, user: str) -> str:
-    short = f"`{revision[:7]}`"
-    if action == "plan":
-        return f"✅ <@{user}> approved the plan for #{number} (r{revision})"
-    if action == "merge":
-        return f"✅ <@{user}> confirmed merge #{number} · {short}"
-    if action == "restart":
-        return f"✅ <@{user}> confirmed restart on {short}"
-    return f"✅ <@{user}> confirmed PR for #{number} · {short}"
-
-
 def check_click(action: str, result: dict, prompt: dict, bot_id: str, number: int | None, revision: str,
-                now: datetime.datetime | None = None, not_before: datetime.datetime | None = None) -> tuple[str, datetime.datetime]:
+                now: datetime.datetime | None = None, not_before: datetime.datetime | None = None,
+                repo: str | None = None) -> tuple[str, datetime.datetime]:
     """Verify Discord's own record that one person clicked this exact Helio prompt; returns the clicker and click time.
 
     Discord attests who clicked which message, not which button: the prompt and result wording carry the rest.
@@ -263,7 +243,7 @@ def check_click(action: str, result: dict, prompt: dict, bot_id: str, number: in
     clicker = str((meta.get("user") or {}).get("id", ""))
     if not SNOWFLAKE.fullmatch(clicker):
         raise Refused("the click has no user")
-    lines = str(prompt.get("content", "")).split("\n")
+    lines = bot_text(str(prompt.get("content", "")), repo, pull=action == "merge").split("\n")
     if action == "plan":
         found = PLAN_ANNOUNCEMENT.match(lines[0])
         if not found or int(found.group(1)) != number or found.group(2) != revision:
@@ -272,7 +252,7 @@ def check_click(action: str, result: dict, prompt: dict, bot_id: str, number: in
         raise Refused("the prompt names a different action, target or commit")
     if any(line.startswith(("❌", "⌛", "Replaced")) for line in lines[1:]):
         raise Refused("the prompt was cancelled, expired or replaced; ask again")
-    if result.get("content") != result_line(action, number, revision, clicker):
+    if bot_text(str(result.get("content", "")), repo, pull=action == "merge") != result_line(action, number, revision, clicker):
         raise Refused("the button result does not match the prompt")
     clicked, posted, shown = snowflake_time(meta.get("id")), snowflake_time(prompt.get("id")), snowflake_time(result.get("id"))
     # A PR prompt stays clickable as long as a plan prompt; its click is still used within 15 minutes.
