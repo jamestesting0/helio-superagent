@@ -225,7 +225,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     controls.push(row(button(panel, "prev", previous, page === 0), button(panel, "next", next, (page + 1) * 8 >= listed.length),
       ...(filterOptions(panel.section).length ? [button(panel, "filters", "Filters")] : []),
       button(panel, "refresh", "Refresh")));
-    footer = `Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | As of ${new Date(panel.snapshot).toISOString().slice(11, 16)} UTC`;
+    footer = `${panel.section === "lanes" ? "Recorded status | " : ""}Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | As of ${new Date(panel.snapshot).toISOString().slice(11, 16)} UTC`;
   }
   const footerText = footer || "Helio administration";
   const descriptionBudget = Math.min(1400, 5000 - title.length - footerText.length -

@@ -65,6 +65,7 @@ INBOUND_FILES = (
     "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts",
     "admin/editor.ts", "admin/interaction.ts", "admin/lane-session.ts", "admin/main.ts", "admin/manifest.ts", "admin/panels.ts", "admin/panel-read.ts",
     "admin/forms.ts", "admin/forms.test.ts", "admin/panel-output.ts",
+    "admin/records.test.ts",
     "admin/protocol.ts", "admin/render.ts", "admin/render.test.ts", "admin/runtime.ts",
     "admin/lane-records.ts", "admin/lane-evidence.ts", "admin/policy-records.ts", "admin/record-format.ts",
     "admin/github-status.ts",

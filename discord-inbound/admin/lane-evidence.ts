@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { AdminError, object, type AdminRecord } from "./protocol.ts";
-import { stamp } from "./record-format.ts";
+import { stamp, stateName } from "./record-format.ts";
 import { laneObservation } from "./lane-session.ts";
 import type { Lane } from "./lane-records.ts";
 import type { RuntimeState } from "./runtime-state.ts";
@@ -35,7 +35,7 @@ function clauses(done: string): string[] {
 }
 
 export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: AdminRecord): Promise<AdminRecord> {
-  const fields = (record.fields ?? []).filter(field => field.name !== "GitHub evidence" && field.name !== "Open/cleanup condition");
+  const fields = (record.fields ?? []).filter(field => field.name !== "GitHub evidence");
   const conditions = [...(lane.objection?.reasons ?? [])];
   const criteria = clauses(lane.done);
   if (!criteria.length) conditions.push("No Done contract is recorded.");
@@ -126,30 +126,33 @@ export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: Ad
         const activity = Number.isFinite(updated) ? `<t:${Math.floor(updated / 1000)}:f>` : "unavailable";
         const valid = !reference.required || state === (reference.required === "MERGED" ? "MERGED" : "CLOSED") &&
           (reference.required !== "MERGED" || Boolean(remote.mergeCommit && object(remote.mergeCommit).oid));
-        return { reference, valid, value: `${state} | checked <t:${observed}:f>\n${remote.url ?? ""}\nLast verified GitHub activity: ${activity}` };
+        return { reference, valid, value: `${state} | Checked <t:${observed}:f>\n${remote.url ?? ""}\nUpdated ${activity}` };
       } catch (error) {
         if (!(error instanceof SyntaxError) && !(error instanceof AdminError)) throw error;
         return { reference, value: "Unavailable; GitHub returned an unreadable observation." };
       }
     }));
     for (const observation of observations) {
-      fields.push({ name: `GitHub ${observation.reference.kind} #${observation.reference.number}`, value: observation.value });
+      fields.push({ name: `GitHub ${observation.reference.kind === "pr" ? "PR" : "issue"} #${observation.reference.number}`, value: observation.value });
       if (observation.reference.required && observation.valid !== true) {
         conditions.push(`${observation.reference.kind} #${observation.reference.number} does not currently verify ${observation.reference.required}.`);
       }
     }
   }
-  let execution = "No linked pane";
+  let execution = "Not linked";
   let executionStatus = "missing";
   if (lane.pane) {
     try {
       const observation = await laneObservation(lane.pane);
       executionStatus = observation.status;
-      execution = `${observation.status}${observation.reason ? `: ${observation.reason}` : ""}`;
+      execution = stateName(observation.status);
+      if (observation.status !== "missing" && observation.reason && observation.reason !== "Herdr process observation") {
+        execution += `: ${observation.reason}`;
+      }
     }
     catch (error) { if (!(error instanceof AdminError)) throw error; execution = "Unavailable"; executionStatus = "unknown"; }
   }
-  fields.push({ name: "Session execution", value: execution });
+  fields.push({ name: "Session", value: execution });
   if (record.state === "cleanup-pending" && executionStatus !== "missing" && lane.pane) {
     conditions.push(`Terminal cleanup is pending; the linked pane is ${execution}.`);
   }
@@ -160,10 +163,9 @@ export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: Ad
     if (typeof saved.error === "string") fields.push({ name: "Last close refusal", value: saved.error });
   }
   const deferred = criteria.filter(value => /^(command|url|published)\s/i.test(value)).length;
-  if (deferred) fields.push({ name: "Explicit verification", value: `${deferred} command, URL, or registry criteria are not executed by this read-only view; Close performs its normal checks.` });
-  fields.push({ name: "Open/cleanup condition", value: conditions.join("\n") ||
-    "No blocker found by these read-only observations; Close still performs its normal verification." });
+  if (deferred) fields.push({ name: "Verification", value: `${deferred} command, URL, or registry checks run when you choose Verify and close.` });
+  if (conditions.length) fields.push({ name: "Needs attention", value: conditions.join("\n") });
   return { ...record, fields,
-    ...(closeProblem ? { summary: `${record.summary}\nVerified close unavailable: ${closeProblem}`,
+    ...(closeProblem ? { summary: `${record.summary}\nClose unavailable: ${closeProblem}`,
       blockedActions: { ...record.blockedActions, close: closeProblem } } : {}) };
 }

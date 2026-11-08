@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AdminError, object, type AdminRecord, type RuntimeResult, type Section } from "./protocol.ts";
-import { sourceUrl } from "./record-format.ts";
+import { sourceUrl, stateName } from "./record-format.ts";
 import { readRecords } from "./record-reads.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 
@@ -14,7 +14,7 @@ export class PolicyRecords {
     switch (section) {
       case "trusted":
         return Promise.all(values.HELIO_TRUSTED_USERS.split(",").filter(Boolean).map(async id => ({
-          id, title: await access.userLabel(id), user: id, revision, summary: `<@${id}>\nTrusted contributor`,
+          id, title: await access.userLabel(id), user: id, revision, summary: "Contributor access",
           fields: [{ name: "User", value: `<@${id}>` }, { name: "Scope", value: "Trusted contributor; owner-only settings remain protected" }],
         })));
       case "timeouts":
@@ -49,7 +49,7 @@ export class PolicyRecords {
     const pending = saved.full_restart_pending === true ? "Full workspace restart pending" :
       saved.lead_restart_pending === true ? "Lead restart pending" : deployed !== running ? "Running and deployed versions differ" : "";
     return { id: "deployment", title: "Deployment", revision: this.runtime.published.revision,
-      summary: pending || `Deployed ${deployed}; lead ${running}`,
+      summary: pending || (deployed === "Unrecorded" ? "Version not recorded" : "Up to date"),
       state: pending ? "pending" : "current",
       fields: [{ name: "Deployed version", value: deployed }, { name: "Lead version", value: running },
         { name: "Application", value: pending || "No restart recorded as pending" }] };
@@ -104,8 +104,8 @@ export class PolicyRecords {
       const rule = blocked ? "hard_excluded" : inherited === undefined ? "outside_scope" :
         ignored.has(inherited) ? "ignored" : trusted.has(inherited) ? "trusted" : "normal";
       return { id, title: metadata.name ?? `Channel ${id}`, channel: id, state: rule, revision: published.revision,
-        summary: `<#${id}> | ${rule}`,
-        fields: [{ name: "Policy", value: rule.replaceAll("_", " ") },
+        summary: stateName(rule),
+        fields: [{ name: "Channel", value: `<#${id}>` }, { name: "Policy", value: stateName(rule) },
           { name: "Source", value: blocked ? `Hard privacy exclusion <#${blocked}>; immutable here` :
             inherited === id ? "Explicit owner configuration" : inherited ? `Inherited from <#${inherited}>` : "Outside the configured response scope" }],
         url: sourceUrl(proof.guild, id) };

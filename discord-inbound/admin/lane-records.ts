@@ -70,21 +70,22 @@ export function readLanes(stateDirectory: string, guild: string): { readonly lan
       const source = /^discord:(\d+):(\d+)$/.exec(lane.source ?? "");
       const channel = source?.[1] ?? lane.thread.replace(/^discord:/, "");
       const issue = /^issue-(\d+)$/.exec(lane.job ?? "")?.[1];
-      const reason = state === "working" && !lane.claim ? "No completion claim" :
-        state === "done-claimed" && !lane.claim?.acknowledgedAt ? "Completion claim awaits acknowledgment" :
-          state === "paused" ? "Explicitly paused" : stateName(state);
+      const issueLabel = issue && !new RegExp(`\\bissue\\s*#?\\s*${issue}\\b`, "i").test(lane.title) ? `Issue #${issue}` : undefined;
+      const review = state === "done-claimed" && !lane.claim?.acknowledgedAt ? "Awaiting acknowledgment" : undefined;
       records.push({ lane, record: {
         id: lane.key, title: lane.title, revision: stamp(raw), state,
-        summary: `${issue ? `Issue #${issue} | ` : ""}Recorded work: ${escapeMarkdown(stateName(state))}\n${escapeMarkdown(reason)}`,
+        summary: [escapeMarkdown(stateName(state)), issueLabel, review].filter(Boolean).join(" | "),
         ...(/^\d+$/.test(channel) ? { channel, url: sourceUrl(guild, channel, source?.[2]) } : {}),
-        fields: [{ name: "Recorded state", value: stateName(state) }, { name: "Open/cleanup condition", value: reason },
-          ...(lane.job ? [{ name: "Job", value: lane.job }] : []),
-          ...(lane.claim ? [{ name: "Completion claim", value: lane.claim.evidence }] : []),
-          ...(lane.done ? [{ name: "Done contract", value: lane.done }] : []),
-          ...(lane.receipt?.cleanup.length ? [{ name: "Recorded cleanup", value: lane.receipt.cleanup.join("\n") }] : []),
-          ...(lane.receipt?.checks.length ? [{ name: "Recorded close checks", value: lane.receipt.checks
+        fields: [{ name: "Work status", value: stateName(state) },
+          ...(review ? [{ name: "Claim review", value: review }] : []),
+          ...(lane.job ? [{ name: "Job ID", value: lane.job }] : []),
+          ...(lane.claim ? [{ name: "Completion claim", value: lane.claim.evidence }] :
+            state === "working" ? [{ name: "Completion claim", value: "Not submitted" }] : []),
+          ...(lane.done ? [{ name: "Completion criteria", value: lane.done }] : []),
+          ...(lane.receipt?.cleanup.length ? [{ name: "Cleanup notes", value: lane.receipt.cleanup.join("\n") }] : []),
+          ...(lane.receipt?.checks.length ? [{ name: "Last close checks", value: lane.receipt.checks
             .map(check => `${check.ok ? "Passed" : "Failed"}: ${check.signal}\n${check.detail}`).join("\n") }] : []),
-          { name: "GitHub evidence", value: "Not checked by this registry read. A lane state does not prove issue or PR completion." }],
+          { name: "GitHub evidence", value: "Not checked." }],
         activity: (lane.history ?? []).slice().reverse().map(item => ({ title: `${stateName(item.status)} | ${item.at}`, text: item.note })),
       } });
     }

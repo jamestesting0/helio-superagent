@@ -6,6 +6,8 @@ export const stateName = (state: string) => ({
   resolved: "Resolved", archived: "Archived", working: "Working", paused: "Paused", hibernated: "Hibernated",
   "done-claimed": "Completion claimed", "not-done": "Not complete", closed: "Closed",
   "cleanup-pending": "Cleanup pending", "verified-done": "Completion verified",
+  idle: "Idle", blocked: "Blocked", missing: "Missing",
+  normal: "Normal", trusted: "Trusted", ignored: "Ignored", hard_excluded: "Privacy excluded", outside_scope: "Outside scope",
 }[state] ?? state);
 export const escapeMarkdown = (value: string) => value.replace(/[\\`*_~|[\]()]/g, "\\$&");
 export const clipText = (value: string, size: number) => value.length <= size ? value :

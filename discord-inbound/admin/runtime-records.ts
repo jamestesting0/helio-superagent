@@ -57,14 +57,18 @@ export class RuntimeRecords {
       if (!visible) return undefined;
       if (target !== undefined) return laneEvidence(this.runtime, lane, record);
       if (suggest) return record;
-      let execution = lane.pane ? "unknown" : "no linked process";
+      let execution = lane.pane ? "unavailable" : "not linked";
+      let executionStatus = lane.pane ? "unknown" : "missing";
       if (lane.pane) {
         try {
           const observation = await laneObservation(lane.pane);
-          execution = `${observation.status}${observation.reason ? `: ${observation.reason}` : ""}`;
+          executionStatus = observation.status;
+          execution = observation.status;
         } catch (error) { if (!(error instanceof AdminError)) throw error; }
       }
-      return { ...record, summary: `${record.summary}\nSession execution: ${execution}` };
+      const expectedMissing = (record.state === "hibernated" || record.state === "closed") && executionStatus === "missing";
+      return expectedMissing || executionStatus === record.state ? record :
+        { ...record, summary: `${record.summary} | Session ${escapeMarkdown(execution)}` };
     });
   }
 
@@ -86,9 +90,10 @@ export class RuntimeRecords {
       case "blocks": return Promise.all(delivery.moderation.list().map(async row => ({
         id: row.user_id, title: await access.userLabel(row.user_id), user: row.user_id,
         source: row.source === "auto" ? "auto" : "manual", revision: stamp(JSON.stringify(row)),
-        summary: `<@${row.user_id}> | ${row.source === "auto" ? "Automatic" : "Manual"}\n${escapeMarkdown(row.reason.slice(0, 160))}`,
-        fields: [{ name: "Reason", value: row.reason }, { name: "Source", value: row.source === "auto" ? "Automatic" : "Manual" },
-          { name: "Recorded actor", value: `<@${row.created_by}>` }, { name: "Blocked", value: `<t:${Math.floor(row.created_at / 1000)}:F>` }],
+        summary: `${row.source === "auto" ? "Automatic" : "Manual"} | ${escapeMarkdown(row.reason.slice(0, 160))}`,
+        fields: [{ name: "User", value: `<@${row.user_id}>` }, { name: "Reason", value: row.reason },
+          { name: "Source", value: row.source === "auto" ? "Automatic" : "Manual" },
+          { name: "Blocked by", value: `<@${row.created_by}>` }, { name: "Blocked", value: `<t:${Math.floor(row.created_at / 1000)}:F>` }],
       })));
       case "channels": return this.policy.channels(target);
       case "audit": return this.audit();
