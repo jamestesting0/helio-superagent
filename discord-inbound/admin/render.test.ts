@@ -62,7 +62,7 @@ test("long activity remains completely readable within Discord embed and row bud
   expect(chunks.join("")).toBe(escapeMarkdown(original));
 });
 
-test("all list sections fit eight records and never emit an empty selector", () => {
+test("all list sections fit eight records, retain snapshot timestamps and never emit an empty selector", () => {
   const policy: AdminPolicy = { version: 1, revision: "a".repeat(64), values: { DORI_DISCORD_OWNER_ID: "22222" }, timing: [] };
   for (const size of [0, 1, 8, 9, 26]) for (const section of SECTIONS.filter(value => value !== "overview")) {
     const records = Array.from({ length: size }, (_, index) => ({
@@ -71,8 +71,9 @@ test("all list sections fit eight records and never emit an empty selector", () 
     const panel: Panel = { id: "a".repeat(24), actor: "22222", guild: "99999", channel: "44444",
       application: "88888", message: "77777", token: "offline", expires: 600000, revision: 1, section,
       positions: { [section]: { ids: records.map(row => row.id), page: 0, filters: {} } },
-      screen: "list", contentPage: 0, snapshot: 0 };
+      screen: "list", contentPage: 0, snapshot: Date.UTC(2026, 10, 8, 17, 34, 12, 345) };
     const message = render(panel, records, policy);
+    expect(object(message.embeds[0]).timestamp).toBe("2026-11-08T17:34:12.345Z");
     expect(message.embeds[0]?.footer.text).not.toMatch(/\|\s*\d+-\d+ of \d+/);
     expect(message.embeds[0]?.fields.length).toBe(Math.min(8, size));
     expect(message.components.length).toBeLessThanOrEqual(5);

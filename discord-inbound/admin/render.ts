@@ -27,6 +27,7 @@ export interface Message {
   readonly embeds: readonly {
     readonly title: string; readonly description?: string; readonly fields: readonly Field[];
     readonly footer: { readonly text: string };
+    readonly timestamp?: string;
   }[];
   readonly components: readonly Component[];
 }
@@ -225,13 +226,14 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     controls.push(row(button(panel, "prev", previous, page === 0), button(panel, "next", next, (page + 1) * 8 >= listed.length),
       ...(filterOptions(panel.section).length ? [button(panel, "filters", "Filters")] : []),
       button(panel, "refresh", "Refresh")));
-    footer = `${panel.section === "lanes" ? "Recorded status | " : ""}Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | As of ${new Date(panel.snapshot).toISOString().slice(11, 16)} UTC`;
+    footer = `Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | Updated`;
   }
   const footerText = footer || "Helio administration";
   const descriptionBudget = Math.min(1400, 5000 - title.length - footerText.length -
     fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0));
   return { content: "", allowed_mentions: { parse: [] },
-    embeds: [{ title, ...(description ? { description: short(description, descriptionBudget) } : {}), fields: fields.slice(0, 10), footer: { text: footerText } }],
+    embeds: [{ title, ...(description ? { description: short(description, descriptionBudget) } : {}), fields: fields.slice(0, 10), footer: { text: footerText },
+      ...(panel.screen === "list" && panel.section !== "overview" ? { timestamp: new Date(panel.snapshot).toISOString() } : {}) }],
     components: controls };
 }
 
