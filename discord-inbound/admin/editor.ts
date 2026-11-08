@@ -40,13 +40,6 @@ export class Editor {
     await this.apply(panel, proposal);
   }
 
-  guidance(panel: Panel, action: string, current: AdminRecord): void {
-    const parameter = panel.section === "conversations" ? "topic" : panel.section === "lanes" ? "lane" : "setting";
-    const extras = action === "close" ? " outcome:<choose outcome>" : action === "set" ? " value:<integer in displayed unit>" : " reason:<reason>";
-    panel.notice = `Use \`/${panel.section} ${action} ${parameter}:${current.id}${extras}\`.`;
-    panel.screen = "guidance";
-  }
-
   async commit(panel: Panel, policy: AdminPolicy, current: AdminRecord | undefined): Promise<void> {
     const proposed = panel.proposal;
     if (!proposed) throw new AdminError("invalid", "This panel has no pending change");

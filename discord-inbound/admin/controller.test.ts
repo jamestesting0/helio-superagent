@@ -91,11 +91,11 @@ test("DM autocomplete does not dispatch runtime work after its shared request bu
   } finally { clock.mockRestore(); }
 });
 
-test("DM filters provide a usable command instead of guild-only pickers", async () => {
+test("DM filters offer an input form instead of guild-only pickers", async () => {
   const f = await fixture(true);
   await f.controller.handle(f.event({ name: "conversations", options: [{ type: 1, name: "list" }] }, "22222", 2));
   await f.click("filters", [], "22222");
-  expect(JSON.stringify(f.last())).toContain("/conversations list");
+  expect(() => f.custom("filter-ids")).not.toThrow();
   const rows = f.last().components;
   if (!Array.isArray(rows)) throw new Error("Missing DM controls");
   const types = rows.flatMap(row => {

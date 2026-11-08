@@ -17,8 +17,10 @@ export async function fixture(dm = false) {
     id: `topic-${index}`, title: `Topic ${index}`, summary: "Waiting on Helio", state: "waiting_on_helio",
     revision: "1", fields: [{ name: "Request", value: `Request ${index}` }],
   }));
-  const policy: AdminPolicy = { version: 1, revision: "a".repeat(64),
-    values: { DORI_DISCORD_OWNER_ID: "22222", HELIO_TRUSTED_USERS: trusted, HELIO_ADMIN_GUILD: "99999" }, timing: [] };
+  let policy: AdminPolicy = { version: 1, revision: "a".repeat(64),
+    values: { DORI_DISCORD_OWNER_ID: "22222", HELIO_TRUSTED_USERS: trusted, HELIO_ADMIN_GUILD: "99999",
+      HELIO_AUTOBLOCK_WINDOW_H: "1" },
+    timing: [{ key: "HELIO_AUTOBLOCK_WINDOW_H", label: "Automatic block window", unit: "hours", minimum: 1, maximum: 24 }] };
   let mutations = 0;
   let configurationChanges = 0;
   let readFailure = false;
@@ -141,5 +143,6 @@ export async function fixture(dm = false) {
     corruptMutationResponse: () => { malformed = true; },
     requests: () => requests,
     delayReads: (ms: number) => { readDelay = ms; },
-    setUnavailable: (source: "policy" | "runtime" | "list" | "conversations" | undefined) => { unavailable = source; } };
+    setUnavailable: (source: "policy" | "runtime" | "list" | "conversations" | undefined) => { unavailable = source; },
+    revisePolicy: () => { policy = { ...policy, revision: "b".repeat(64) }; } };
 }

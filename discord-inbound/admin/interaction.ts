@@ -42,8 +42,19 @@ export function interaction(input: unknown): Interaction {
   };
   visit(data.options);
   // The Gateway listener replaces the numeric envelope type with INTERACTION_CREATE.
-  const type = typeof row.type === "number" ? row.type : data.component_type !== undefined ? 3 : focused ? 4 : 2;
-  if (![2, 3, 4].includes(type)) throw new AdminError("invalid", "Unsupported interaction");
+  const type = typeof row.type === "number" ? row.type : data.components !== undefined ? 5 : data.component_type !== undefined ? 3 : focused ? 4 : 2;
+  if (![2, 3, 4, 5].includes(type)) throw new AdminError("invalid", "Unsupported interaction");
+  if (type === 5) {
+    if (!Array.isArray(data.components) || data.components.length < 1 || data.components.length > 2) throw new AdminError("invalid", "Invalid form inputs");
+    for (const label of data.components) {
+      const component = object(object(label).component), name = text(component.custom_id, 100);
+      if (Object.hasOwn(options, name)) throw new AdminError("invalid", "Duplicate form input");
+      if (component.type === 4) options[name] = text(component.value, 600);
+      else if (component.type === 3 && Array.isArray(component.values) && component.values.length === 1) {
+        options[name] = text(component.values[0], 120);
+      } else throw new AdminError("invalid", "Unsupported form input");
+    }
+  }
   return {
     id: text(row.id, 30), token: text(row.token, 500), application: text(row.application_id, 30),
     actor: text(user.id, 30), ...(guild === undefined ? {} : { guild }),

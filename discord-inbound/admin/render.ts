@@ -132,10 +132,13 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       type: 8, custom_id: id(panel, "filter-channel"), placeholder: "Channel", min_values: 0, max_values: 1,
       ...(draft.channel ? { default_values: [{ id: draft.channel, type: "channel" }] } : {}),
     }));
-    if (panel.guild === undefined) description = [description, panel.section === "conversations" ?
-      "Set user/channel filters with `/conversations list user:<user> channel:<channel ID>`. Channel autocomplete searches the configured server." :
-      panel.section === "audit" ? "Set the actor filter with `/audit list actor:<user>`." : ""].filter(Boolean).join("\n\n");
-    controls.push(row(button(panel, "apply-filters", "Apply", false, 1),
+    const dmIds = panel.guild === undefined && (panel.section === "conversations" || panel.section === "audit");
+    if (dmIds) {
+      fields.push({ name: panel.section === "audit" ? "Actor ID" : "Requester ID", value: draft.user || "Any" });
+      if (panel.section === "conversations") fields.push({ name: "Channel ID", value: draft.channel || "Any" });
+    }
+    controls.push(row(...(dmIds ? [button(panel, "filter-ids", panel.section === "audit" ? "Actor" : "Requester / channel")] : []),
+      button(panel, "apply-filters", "Apply", false, 1),
       button(panel, "clear-filters", "Clear"), button(panel, "back", "Back")));
   } else if (panel.screen === "confirm") {
     title = panel.proposal?.label ?? "Review change";

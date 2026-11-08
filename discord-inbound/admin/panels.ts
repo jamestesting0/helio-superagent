@@ -37,6 +37,8 @@ export interface Panel {
   proposal?: Proposal;
   pending?: Proposal;
   github?: AdminRecord;
+  selectedRevision?: string;
+  form?: Proposal;
 }
 
 function proposal(value: unknown): Proposal {
@@ -70,6 +72,8 @@ function decode(value: unknown): Panel {
     ...(row.proposal === undefined ? {} : { proposal: proposal(row.proposal) }),
     ...(row.pending === undefined ? {} : { pending: proposal(row.pending) }),
     ...(row.github === undefined ? {} : { github: record(row.github) }),
+    ...(row.selectedRevision === undefined ? {} : { selectedRevision: text(row.selectedRevision, 100) }),
+    ...(row.form === undefined ? {} : { form: proposal(row.form) }),
   };
 }
 
