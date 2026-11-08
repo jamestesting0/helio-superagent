@@ -38,9 +38,9 @@ export class Controller {
       await this.panels.serialize(id, () => this.component(event, id, Number(revision), verb));
       return;
     }
-    await this.call("POST", `/interactions/${event.id}/${event.token}/callback`, { type: 5, data: { flags: 64 } });
     let panel: Panel | undefined;
     try {
+      await this.call("POST", `/interactions/${event.id}/${event.token}/callback`, { type: 5, data: { flags: 64 } });
       const filters = listFilters(event);
       panel = {
         id: randomBytes(12).toString("hex"), actor: event.actor, channel: event.channel,
@@ -223,6 +223,7 @@ export class Controller {
 
   private async failure(event: Interaction, error: unknown, panel?: Panel): Promise<void> {
     if (!(error instanceof Error)) throw error;
+    if (!panel && error instanceof CallError && error.status !== undefined) throw error;
     const message = error instanceof AdminError ? error.message : "Administration is unavailable. Refresh or run /status.";
     if (!panel || error instanceof AdminError && error.code === "denied") {
       if (panel) { delete panel.proposal; this.panels.save(panel); }

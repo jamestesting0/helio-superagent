@@ -1,6 +1,60 @@
 import { expect, test } from "bun:test";
 import { fixture } from "./fixtures/controller.ts";
 import { object } from "./protocol.ts";
+import { Controller } from "./controller.ts";
+import { DiscordTransport } from "./transport.ts";
+
+test.each([false, true])("a lost defer response ends private thinking without executing the command; DM=%s", async dm => {
+  const f = await fixture(dm);
+  using transport = new DiscordTransport("offline-secret");
+  let callbacks = 0;
+  let callback: Record<string, unknown> = {};
+  let loading = false;
+  let message: Record<string, unknown> = {};
+  transport.rest.options.makeRequest = async (url, options) => {
+    if (String(url).endsWith("/callback")) {
+      callbacks += 1;
+      callback = object(JSON.parse(String(options.body)));
+      loading = callback.type === 5;
+      throw new TypeError("Discord accepted the defer but its response was lost");
+    }
+    expect(options.method).toBe("PATCH");
+    message = object(JSON.parse(String(options.body)));
+    loading = false;
+    return Response.json({ id: "77777" });
+  };
+  const controller = new Controller(f.panels, transport.call);
+
+  await controller.handle(f.event({ name: "conversations", options: [{ type: 1, name: "list" }] }, "11111", 2));
+
+  expect(loading).toBe(false);
+  const embeds = message.embeds;
+  expect(Array.isArray(embeds) && object(embeds[0]).description).toContain("Administration is unavailable");
+  expect(callbacks).toBe(1);
+  expect(callback.type).toBe(5);
+  expect(object(callback.data).flags).toBe(64);
+  expect(f.requests()).toEqual([]);
+  expect(f.mutations()).toBe(0);
+});
+
+test.each([400, 404, 429])("a refused defer does not edit an existing reply or execute the command: %s", async status => {
+  const f = await fixture();
+  using transport = new DiscordTransport("offline-secret");
+  const methods: string[] = [];
+  transport.rest.options.makeRequest = async (_url, options) => {
+    methods.push(String(options.method));
+    if (options.method === "PATCH") return Response.json({ id: "77777" });
+    return Response.json({ message: "Rejected", code: 40060, retry_after: 0, global: false }, { status });
+  };
+  const controller = new Controller(f.panels, transport.call);
+
+  await expect(controller.handle(f.event({
+    name: "conversations", options: [{ type: 1, name: "list" }],
+  }, "11111", 2))).rejects.toMatchObject({ status });
+
+  expect(methods).toEqual(["POST"]);
+  expect(f.requests()).toEqual([]);
+});
 
 test.each(["command", "selection", "refresh"])("targeted details remain available when an unrelated list read fails: %s", async source => {
   const f = await fixture();
