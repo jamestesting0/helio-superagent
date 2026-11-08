@@ -105,6 +105,22 @@ class HelioConfigTests(unittest.TestCase):
         self.assertEqual((self.home / ".dori/elobot/trusted-users").read_text(), "11111,22222\n")
         self.assertNotEqual(result["revision"], revision)
 
+    def test_owner_revoke_and_timer_changes_reach_canonical_and_published_configuration(self):
+        for action, target, value, key, expected in (
+                ("trusted.remove", "22222", "", "HELIO_TRUSTED_USERS", "11111"),
+                ("timeout.set", "HELIO_HIBERNATE_AFTER_MIN", "45", "HELIO_HIBERNATE_AFTER_MIN", "45")):
+            with self.subTest(action=action):
+                self.write_settings(HELIO_TRUSTED_USERS="11111,22222")
+                revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+
+                with redirect_stdout(StringIO()):
+                    CONFIG["change"](self.home, "accepted-" + action.replace(".", "-"), "653894110884921366",
+                                     revision, action, target, value)
+
+                self.assertEqual(CONFIG["load"](self.home)[key], expected)
+                published = json.loads((self.home / ".dori/elobot/policy/policy.json").read_text())
+                self.assertEqual(published["values"][key], expected)
+
     def test_concurrent_owner_edits_cannot_overwrite_a_committed_revision(self):
         from concurrent.futures import ThreadPoolExecutor
         from threading import Barrier
@@ -139,19 +155,25 @@ class HelioConfigTests(unittest.TestCase):
         self.assertEqual(CONFIG["config_path"](self.home).read_bytes(), before)
 
     def test_channel_policy_change_updates_all_overlapping_lists_together(self):
-        self.write_settings(DORI_DISCORD_ALLOWED="11111",
-                            DORI_DISCORD_TRUSTED_CHANNELS="11111",
-                            DORI_DISCORD_NORMAL_CHANNELS="",
-                            DORI_DISCORD_IGNORED_CHANNELS="22222")
-        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
-        with redirect_stdout(StringIO()):
-            CONFIG["change"](self.home, "channel-1", "653894110884921366", revision,
-                             "channels.set", "22222", "trusted")
-        values = CONFIG["load"](self.home)
-        self.assertEqual(values["DORI_DISCORD_ALLOWED"], "11111,22222")
-        self.assertEqual(values["DORI_DISCORD_TRUSTED_CHANNELS"], "11111,22222")
-        self.assertEqual(values["DORI_DISCORD_IGNORED_CHANNELS"], "")
-        self.assertEqual(CONFIG["problems"](values), [])
+        for policy in ("trusted", "normal", "ignored"):
+            with self.subTest(policy=policy):
+                self.write_settings(
+                    DORI_DISCORD_ALLOWED="11111" if policy == "trusted" else "11111,22222",
+                    DORI_DISCORD_TRUSTED_CHANNELS="11111,22222" if policy == "normal" else "11111",
+                    DORI_DISCORD_NORMAL_CHANNELS="22222" if policy == "ignored" else "",
+                    DORI_DISCORD_IGNORED_CHANNELS="22222" if policy == "trusted" else "")
+                revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
+
+                with redirect_stdout(StringIO()):
+                    CONFIG["change"](self.home, "channel-" + policy, "653894110884921366", revision,
+                                     "channels.set", "22222", policy)
+
+                values = CONFIG["load"](self.home)
+                self.assertEqual(values["DORI_DISCORD_ALLOWED"], "11111" if policy == "ignored" else "11111,22222")
+                self.assertEqual(values["DORI_DISCORD_TRUSTED_CHANNELS"], "11111,22222" if policy == "trusted" else "11111")
+                self.assertEqual(values["DORI_DISCORD_NORMAL_CHANNELS"], "22222" if policy == "normal" else "")
+                self.assertEqual(values["DORI_DISCORD_IGNORED_CHANNELS"], "22222" if policy == "ignored" else "")
+                self.assertEqual(CONFIG["problems"](values), [])
 
     def test_timer_edit_rejects_a_nudge_after_the_timeout(self):
         self.write_settings()

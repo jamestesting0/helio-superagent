@@ -57,7 +57,7 @@ function observeIdle(checkpoints: Readonly<Record<string, { session: string; id:
   const observation = spyOn(sessionState, "paneExecution").mockImplementation(async (_run, pane) => {
     const checkpoint = checkpoints[pane];
     return checkpoint ? { status: "idle", ...checkpoint, pid: 123, since: new Date(T0).toISOString(),
-      state: "waiting_background", version: "123:1", reason: "Passive monitors only" } : undefined;
+      state: "waiting_background", version: "123:1", reason: "Passive monitors only", stopReady: true } : undefined;
   });
   cleanups.push(() => observation.mockRestore());
 }
@@ -618,7 +618,8 @@ test("a job resumed by a new launch takes that attempt's Done line, title, threa
       s.world.panes.push({ pane_id: "w:p3", workspace_id: "w", agent: "pi", agent_status: "working" });
       await s.deps.registry.write(lane("busy", { pane: "w:p3", status: "working" }));
     }
-    const attempt = { job: "issue-11", title: "follow-up", done: "merged acme/app#22", thread: "thread-22", model: "m-2" };
+    const done = `merged acme/app#22; file ${join(s.deps.config.stateDir, "completions/issue-11.json")} json:.passed=true`;
+    const attempt = { job: "issue-11", title: "follow-up", done, thread: "thread-22", model: "m-2" };
     const first = (await launch(s, "issue-11-followup", attempt)).startup;
     if (queued) {
       expect(first).toStartWith("LAUNCH_QUEUED key=issue-11");
@@ -626,7 +627,7 @@ test("a job resumed by a new launch takes that attempt's Done line, title, threa
       expect((await lifecycleTick(s.deps)).some((line) => line.includes("LANE_DEQUEUED issue-11 LANE_WOKEN issue-11"))).toBe(true);
     } else expect(first).toBe("LANE_WOKEN issue-11 pane=w:p1");
     const woke = (await s.deps.registry.read("issue-11"))!;
-    expect([woke.done, woke.title, woke.thread, woke.model]).toEqual(["merged acme/app#22", "follow-up", "thread-22", "m-2"]);
+    expect([woke.done, woke.title, woke.thread, woke.model]).toEqual([done, "follow-up", "thread-22", "m-2"]);
     expect(woke.history?.some((entry) => entry.note.includes("previous Done: merged acme/app#11"))).toBe(true);
     const brief = readFileSync(woke.brief, "utf8");
     expect([brief.includes("acme/app#22"), brief.includes("acme/app#11")]).toEqual([true, false]);

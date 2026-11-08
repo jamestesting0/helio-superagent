@@ -5,7 +5,7 @@ import { AdminError, object, text, type AdminPolicy, type AdminRecord, type Fiel
 import { actions } from "./render.ts";
 
 const confirmationLabels: Readonly<Record<string, string>> = {
-  "conversations.close": "Close conversation", "lanes.abandon": "Abandon lane",
+  "conversations.close": "Close conversation", "lanes.abandon": "Stop and abandon",
   "trusted.add": "Grant trust", "trusted.remove": "Remove trust", "channels.set": "Save channel policy",
 };
 const ownerAction = (action: string) => action.startsWith("trusted.") || action.startsWith("channels.") ||
@@ -20,6 +20,8 @@ export class Editor {
   }): Promise<void> {
     const { action, target, values, policy } = input;
     if (ownerAction(action)) await this.access.authorize(this.event, true);
+    const blocked = current?.blockedActions?.[action.split(".").at(-1) ?? ""];
+    if (blocked) throw new AdminError("invalid", blocked);
     if (action === "channels.set" && current?.state === "hard_excluded") {
       throw new AdminError("denied", "This channel is protected by a hard privacy boundary");
     }

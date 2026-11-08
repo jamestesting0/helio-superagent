@@ -63,13 +63,15 @@ INBOUND_FILES = (
     "patches/agent-messenger@2.40.0.patch",
     # owner-side controller and isolated administration bridge
     "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts",
-    "admin/editor.ts", "admin/interaction.ts", "admin/lane-session.ts", "admin/main.ts", "admin/manifest.ts", "admin/panels.ts",
+    "admin/editor.ts", "admin/interaction.ts", "admin/lane-session.ts", "admin/main.ts", "admin/manifest.ts", "admin/panels.ts", "admin/panel-read.ts",
     "admin/protocol.ts", "admin/render.ts", "admin/render.test.ts", "admin/runtime.ts",
     "admin/lane-records.ts", "admin/lane-evidence.ts", "admin/policy-records.ts", "admin/record-format.ts",
     "admin/github-status.ts",
     "admin/transport.ts", "admin/transport.test.ts", "admin/registration.ts", "admin/registration.test.ts", "admin/command-schema.ts",
     "admin/command-sync.ts", "admin/command-sync-state.ts", "admin/command-sync.test.ts",
     "admin/main.test.ts", "admin/fixtures/main-preload.ts",
+    "admin/autocomplete.test.ts", "admin/navigation.test.ts", "admin/fixtures/controller.ts",
+    "admin/suggestions.test.ts", "admin/fixtures/runtime.ts", "admin/record-reads.ts",
     "admin/runtime-access.ts", "admin/runtime-mutations.ts", "admin/runtime-records.ts", "admin/runtime-state.ts", "admin/runtime-recovery.ts",
     # discord
     "discord/rest-cache.test.ts", "discord/rest.test.ts", "discord/rest.ts",

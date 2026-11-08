@@ -93,7 +93,10 @@ test("a Done line with a malformed signal is refused at launch, with the reason"
   const bad = ["two clean QA passes", "command bun test", 'command ["bun", 3]', "file x.json sha256=abc", "url ftp://host", 'command ["x"] stdout="y"', "file a.json json:.v~1"];
   for (const done of bad) expect(doneSyntaxErrors(done)).toHaveLength(1);
   await expect(adoptLane(deps, { key: "qa-lane", job: "qa-lane", title: "qa", brief: "/b.md", done: "command bun test", pane: "w:p9" })).rejects.toBeInstanceOf(LaunchError);
-  const lane = await adoptLane(deps, { key: "qa-lane", job: "qa-lane", title: "qa", brief: "/b.md", done: 'command ["bun","test"] stdout~"0 fail"; file ~/qa/report.json json:.passed=true; url http://localhost:3000/health', pane: "w:p9" });
+  await expect(adoptLane(deps, { key: "qa-lane", job: "qa-lane", title: "qa", brief: "/b.md",
+    done: `file ${join(state.dir, "completions/qa-lane.json")}`, pane: "w:p9" })).rejects.toThrow("independent");
+  expect(await deps.registry.read("qa-lane")).toBeNull();
+  const lane = await adoptLane(deps, { key: "qa-lane", job: "qa-lane", title: "qa", brief: "/b.md", done: `command ["bun","test"] stdout~"0 fail"; file ${join(state.dir, "completions/qa-lane.json")} json:.passed=true; url http://localhost:3000/health`, pane: "w:p9" });
   expect(lane.done).toContain("command");
 });
 

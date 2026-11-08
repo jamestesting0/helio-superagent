@@ -7,6 +7,7 @@ import { AdminError, type AdminRecord, type Section } from "./protocol.ts";
 import { escapeMarkdown, sourceUrl, stamp, stateName } from "./record-format.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 import { syncWarning } from "./github-status.ts";
+import { readRecords } from "./record-reads.ts";
 
 const topicId = (row: Conversation) => `${row.channel_id}:${row.user_id}:${row.anchor_message_id}:${row.opened_at}`;
 
@@ -42,54 +43,46 @@ export class RuntimeRecords {
   private async topics(target?: string): Promise<AdminRecord[]> {
     const rows = this.runtime.conversationDb.query<Conversation, []>(
       "SELECT * FROM conversations ORDER BY last_activity DESC,opened_at DESC,channel_id,user_id,anchor_message_id").all();
-    const records: AdminRecord[] = [];
-    for (const row of rows) {
-      if (target !== undefined && topicId(row) !== target) continue;
-      if (await this.runtime.access.canRead(row.channel_id, row.user_id)) records.push(this.topic(row, target !== undefined));
-    }
-    return records;
+    return readRecords(rows, async row => {
+      if (target !== undefined && topicId(row) !== target) return undefined;
+      return await this.runtime.access.canRead(row.channel_id, row.user_id) ? this.topic(row, target !== undefined) : undefined;
+    });
   }
 
-  private async lanes(target?: string): Promise<AdminRecord[]> {
+  private async lanes(target?: string, suggest = false): Promise<AdminRecord[]> {
     const { state, proof, published, access } = this.runtime;
-    const records: AdminRecord[] = [];
-    for (const { lane, record } of readLanes(state, proof.guild)) {
-      if (target !== undefined && target !== record.id) continue;
-      if (record.channel ? await access.canRead(record.channel) : proof.actor === published.values.DORI_DISCORD_OWNER_ID) {
-        if (target !== undefined) records.push(await laneEvidence(this.runtime, lane, record));
-        else {
-          let execution = lane.pane ? "unknown" : "no linked process";
-          if (lane.pane) {
-            try {
-              const observation = await laneObservation(lane.pane);
-              execution = `${observation.status}${observation.reason ? `: ${observation.reason}` : ""}`;
-            }
-            catch (error) { if (!(error instanceof AdminError)) throw error; }
-          }
-          records.push({ ...record, summary: `${record.summary}\nSession execution: ${execution}` });
-        }
+    return readRecords(readLanes(state, proof.guild), async ({ lane, record }) => {
+      if (target !== undefined && target !== record.id) return undefined;
+      const visible = record.channel ? await access.canRead(record.channel) : proof.actor === published.values.DORI_DISCORD_OWNER_ID;
+      if (!visible) return undefined;
+      if (target !== undefined) return laneEvidence(this.runtime, lane, record);
+      if (suggest) return record;
+      let execution = lane.pane ? "unknown" : "no linked process";
+      if (lane.pane) {
+        try {
+          const observation = await laneObservation(lane.pane);
+          execution = `${observation.status}${observation.reason ? `: ${observation.reason}` : ""}`;
+        } catch (error) { if (!(error instanceof AdminError)) throw error; }
       }
-    }
-    return records;
+      return { ...record, summary: `${record.summary}\nSession execution: ${execution}` };
+    });
   }
 
   private async audit(): Promise<AdminRecord[]> {
     const rows = this.runtime.admin.query<{ id: string; actor: string; action: string; target: string; channel: string | null; user: string | null; created_at: number; status: string }, []>(
       "SELECT id,actor,action,target,channel,user,created_at,status FROM operations ORDER BY created_at DESC,id DESC").all();
-    const records: AdminRecord[] = [];
-    for (const row of rows) {
-      if (row.channel && !await this.runtime.access.canRead(row.channel, row.user ?? undefined)) continue;
-      records.push({ id: row.id, title: row.action, user: row.actor, revision: row.status, state: row.status,
-        summary: `<@${row.actor}> | ${row.target}\n${row.status} | <t:${Math.floor(row.created_at / 1000)}:R>` });
-    }
-    return records;
+    return readRecords(rows, async row => {
+      if (row.channel && !await this.runtime.access.canRead(row.channel, row.user ?? undefined)) return undefined;
+      return { id: row.id, title: row.action, user: row.actor, revision: row.status, state: row.status,
+        summary: `<@${row.actor}> | ${row.target}\n${row.status} | <t:${Math.floor(row.created_at / 1000)}:R>` };
+    });
   }
 
-  async read(section: Section, target?: string): Promise<AdminRecord[]> {
+  async read(section: Section, target?: string, suggest = false): Promise<AdminRecord[]> {
     const { delivery, access, published } = this.runtime;
     switch (section) {
       case "conversations": return this.topics(target);
-      case "lanes": return this.lanes(target);
+      case "lanes": return this.lanes(target, suggest);
       case "blocks": return Promise.all(delivery.moderation.list().map(async row => ({
         id: row.user_id, title: await access.userLabel(row.user_id), user: row.user_id,
         source: row.source === "auto" ? "auto" : "manual", revision: stamp(JSON.stringify(row)),

@@ -17,7 +17,8 @@ import { pauseLane, resumeLane } from "./pause.ts";
 import { Registry, requestJob, statusOf } from "./registry.ts";
 import { realClock, run } from "./run.ts";
 import { syncRegistry } from "./sync.ts";
-import { recordCompletion } from "./completion.ts";
+import { CompletionError, recordCompletion } from "./completion.ts";
+import { parseSignal, splitDone } from "./signals.ts";
 import { applyLanes, previewLanes } from "./reconcile.ts";
 import { canLaunch } from "./routing.ts";
 import { fetchHttp, MessengerError, UnsafeMessageError } from "./messenger/http.ts";
@@ -43,8 +44,8 @@ const USAGE = `dori <command> [options]
   show <key>                          full lane evidence, claim, history and receipt (read-only)
   claim-ack <key>                     acknowledge receipt and start the 5-minute close window
   object-done <key> --reason TEXT [--reason TEXT ...]
-  abandon <key> --reason TEXT [--with-unpushed]   owner only: retire a lane that will never finish (kept worktree, never "done")
-  close  <key> [--note TEXT]           close now (Done signals must read back live)
+  abandon <key> --reason TEXT [--stop] [--with-unpushed]   owner only: checkpoint/stop a quiescent agent and retire unfinished work; worktree kept
+  close  <key> [--verify] [--note TEXT] close after live checks; --verify first records independent checks for a bound receipt
   completion <key>                    record independent passing checks and this attempt's Git revision under durable state
   reconcile preview --manifest FILE --job issue-N --repository OWNER/REPO [--failed KEY] [--replacement KEY]
   reconcile apply --manifest FILE     recheck exact records/resources; no public messages
@@ -83,7 +84,7 @@ const flags = parseArgs({
     title: { type: "string" }, brief: { type: "string" }, done: { type: "string" }, thread: { type: "string" },
     model: { type: "string" }, cwd: { type: "string" }, pane: { type: "string" }, evidence: { type: "string" },
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, "with-unpushed": { type: "boolean" }, loop: { type: "string" },
-    job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" },
+    job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" }, verify: { type: "boolean" }, stop: { type: "boolean" },
     source: { type: "string" }, repository: { type: "string" }, channel: { type: "string" },
     manifest: { type: "string" }, failed: { type: "string" }, replacement: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" },
@@ -175,7 +176,7 @@ try {
     }
     case "abandon": {
       const reason = ((flags.values.reason as string[] | undefined) ?? []).join("; ");
-      const r = await abandonLane(deps, await lane(key ?? die("abandon needs a lane key")), reason || die("--reason is required"), Boolean(flags.values["with-unpushed"]));
+      const r = await abandonLane(deps, await lane(key ?? die("abandon needs a lane key")), reason || die("--reason is required"), Boolean(flags.values["with-unpushed"]), Boolean(flags.values.stop));
       for (const line of r.lines) console.log(line);
       process.exit(r.closed ? 0 : 2);
     }
@@ -186,7 +187,12 @@ try {
       break;
     }
     case "close": {
-      const r = await closeLane(deps, await lane(key ?? die("close needs a lane key")), opt("note") ?? "closed by the lead");
+      const current = await lane(key ?? die("close needs a lane key"));
+      if (flags.values.verify && current.launchState !== "failed" &&
+          splitDone(current.done).some(signal => parseSignal(signal).kind === "file")) {
+        await recordCompletion(deps, current);
+      }
+      const r = await closeLane(deps, current, opt("note") ?? "closed by the lead");
       for (const line of r.lines) console.log(line);
       process.exit(r.closed ? 0 : 2);
     }
@@ -349,6 +355,7 @@ try {
       process.exit(command ? 1 : 0);
   }
 } catch (e) {
+  if (e instanceof CompletionError) die(e.message, 2);
   if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError) die(e.message);
   throw e;
 }

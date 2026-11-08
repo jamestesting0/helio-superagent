@@ -11,6 +11,7 @@ import { jobOf, LANE_KEY, type Lane, statusOf, withStatus } from "./registry.ts"
 import { iso } from "./run.ts";
 import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 import { doneSyntaxErrors } from "./signals.ts";
+import { completionContractProblem, independentDoneSignals } from "./completion.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -46,10 +47,13 @@ const validateShape = (input: Pick<LaunchInput, "key" | "done" | "job">): void =
   if (!LANE_KEY.test(input.job) || input.job.includes("..")) throw new LaunchError(`job must match ${LANE_KEY}`);
   const errors = doneSyntaxErrors(input.done);
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
+  if (!independentDoneSignals(input.done).length) throw new LaunchError("Done needs an independent command, URL or remote-state check");
 };
 
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   validateShape(input);
+  const problem = completionContractProblem(deps, input);
+  if (problem) throw new LaunchError(problem);
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
 };
 
@@ -176,6 +180,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     if (existing && existing.launchState !== "failed") {
       throw new LaunchError(`lane ${input.key} is already registered (${statusOf(existing)}) without a session to resume; launch with a new key and --job ${job}`);
     }
+    const problem = completionContractProblem(deps, { key: input.key, ...fields });
+    if (problem) throw new LaunchError(problem);
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
       const position = await enqueue(deps, { key: input.key, job, source, title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at });
@@ -297,6 +303,11 @@ export type Attempt = { readonly title: string; readonly done: string; readonly 
 
 export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly briefText?: string; readonly priority?: Priority; readonly note: string; readonly attempt?: Attempt }): Promise<LaunchResult> => {
   if (!lane.job || lane.retiredAt || lane.supersededBy) throw new LaunchError("Lane needs a verified active job binding before resume");
+  if (options.attempt) {
+    validateShape({ ...lane, ...options.attempt, job: lane.job });
+    const problem = completionContractProblem(deps, { ...lane, ...options.attempt });
+    if (problem) throw new LaunchError(problem);
+  }
   if ((lane.worktrees ?? []).some(path => !existsSync(path))) throw new LaunchError("A recorded worktree is missing; inspect before resume");
   const file = sessionFile(deps, lane);
   if (!file) throw new LaunchError(`lane ${lane.key} has no resumable session file (${lane.session ?? "none recorded"}); launch with a new key and --job ${jobOf(lane)}`);

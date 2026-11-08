@@ -10,6 +10,7 @@ interface Component {
   readonly type: number;
   readonly custom_id?: string;
   readonly label?: string;
+  readonly emoji?: { readonly name: string };
   readonly style?: number;
   readonly disabled?: boolean;
   readonly url?: string;
@@ -35,8 +36,10 @@ export const labels: Readonly<Record<Section, string>> = {
 };
 const row = (...components: readonly Component[]): Component => ({ type: 1, components });
 const id = (panel: Panel, verb: string) => `ha1:${panel.id}:${panel.revision}:${verb}`;
-const button = (panel: Panel, verb: string, label: string, disabled = false, style = 2): Component =>
-  ({ type: 2, custom_id: id(panel, verb), label, style, disabled });
+const button = (panel: Panel, verb: string, label: string | { readonly name: string }, disabled = false, style = 2): Component =>
+  ({ type: 2, custom_id: id(panel, verb), ...(typeof label === "string" ? { label } : { emoji: label }), style, disabled });
+const previous = { name: "\u25C0\uFE0F" };
+const next = { name: "\u25B6\uFE0F" };
 const select = (panel: Panel, verb: string, placeholder: string, options: readonly { readonly label: string; readonly value: string; readonly default?: boolean }[]): Component =>
   ({ type: 3, custom_id: id(panel, verb), placeholder, options });
 const sectionRow = (panel: Panel) => row(select(panel, "section", labels[panel.section],
@@ -50,7 +53,10 @@ export function actions(section: Section, record: AdminRecord, owner: boolean): 
         record.state === "on_hold" ? ["resume", "close"] : ["hold", "close"]; break;
     case "lanes":
       entries = record.state === "closed" ? [] : record.state === "paused" || record.state === "hibernated" ?
-        ["resume", ...(owner ? ["abandon"] : [])] : ["pause", "close", ...(owner ? ["abandon"] : [])]; break;
+        ["resume", "close", ...(owner ? ["abandon"] : [])] : [
+          ...(["working", "not-done"].includes(record.state ?? "working") ? ["pause"] : []),
+          "close", ...(owner ? ["abandon"] : []),
+        ]; break;
     case "blocks": entries = ["remove"]; break;
     case "trusted": entries = owner ? ["remove"] : []; break;
     case "channels": entries = owner && record.state !== "hard_excluded" ? ["normal", "trusted", "ignored"] : []; break;
@@ -58,9 +64,9 @@ export function actions(section: Section, record: AdminRecord, owner: boolean): 
     case "settings": entries = record.id === "github" ? ["check"] : []; break;
     case "overview": case "audit": break;
   }
-  return entries.map(value => ({ label: ({
+  return entries.filter(value => !record.blockedActions?.[value]).map(value => ({ label: ({
     hold: "Put on hold", resume: "Resume", close: section === "lanes" ? "Verify and close lane" : "Close conversation",
-    reopen: "Reopen topic", pause: "Pause lane", abandon: "Abandon lane", remove: section === "trusted" ? "Remove trust" : "Unblock user",
+    reopen: "Reopen topic", pause: "Pause lane", abandon: "Stop and abandon", remove: section === "trusted" ? "Remove trust" : "Unblock user",
     normal: "Set normal policy", trusted: "Set trusted policy", ignored: "Set ignored policy", set: "Set value", check: "Check GitHub",
   })[value] ?? value, value }));
 }
@@ -110,7 +116,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
   if (panel.screen === "pending") {
     title = "Checking change";
     fields.push({ name: "Operation", value: panel.pending?.operation ?? "" });
-    controls.push(row(button(panel, "refresh", "Check outcome"), button(panel, "close", "Close panel")));
+    controls.push(row(button(panel, "refresh", "Check outcome")));
   } else if (panel.screen === "filters") {
     title += " filters";
     const draft = panel.draft ?? saved.filters;
@@ -135,7 +141,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     title = panel.proposal?.label ?? "Review change";
     description = [description, selected ? `**${escapeMarkdown(selected.title)}**\n${selected.summary}` : panel.proposal?.target,
       panel.proposal?.action === "conversations.close" ? "Closing removes the retained transcript." :
-      panel.proposal?.action === "lanes.abandon" ? "Abandoning stops this work; its worktree is retained." :
+      panel.proposal?.action === "lanes.abandon" ? "Stops a safely paused or idle agent after verifying its checkpoint, then records abandonment. The worktree and checkpoint are retained." :
       panel.proposal?.action === "trusted.add" ? "This grants contributor administration access." :
       panel.proposal?.action === "trusted.remove" ? "This revokes contributor administration access." :
       panel.proposal?.action === "channels.set" ? `${selected?.state ?? "Current policy"} -> ${panel.proposal.input.value}` : "",
@@ -146,8 +152,8 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     controls.push(row(button(panel, "commit", panel.proposal?.label ?? "Save change", false,
       ["conversations.close", "lanes.abandon", "trusted.remove"].includes(panel.proposal?.action ?? "") ? 4 : 1),
       button(panel, "cancel", "Cancel")));
-    if (pages > 1) controls.push(row(button(panel, "content-prev", "Previous", page === 0),
-      button(panel, "content-next", "Next", page + 1 >= pages)));
+    if (pages > 1) controls.push(row(button(panel, "content-prev", previous, page === 0),
+      button(panel, "content-next", next, page + 1 >= pages)));
   } else if (panel.screen === "guidance") {
     title = "Choose command inputs";
     if (panel.guild === undefined && panel.draft?.entity) {
@@ -180,12 +186,12 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
         [{ label: "Summary", value: "detail", default: !activity }, { label: "Activity", value: "activity", default: activity }])));
       const available = actions(panel.section, selected, owner);
       if (available.length) controls.push(row(select(panel, "action", "Actions", available)));
-      if (pages > 1) controls.push(row(button(panel, "content-prev", "Previous", page === 0),
-        button(panel, "content-next", "Next", page + 1 >= pages)));
+      if (pages > 1) controls.push(row(button(panel, "content-prev", previous, page === 0),
+        button(panel, "content-next", next, page + 1 >= pages)));
     }
     controls.push(row(button(panel, "back", "Back to results"),
       ...(selected?.url ? [{ type: 2, style: 5, label: "Open source", url: selected.url }] : []),
-      button(panel, "refresh", "Refresh"), button(panel, "close", "Close panel")));
+      button(panel, "refresh", "Refresh")));
   } else if (panel.section === "overview") {
     const overview = records[0];
     description = [description, overview?.summary].filter(Boolean).join("\n");
@@ -200,7 +206,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       `Checked <t:${Math.floor(observation.checkedAt / 1000)}:R>. Runtime readiness is reported separately.`,
     ].filter(Boolean).join("\n"), 900) : "No registration observation yet." });
     fields.push(...(overview?.fields ?? []).map(field => ({ name: field.name, value: short(field.value, 900) })));
-    controls.push(row(button(panel, "refresh", "Refresh"), button(panel, "close", "Close panel")));
+    controls.push(row(button(panel, "refresh", "Refresh")));
   } else {
     const byId = new Map(records.map(record => [record.id, record]));
     const listed = saved.ids.flatMap(id => { const record = byId.get(id); return record ? [record] : []; });
@@ -213,12 +219,12 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       `No ${labels[panel.section].toLowerCase()}.`].filter(Boolean).join("\n");
     if (visible.length) controls.push(row(select(panel, "item", "Open item",
       visible.map((record, index) => ({ label: short(record.title, 100), value: String(page * 8 + index) })))));
-    controls.push(row(button(panel, "prev", "Previous", page === 0), button(panel, "next", "Next", (page + 1) * 8 >= listed.length),
+    controls.push(row(button(panel, "prev", previous, page === 0), button(panel, "next", next, (page + 1) * 8 >= listed.length),
       ...(filterOptions(panel.section).length ? [button(panel, "filters", "Filters")] : []),
-      button(panel, "refresh", "Refresh"), button(panel, "close", "Close panel")));
+      button(panel, "refresh", "Refresh")));
     if (panel.section === "blocks" || owner && panel.section === "trusted") controls.push(row(button(panel, "add", panel.section === "blocks" ? "Block user" : "Grant trust")));
     if (owner && panel.section === "channels") controls.push(row(button(panel, "choose-channel", "Choose channel")));
-    footer = `Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | ${listed.length ? page * 8 + 1 : 0}-${Math.min((page + 1) * 8, listed.length)} of ${listed.length} | As of ${new Date(panel.snapshot).toISOString().slice(11, 16)} UTC`;
+    footer = `Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))} | As of ${new Date(panel.snapshot).toISOString().slice(11, 16)} UTC`;
   }
   const footerText = footer || "Helio administration";
   const descriptionBudget = Math.min(1400, 5000 - title.length - footerText.length -
@@ -233,5 +239,6 @@ export function terminal(description: string, panel?: Panel): Message {
   const budget = Math.min(1400, 5000 - fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0));
   return { content: "", allowed_mentions: { parse: [] },
     embeds: [{ title: panel?.proposal?.label ?? "Helio", description: short(description, budget), fields, footer: { text: "Helio administration" } }],
-    components: panel ? [row(button(panel, "refresh", "Refresh"), button(panel, "close", "Close panel"))] : [] };
+    components: panel ? [row(button(panel, "refresh", "Refresh"),
+      ...(!panel.pending ? [button(panel, "back", "Back to results")] : []))] : [] };
 }

@@ -79,12 +79,21 @@ async function lane(runtime: RuntimeState, request: Mutation, current?: AdminRec
   if ((command === "pause" || command === "abandon") && !reason) throw new AdminError("invalid", "A reason is required");
   const note = `[admin:${runtime.proof.operation}] ${reason || "Discord administration"}`;
   const child = Bun.spawn(["dori", command, request.target,
+    ...(command === "close" ? ["--verify"] : []),
+    ...(command === "abandon" ? ["--stop"] : []),
     ...(command === "abandon" ? [`--reason=${note}`] : [`--note=${note}`])], {
     env: { ...process.env, HERDR_SESSION: "elobot", DORI_CONFIG: join(runtime.home, ".dori/elobot/config.json"), DORI_STATE_DIR: runtime.state },
     stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 65_000,
   });
   const [output, error, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  if (code !== 0) throw new AdminError("uncertain", (error || output).slice(-500) || "Lane transition was not verified");
+  if (code !== 0) {
+    if (command === "abandon" && code === 2 && output.includes(`LANE_HIBERNATED ${request.target} `) &&
+        readLanes(runtime.state, runtime.proof.guild).find(item => item.lane.key === request.target)?.record.state === "hibernated") {
+      return `Agent stopped; checkpoint and worktree retained. Abandonment is blocked: ${(error || output).slice(-500)}`;
+    }
+    throw new AdminError(code === 2 ? "invalid" : "uncertain",
+      (error || output).slice(-500) || "Lane transition was not verified");
+  }
   if (command === "resume") {
     const lane = readLanes(runtime.state, runtime.proof.guild).find(item => item.lane.key === request.target)?.lane;
     const execution = lane?.pane ? await laneSession(lane.pane) : "missing";

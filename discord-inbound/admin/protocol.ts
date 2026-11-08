@@ -26,12 +26,13 @@ export interface AdminRecord {
   readonly channel?: string;
   readonly source?: string;
   readonly url?: string;
+  readonly blockedActions?: Fields;
   readonly fields?: readonly { readonly name: string; readonly value: string }[];
   readonly activity?: readonly { readonly title: string; readonly text: string }[];
 }
 
 export type RuntimeQuery =
-  | { readonly kind: "read"; readonly section: Section; readonly target?: string; readonly filters: Fields }
+  | { readonly kind: "read"; readonly section: Section; readonly target?: string; readonly filters: Fields; readonly suggest?: boolean }
   | { readonly kind: "mutate"; readonly action: string; readonly target: string; readonly expected: string; readonly input: Fields }
   | { readonly kind: "receipt"; readonly action: string; readonly target: string; readonly expected: string; readonly input: Fields }
   | { readonly kind: "probe"; readonly dependency: "github" };
@@ -127,6 +128,7 @@ export function record(value: unknown): AdminRecord {
     ...(row.channel === undefined ? {} : { channel: text(row.channel, 30) }),
     ...(row.source === undefined ? {} : { source: text(row.source, 100) }),
     ...(row.url === undefined ? {} : { url: text(row.url, 500) }),
+    ...(row.blockedActions === undefined ? {} : { blockedActions: fields(row.blockedActions) }),
     ...(Array.isArray(details) ? { fields: details.map(entry => {
       const item = object(entry); return { name: text(item.name, 256), value: text(item.value, 12000) };
     }) } : {}),
@@ -178,7 +180,9 @@ export function query(value: unknown): RuntimeQuery {
   const row = object(value);
   switch (row.kind) {
     case "read":
+      if (row.suggest !== undefined && typeof row.suggest !== "boolean") throw new AdminError("invalid", "Invalid suggestion mode");
       return { kind: "read", section: section(row.section), filters: fields(row.filters),
+        ...(row.suggest === undefined ? {} : { suggest: row.suggest }),
         ...(row.target === undefined ? {} : { target: text(row.target, 120) }) };
     case "mutate": case "receipt":
       return { kind: row.kind, action: text(row.action, 60), target: text(row.target, 120),

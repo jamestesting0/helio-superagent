@@ -8,6 +8,7 @@ import { ALIVE_STATUSES, listPanes, sendVerified, statusLookup } from "./panes.t
 import { checkDone, type SignalIo } from "./signals.ts";
 import { monitorLine } from "./monitor.ts";
 import { completionFileChecks, recordCompletion } from "./completion.ts";
+import { reclaimLane } from "./reclaim.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -112,11 +113,23 @@ const retireFailedLaunch = (deps: FlowDeps, lane: Lane, note: string) =>
  * retired only with no live agent in its pane; unpushed work is refused unless the owner accepts leaving it in the kept
  * worktree. It is recorded as abandoned, never done, and its work thread is not told it finished.
  */
-export const abandonLane = async (deps: FlowDeps, lane: Lane, reason: string, withUnpushed: boolean): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+export const abandonLane = async (deps: FlowDeps, lane: Lane, reason: string, withUnpushed: boolean, stop = false): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
   if (!reason.trim()) throw new Error("abandon needs a reason");
   const unsafe = await unpushedWork(deps, lane);
   if (unsafe.length && !withUnpushed) {
     return { closed: false, lines: [`REFUSED ${lane.key}: ${unsafe.join("; ")}; add --with-unpushed only if the owner accepts leaving it in the kept worktree`] };
+  }
+  if (stop && lane.pane) {
+    const observed = await statusLookup(deps.run, lane.pane);
+    if (observed.error) return { closed: false, lines: [`REFUSED ${lane.key}: ${observed.error}`] };
+    if (lane.release || observed.status !== undefined && ALIVE_STATUSES.has(observed.status)) {
+      const released = await reclaimLane(deps, lane.key, { expected: lane.revision ?? 0 });
+      if (!released.released) return { closed: false, lines: [...released.lines] };
+      const current = await deps.registry.read(lane.key);
+      if (!current) return { closed: false, lines: [...released.lines, `REFUSED ${lane.key}: the stopped lane disappeared`] };
+      const retired = await abandonLane(deps, current, reason, withUnpushed);
+      return { closed: retired.closed, lines: [...released.lines, ...retired.lines] };
+    }
   }
   return retire(deps, lane, `abandoned: ${reason.trim()}`,
     { abandoned: `abandoned by the owner: ${reason.trim()}`, ...(unsafe.length ? { unpushed: unsafe } : {}) }, "ABANDONED");
@@ -186,7 +199,8 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
 const settle = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<string> => {
   const blocked = await unpushedWork(deps, lane);
   if (blocked.length) return objectDone(deps, lane, blocked);
-  const failing = (await checkDone(lane.done, deps.run, signalIo(deps, lane))).filter((c) => !c.ok).map((c) => `${c.signal} -> ${c.detail}`);
+  const failing = [...await completionFileChecks(deps, lane), ...await checkDone(lane.done, deps.run, signalIo(deps, lane))]
+    .filter((c) => !c.ok).map((c) => `${c.signal} -> ${c.detail}`);
   if (failing.length) return objectDone(deps, lane, failing);
   const verified = withStatus(lane, "verified-done", "Done signals read back live", iso(deps.clock));
   await deps.registry.write(verified);

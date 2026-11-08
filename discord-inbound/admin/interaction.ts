@@ -78,10 +78,11 @@ export class Access {
 }
 
 export async function autocomplete(event: Interaction, access: Access, preferred?: string): Promise<readonly { readonly name: string; readonly value: string }[]> {
+  const deadline = performance.now() + 1600;
   try {
     const ownerOnly = ["trusted", "channels", "timeouts"].includes(event.section) && !["list", "show"].includes(event.command) ||
       event.section === "lanes" && event.command === "abandon";
-    await access.authorize(event, ownerOnly, 400);
+    const current = await access.authorize(event, ownerOnly, 400);
     const search = (event.options[event.focused ?? ""] ?? "").toLowerCase();
     const filters: Record<string, string> = {};
     const channels = event.focused === "channel";
@@ -91,7 +92,10 @@ export async function autocomplete(event: Interaction, access: Access, preferred
       else if (event.section === "conversations" && !filters.state && (event.command !== "show" || !search)) filters.state = "active";
       if (event.section === "lanes" && event.command === "resume") filters.state = "all";
     }
-    const response = await access.runtime(event, { kind: "read", section: channels ? "channels" : event.section, filters }, event.id, 1200);
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining <= 0) return [];
+    const response = await access.runtime({ ...event, guild: text(current.values.HELIO_ADMIN_GUILD, 30) },
+      { kind: "read", section: channels ? "channels" : event.section, filters, suggest: true }, event.id, remaining);
     return response.records
       .filter(row => row.id.length <= 100 &&
         `${row.title} ${row.summary} ${row.id}`.toLowerCase().includes(search))
@@ -104,6 +108,9 @@ export async function autocomplete(event: Interaction, access: Access, preferred
       }));
   } catch (error) {
     if (!(error instanceof Error)) throw error;
+    if (!(error instanceof AdminError) || error.code !== "denied") {
+      console.error(`ADMIN_AUTOCOMPLETE_ERROR ${error instanceof AdminError ? error.code : error.name}`);
+    }
     return [];
   }
 }

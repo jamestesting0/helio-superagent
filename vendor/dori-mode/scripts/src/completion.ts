@@ -8,6 +8,27 @@ import { checkDone, parseSignal, splitDone, type Check } from "./signals.ts";
 const acceptanceHash = (lane: Lane) => new Bun.CryptoHasher("sha256").update(lane.done).digest("hex");
 export const completionPath = (deps: FlowDeps, lane: Lane): string => join(deps.config.stateDir, "completions", `${lane.key}.json`);
 
+export class CompletionError extends Error {}
+
+export const independentDoneSignals = (done: string): string[] =>
+  splitDone(done).filter(signal => parseSignal(signal).kind !== "file");
+
+export function completionContractProblem(deps: Pick<FlowDeps, "config" | "signalIo">,
+  lane: Pick<Lane, "key" | "done" | "cwd">): string | undefined {
+  const signals = splitDone(lane.done).map(parseSignal);
+  if (!independentDoneSignals(lane.done).length) {
+    return "Done needs an independent command, URL or remote-state check; a file marker alone cannot verify completion. Resume the work to establish acceptance checks, or explicitly abandon it without claiming completion.";
+  }
+  for (const signal of signals) {
+    if (signal.kind !== "file") continue;
+    const expected = join(deps.config.stateDir, "completions", `${lane.key}.json`);
+    const expanded = signal.path.startsWith("~/") ? join(deps.signalIo?.home ?? homedir(), signal.path.slice(2)) : signal.path;
+    const path = isAbsolute(expanded) ? expanded : resolve(lane.cwd ?? deps.config.defaultCwd, expanded);
+    if (path !== expected) return `Done file must use its bound completion receipt: ${expected}. Correct the legacy acceptance path while preserving the independent checks.`;
+  }
+  return undefined;
+}
+
 async function revision(deps: FlowDeps, lane: Lane): Promise<string | null> {
   const head = await deps.run(["git", "-C", lane.cwd ?? deps.config.defaultCwd, "rev-parse", "HEAD"]);
   return head.code === 0 && /^[a-f0-9]{40,64}$/i.test(head.out.trim()) ? head.out.trim() : null;
@@ -15,14 +36,16 @@ async function revision(deps: FlowDeps, lane: Lane): Promise<string | null> {
 
 /** Records already-live checks, or runs the independent criteria when explicitly requested by the worker. */
 export async function recordCompletion(deps: FlowDeps, lane: Lane, verified?: readonly Check[]): Promise<string> {
-  const independent = splitDone(lane.done).filter(signal => parseSignal(signal).kind !== "file");
-  if (!independent.length) throw new TypeError("Completion requires an independent command, URL or remote state check");
+  const problem = completionContractProblem(deps, lane);
+  if (problem) throw new CompletionError(problem);
+  const independent = independentDoneSignals(lane.done);
   const checks = verified ?? await checkDone(independent.join("; "), deps.run,
     { cwd: lane.cwd ?? deps.config.defaultCwd, ...deps.signalIo });
-  if (checks.some(check => !check.ok)) throw new RangeError("Completion checks are not passing");
+  if (checks.some(check => !check.ok)) throw new CompletionError(`Completion checks are not passing: ${
+    checks.filter(check => !check.ok).map(check => `${check.signal} -> ${check.detail}`).join("; ")}`);
   const head = await revision(deps, lane);
   if (!verified && (!lane.job || !lane.source || !head)) {
-    throw new RangeError("A completion file requires a bound job, source and readable Git revision");
+    throw new CompletionError("A completion file requires a bound job, source and readable Git revision");
   }
   const path = completionPath(deps, lane);
   const directory = join(deps.config.stateDir, "completions");
@@ -45,6 +68,8 @@ export async function completionFileChecks(deps: FlowDeps, lane: Lane): Promise<
     return parsed.kind === "file" ? [{ signal, path: parsed.path }] : [];
   });
   if (!files.length) return [];
+  const problem = completionContractProblem(deps, lane);
+  if (problem) return files.map(file => ({ signal: file.signal, ok: false, detail: problem }));
   const head = await revision(deps, lane);
   const independent = splitDone(lane.done).some(signal => parseSignal(signal).kind !== "file");
   const expected = completionPath(deps, lane);

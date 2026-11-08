@@ -11,8 +11,11 @@ import { syncRegistry } from "../src/sync.ts";
 import { depsFor, fakeClock, newWorld } from "./fakes.ts";
 
 test.each([
-  { label: "passive monitors", state: "waiting_background", streaming: false, expected: "idle" },
-  { label: "paused goal", state: "waiting_human", streaming: false, expected: "blocked" },
+  { label: "passive monitors", state: "waiting_background", streaming: false, expected: "idle", stopReady: true },
+  { label: "paused goal", state: "waiting_human", streaming: false, expected: "blocked", stopReady: true },
+  { label: "paused goal with queued input", state: "waiting_human", streaming: false, queued: 1, expected: "blocked" },
+  { label: "paused goal with children", state: "waiting_human", streaming: false, children: 1, expected: "blocked" },
+  { label: "paused goal with a tool running", state: "waiting_human", streaming: false, background: "eval", expected: "blocked" },
   { label: "active turn", state: "running", streaming: true, expected: "working" },
   { label: "queued input", state: "waiting_background", streaming: false, queued: 1, expected: "blocked" },
   { label: "pending child", state: "waiting_children", streaming: false, children: 1, expected: "blocked" },
@@ -22,7 +25,7 @@ test.each([
     responseSession: "22222222-2222-4222-8222-222222222222", expected: "unknown" },
   { label: "a different endpoint owner", state: "waiting_background", streaming: false, owner: 124, expected: "unknown" },
   { label: "an unknown lifecycle state", state: "unrecognized", streaming: false, expected: "unknown" },
-])("a Senpi pane uses current engine activity for $label", async ({ state, streaming, expected, queued, children, background, human, responseSession, owner }) => {
+])("a Senpi pane uses current engine activity for $label", async ({ state, streaming, expected, queued, children, background, human, responseSession, owner, stopReady }) => {
   const home = mkdtempSync(join(tmpdir(), "dori-state-"));
   const previous = process.env.HOME;
   const socket = join(home, "control.sock");
@@ -63,7 +66,8 @@ test.each([
   try {
     await new Promise<void>(resolve => server.listen(socket, resolve));
     process.env.HOME = home;
-    expect(await listPanes(run)).toMatchObject([{ agent_status: expected }]);
+    expect(await listPanes(run)).toMatchObject([{ agent_status: expected,
+      ...(expected === "unknown" ? {} : { execution: { stopReady: stopReady ?? false } }) }]);
     if (state === "waiting_background" && expected === "idle") {
       const deps = { ...depsFor(newWorld(), fakeClock(0), home), run };
       await deps.registry.write({ key: "owned", title: "owned", pane: "worker", thread: "none",

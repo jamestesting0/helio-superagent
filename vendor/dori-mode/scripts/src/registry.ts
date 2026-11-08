@@ -54,7 +54,7 @@ export type Lane = {
   /** When the lane's agent was first seen idle in the current idle stretch (hibernation timer). */
   readonly idleSince?: number;
   readonly release?: {
-    readonly operation: string; readonly session: string; readonly from: "working" | "not-done";
+    readonly operation: string; readonly session: string; readonly from: "working" | "not-done" | "paused";
     readonly pane: string; readonly tab?: string; readonly job?: string; readonly source?: string;
     readonly version?: string; readonly problem?: string;
   };

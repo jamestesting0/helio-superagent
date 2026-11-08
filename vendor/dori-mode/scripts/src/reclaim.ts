@@ -3,10 +3,11 @@ import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { FlowDeps } from "./done-flow.ts";
 import { withLaunchLock } from "./launch.ts";
-import { listPanes } from "./panes.ts";
+import { listPanes, type Pane } from "./panes.ts";
 import { type Lane, statusOf, withStatus } from "./registry.ts";
 import { iso } from "./run.ts";
 import { START_WINDOW_MS } from "./session-id.ts";
+import type { SessionExecution } from "./session-state.ts";
 
 async function legacyOrigin(lane: Lane, checkpoint: string, sessionId: string): Promise<boolean> {
   try {
@@ -63,6 +64,12 @@ export interface ReclaimResult {
   readonly lines: readonly string[];
 }
 
+const releaseReady = (pane: Pane, paused: boolean): pane is Pane & {
+  readonly execution: Extract<SessionExecution, { readonly session: string }>;
+} =>
+  pane.agent_status === "idle" && pane.execution?.status === "idle" ||
+  paused && pane.agent_status === "blocked" && pane.execution?.status === "blocked" && pane.execution.stopReady;
+
 async function finishRelease(deps: FlowDeps, lane: Lane): Promise<ReclaimResult> {
   const release = lane.release;
   if (!release || statusOf(lane) !== "cleanup-pending") return { released: false, lines: [] };
@@ -77,7 +84,8 @@ async function finishRelease(deps: FlowDeps, lane: Lane): Promise<ReclaimResult>
     lines: [`LANE_RECLAIM_CANCELLED ${lane.key} release ownership changed; no terminal closed`] };
   if (current.revision !== lane.revision || current.pane !== release.pane || current.tab !== release.tab ||
       current.job !== release.job || current.source !== release.source ||
-      (pane?.execution?.status === "idle" && pane.execution.version !== release.version)) {
+      (pane && releaseReady(pane, release.from === "paused") &&
+        pane.execution.version !== release.version)) {
     await deps.registry.write(withStatus(current, statusOf(current) === "cleanup-pending" ? release.from : statusOf(current),
       "idle release cancelled after newer lane or execution state; terminal kept", iso(deps.clock),
       { release: undefined, idleSince: undefined }));
@@ -86,8 +94,7 @@ async function finishRelease(deps: FlowDeps, lane: Lane): Promise<ReclaimResult>
   if (!release.version) return hold("release has no authenticated ownership proof; inspect the original checkpoint before retry");
   if (!readableCheckpoint(release.session)) return hold("resumable checkpoint is missing or unreadable");
   if (pane) {
-    if (pane.agent_status !== "idle") return hold(`session is ${pane.agent_status ?? "unknown"}; no terminal closed`);
-    if (!pane.execution || pane.execution.status !== "idle") return hold("authenticated idle ownership is unavailable; no terminal closed");
+    if (!releaseReady(pane, release.from === "paused")) return hold(`session is ${pane.agent_status ?? "unknown"}; authenticated safe stopping is unavailable; no terminal closed`);
     if (pane.execution.session !== release.session) return hold("pane now belongs to a different session");
     const question = questionHold(deps, lane.key);
     if (question) return hold(question);
@@ -102,20 +109,19 @@ async function finishRelease(deps: FlowDeps, lane: Lane): Promise<ReclaimResult>
 }
 
 /** Release a resource, never manufacture a completion or abandon unfinished work. */
-export const reclaimLane = async (deps: FlowDeps, key: string): Promise<ReclaimResult> => withLaunchLock(deps, async () => {
+export const reclaimLane = async (deps: FlowDeps, key: string, stop?: { readonly expected: number }): Promise<ReclaimResult> => withLaunchLock(deps, async () => {
   const lane = await deps.registry.read(key);
   if (!lane) return { released: false, lines: [`REFUSED ${key}: lane not found`] };
+  if (stop && (lane.revision ?? 0) !== stop.expected) return { released: false, lines: [`REFUSED ${key}: lane changed before stopping; refresh its confirmation`] };
   if (lane.release) return finishRelease(deps, lane);
-  if (!["working", "not-done"].includes(statusOf(lane)) || !lane.pane) {
+  if (!["working", "not-done", ...(stop ? ["paused"] : [])].includes(statusOf(lane)) || !lane.pane) {
     return { released: false, lines: [`REFUSED ${key}: ${statusOf(lane)} is not an idle reclaim candidate`] };
   }
   const paneId = lane.pane;
   const pane = (await listPanes(deps.run)).find(item => item.pane_id === paneId);
-  if (!pane || pane.agent_status !== "idle") return { released: false,
+  if (!pane || !releaseReady(pane, Boolean(stop) && statusOf(lane) === "paused")) return { released: false,
     lines: [`REFUSED ${key}: current session is ${pane?.agent_status ?? "missing"}; no terminal closed`] };
   const execution = pane.execution;
-  if (!execution || execution.status !== "idle") return { released: false,
-    lines: [`REFUSED ${key}: authenticated idle ownership is unavailable; no terminal closed`] };
   const question = questionHold(deps, key);
   if (question) return { released: false, lines: [`REFUSED ${key}: ${question}`] };
   if (lane.session && lane.session !== execution.session && lane.session !== execution.id &&
@@ -130,8 +136,9 @@ export const reclaimLane = async (deps: FlowDeps, key: string): Promise<ReclaimR
   const pending = withStatus(lane, "cleanup-pending", "releasing an idle worker slot; completion remains unverified", iso(deps.clock),
     { session: checkpoint, sessionVia: "control",
       release: { operation: crypto.randomUUID(), session: checkpoint,
-        from: statusOf(lane) === "not-done" ? "not-done" : "working", pane: paneId,
-        tab: lane.tab, job: lane.job, source: lane.source, version: execution.version } });
+        from: statusOf(lane) === "paused" ? "paused" : statusOf(lane) === "not-done" ? "not-done" : "working", pane: paneId,
+        ...(lane.tab ? { tab: lane.tab } : {}), ...(lane.job ? { job: lane.job } : {}),
+        ...(lane.source ? { source: lane.source } : {}), version: execution.version } });
   await deps.registry.write(pending);
   return finishRelease(deps, pending);
 });

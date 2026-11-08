@@ -37,6 +37,7 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 | `scripts/src/config.ts`, `cli.ts` | Optional `runtimeConfigFile` supplies worker capacity/hibernation; watch reloads it per tick and records the applied revision with process identity | Owner-published setting changes must reach admission and hibernation without restarting a lead |
 | `scripts/src/session-state.ts`, `panes.ts`, `sync.ts` | Bind foreground Senpi PIDs/session identities to authenticated current TUI lifecycle observations; passive monitor waits are idle and unavailable observations remain unknown | Herdr's persistent process label reported inactive workers as working and generated false paused-worker alerts |
 | `scripts/src/reclaim.ts`, `lifecycle.ts`, `admission.ts`, `registry.ts`, `cli.ts` | Require authenticated idle ownership before checkpointing or releasing a worker slot, including legacy records and partial-cleanup retries; retain all work and unresolved completion, and reclaim under queued demand | Idle sessions and stale pane references exhausted capacity; process labels or descendant-session guesses cannot authorize closing a worker |
+| `scripts/src/session-state.ts`, `reclaim.ts`, `done-flow.ts`, `cli.ts` | Explicit owner abandonment may use `--stop` to release a safely paused or idle session before retirement, with a durable checkpoint, version/identity checks and retryable release intent. Busy engines, queued inputs, child jobs, unresolved questions and unreadable or mismatched checkpoints refuse stopping. Worktrees remain protected and no completion evidence is manufactured. | The administration panel needs one confirmed Stop and abandon flow; automatic idle reclamation must not stop paused work |
 
 Tests: `scripts/test/helio-host.test.ts`.
 
@@ -117,3 +118,13 @@ The full applicability and rejection ledger is in
 safety and direct-checkout closure; existing report and signal suites cover
 the remaining fixes. No upstream root harness, installer, telemetry, journal,
 supervision or onboarding feature was imported.
+
+## Verified-close workflow (2026-11-07)
+
+`close --verify` explicitly runs independent checks and records the bound receipt
+before the usual close checks. The administration panel uses this workflow.
+Launch/adopt and new resume attempts reject file-only or noncanonical receipt
+contracts before admission. Completion refuses such contracts without writing a
+misleading receipt; watcher settlement checks receipt binding before recording
+verified state. Existing legacy lanes remain readable and may be explicitly
+abandoned, but are never silently certified or assigned weaker acceptance.

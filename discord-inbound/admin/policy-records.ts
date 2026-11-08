@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AdminError, object, type AdminRecord, type RuntimeResult, type Section } from "./protocol.ts";
 import { sourceUrl } from "./record-format.ts";
+import { readRecords } from "./record-reads.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 
 export class PolicyRecords {
@@ -84,11 +85,10 @@ export class PolicyRecords {
       if (!/^\d{5,30}$/.test(target)) throw new AdminError("invalid", "Choose a valid channel");
       ids.clear(); ids.add(target);
     }
-    const records: AdminRecord[] = [];
-    for (const id of ids) {
-      if (!await access.canViewChannel(id)) continue;
+    return readRecords([...ids], async id => {
+      if (!await access.canViewChannel(id)) return undefined;
       const metadata = await access.channel(id);
-      if (metadata.guild_id !== proof.guild) continue;
+      if (metadata.guild_id !== proof.guild) return undefined;
       const chain = [id];
       if (metadata.parent_id) {
         chain.push(metadata.parent_id);
@@ -103,13 +103,12 @@ export class PolicyRecords {
       const inherited = chain.find(value => ignored.has(value)) ?? chain.find(value => allowed.has(value));
       const rule = blocked ? "hard_excluded" : inherited === undefined ? "outside_scope" :
         ignored.has(inherited) ? "ignored" : trusted.has(inherited) ? "trusted" : "normal";
-      records.push({ id, title: metadata.name ?? `Channel ${id}`, channel: id, state: rule, revision: published.revision,
+      return { id, title: metadata.name ?? `Channel ${id}`, channel: id, state: rule, revision: published.revision,
         summary: `<#${id}> | ${rule}`,
         fields: [{ name: "Policy", value: rule.replaceAll("_", " ") },
           { name: "Source", value: blocked ? `Hard privacy exclusion <#${blocked}>; immutable here` :
             inherited === id ? "Explicit owner configuration" : inherited ? `Inherited from <#${inherited}>` : "Outside the configured response scope" }],
-        url: sourceUrl(proof.guild, id) });
-    }
-    return records;
+        url: sourceUrl(proof.guild, id) };
+    });
   }
 }

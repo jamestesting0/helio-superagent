@@ -36,7 +36,7 @@ export class RuntimeAdmin {
     access.authorize((request.kind === "mutate" || request.kind === "receipt") && request.action === "lanes.abandon");
     switch (request.kind) {
       case "read": {
-        let records = await this.records.read(request.section, request.target);
+        let records = await this.records.read(request.section, request.target, request.suggest);
         if (request.target !== undefined) records = records.filter(record => record.id === request.target);
         for (const [name, value] of Object.entries(request.filters)) {
           if (!value || value === "all") continue;

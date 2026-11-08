@@ -5,6 +5,7 @@ import { Access, autocomplete, interaction, type Interaction } from "./interacti
 import { Panels, position, type Panel } from "./panels.ts";
 import { AdminError, isAdminInteraction, object, section, text, type AdminPolicy, type AdminRecord } from "./protocol.ts";
 import { actions, render, terminal } from "./render.ts";
+import { loadPanel } from "./panel-read.ts";
 
 export class Controller {
   private readonly access = new Access();
@@ -58,7 +59,7 @@ export class Controller {
       const target = event.options.topic ?? event.options.lane ?? event.options.entry ??
         (event.command === "set" || event.command === "show" ? event.options.channel ?? event.options.setting ?? event.options.section : undefined);
       if (target) { saved.selected = target; panel.screen = "detail"; }
-      let records: readonly AdminRecord[] = await this.load(panel, event, true);
+      let records: readonly AdminRecord[] = await loadPanel(this.access, panel, event, true);
       if (!["list", "show", "status"].includes(event.command)) {
         const action = event.section === "timeouts" ? "timeout.set" : `${event.section}.${event.command}`;
         const selected = records.find(row => row.id === target);
@@ -85,32 +86,6 @@ export class Controller {
     }
   }
 
-  private async load(panel: Panel, event: Interaction, refresh: boolean): Promise<AdminRecord[]> {
-    const saved = position(panel);
-    const response = await this.access.runtime(event, { kind: "read", section: panel.section, filters: saved.filters });
-    const byId = new Map(response.records.map(record => [record.id, record]));
-    if (panel.section === "settings" && panel.github) byId.set("github", panel.github);
-    if (refresh) {
-      const first = saved.ids[saved.page * 8];
-      saved.ids = response.records.map(record => record.id);
-      const index = first === undefined ? -1 : saved.ids.indexOf(first);
-      if (index >= 0) saved.page = Math.floor(index / 8);
-      panel.snapshot = Date.now();
-    } else saved.ids = saved.ids.filter(id => byId.has(id));
-    saved.page = Math.min(saved.page, Math.max(0, Math.ceil(saved.ids.length / 8) - 1));
-    const records = saved.ids.flatMap(id => { const record = byId.get(id); return record ? [record] : []; });
-    if (saved.selected) {
-      const current = panel.section === "settings" && saved.selected === "github" && panel.github ? panel.github :
-        (await this.access.runtime(event, { kind: "read", section: panel.section, target: saved.selected, filters: {} })).records[0];
-      if (current) {
-        const index = records.findIndex(record => record.id === current.id);
-        if (index >= 0) records[index] = current;
-        else records.push(current);
-      }
-    }
-    return records;
-  }
-
   private async component(event: Interaction, id: string, revision: number, verb: string): Promise<void> {
     let panel: Panel | undefined;
     try {
@@ -135,24 +110,39 @@ export class Controller {
       const saved = position(panel);
       delete panel.notice;
       const chosenTarget = verb === "item" ? saved.ids[Number(event.values[0])] : undefined;
-      let records: readonly AdminRecord[] = await this.load(panel, event, verb === "refresh");
-      const selected = records.find(row => row.id === saved.selected);
+      if (!stale) {
+        if (verb === "section") {
+          panel.section = section(event.values[0]);
+          panel.positions[panel.section] ??= { ids: [], filters: panel.section === "conversations" ? { state: "active" } : {}, page: 0 };
+          panel.screen = "list"; panel.contentPage = 0; delete panel.proposal;
+        } else if (verb === "item") {
+          const index = Number(event.values[0]);
+          if (!Number.isSafeInteger(index) || index < saved.page * 8 || index >= (saved.page + 1) * 8 || !chosenTarget) {
+            throw new AdminError("changed", "The selected list item changed");
+          }
+          saved.selected = chosenTarget; panel.screen = "detail"; panel.contentPage = 0;
+        } else if (verb === "back" || verb === "cancel") {
+          panel.screen = panel.screen === "confirm" && saved.selected ? "detail" : "list";
+          delete panel.proposal; delete panel.draft;
+        } else if (verb === "apply-filters" || verb === "clear-filters") {
+          saved.filters = verb === "clear-filters" ? {} : panel.draft ?? {};
+          saved.page = 0; panel.screen = "list"; delete panel.draft;
+        } else if (verb === "entity-channel") {
+          saved.selected = text(event.values[0], 30); panel.screen = "detail"; delete panel.draft;
+        }
+      }
+      let records: readonly AdminRecord[] = await loadPanel(this.access, panel, event,
+        ["refresh", "apply-filters", "clear-filters"].includes(verb));
+      const selectedId = position(panel).selected;
+      const selected = records.find(row => row.id === selectedId);
       if (stale) {
         panel.screen = panel.proposal ? "unavailable" : selected ? "detail" : "list";
         panel.notice = "The panel changed. Review its current state.";
       } else switch (verb) {
-        case "section":
-          panel.section = section(event.values[0]);
-          panel.positions[panel.section] ??= { ids: [], filters: panel.section === "conversations" ? { state: "active" } : {}, page: 0 };
-          panel.screen = "list"; panel.contentPage = 0; delete panel.proposal;
-          records = await this.load(panel, event, position(panel).ids.length === 0); break;
-        case "item": {
-          const index = Number(event.values[0]);
-          if (!Number.isSafeInteger(index) || index < saved.page * 8 || index >= (saved.page + 1) * 8) throw new AdminError("changed", "The selected list item changed");
-          if (!chosenTarget || !records.some(record => record.id === chosenTarget)) throw new AdminError("changed", "The selected item is no longer available");
-          saved.selected = chosenTarget; panel.screen = "detail"; panel.contentPage = 0;
-          records = await this.load(panel, event, false); break;
-        }
+        case "section": break;
+        case "item":
+          if (!selected) throw new AdminError("changed", "The selected item is no longer available");
+          break;
         case "prev": saved.page = Math.max(0, saved.page - 1); break;
         case "next": saved.page = Math.min(Math.max(0, Math.ceil(saved.ids.length / 8) - 1), saved.page + 1); break;
         case "content-prev": panel.contentPage = Math.max(0, panel.contentPage - 1); break;
@@ -163,13 +153,12 @@ export class Controller {
         case "filters": panel.screen = "filters"; panel.draft = { ...saved.filters }; break;
         case "filter-state": case "filter-source": case "filter-user": case "filter-channel":
           panel.draft = { ...panel.draft, [verb.slice(7)]: event.values[0] ?? "" }; break;
-        case "apply-filters": saved.filters = panel.draft ?? {}; saved.page = 0; panel.screen = "list";
-          records = await this.load(panel, event, true); break;
-        case "clear-filters": saved.filters = {}; saved.page = 0; panel.screen = "list"; delete panel.draft;
-          records = await this.load(panel, event, true); break;
+        case "apply-filters": case "clear-filters": break;
         case "back": case "cancel":
-          panel.screen = panel.screen === "confirm" && selected ? "detail" : "list";
-          delete panel.proposal; delete panel.draft; break;
+          if (panel.screen === "detail" && !selected) {
+            panel.screen = "list"; records = await loadPanel(this.access, panel, event, false);
+          }
+          break;
         case "refresh":
           if (panel.screen === "unavailable") {
             if (panel.proposal) await editor.review(panel, panel.proposal, policy, selected);
@@ -186,12 +175,15 @@ export class Controller {
             panel.github = records.find(record => record.id === "github");
             panel.contentPage = 0;
           }
-          else if (["hold", "pause", "abandon", "close", "set"].includes(action ?? "") && !(panel.section === "lanes" && action === "close")) {
+          else if (["hold", "close", "set"].includes(action ?? "") && panel.section !== "lanes") {
             editor.guidance(panel, action ?? "", selected);
           } else {
+            const values: Record<string, string> = {};
+            if (panel.section === "channels") values.value = action ?? "";
+            if (panel.section === "lanes") values.reason = "Requested through the Discord lane panel.";
             await editor.prepare(panel, selected, {
               action: panel.section === "channels" ? "channels.set" : `${panel.section}.${action}`,
-              target: selected.id, values: panel.section === "channels" ? { value: action ?? "" } : {}, policy,
+              target: selected.id, values, policy,
             });
             if (panel.screen !== "confirm" && !panel.pending) records = await this.reloadMutation(panel, event);
           }
@@ -207,9 +199,7 @@ export class Controller {
           else panel.notice = `Use \`/blocks add user:${target} reason:<reason>\`.`;
           delete panel.draft; break;
         }
-        case "entity-channel":
-          saved.selected = text(event.values[0], 30); panel.screen = "detail"; delete panel.draft;
-          records = await this.load(panel, event, false); break;
+        case "entity-channel": break;
         default: throw new AdminError("invalid", "Unknown panel control");
       }
       panel.token = event.token;
@@ -227,7 +217,7 @@ export class Controller {
 
   private async reloadMutation(panel: Panel, event: Interaction): Promise<readonly AdminRecord[]> {
     this.panels.save(panel);
-    try { return await this.load(panel, event, true); }
+    try { return await loadPanel(this.access, panel, event, true); }
     catch (error) {
       if (!(error instanceof Error)) throw error;
       panel.notice = `${panel.notice ?? "The operation returned."} Current details are unavailable; refresh to inspect them.`;

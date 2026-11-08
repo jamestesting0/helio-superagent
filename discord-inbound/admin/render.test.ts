@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Panel } from "./panels.ts";
 import { SECTIONS, type AdminPolicy, type AdminRecord } from "./protocol.ts";
-import { render } from "./render.ts";
+import { actions, render } from "./render.ts";
 import { escapeMarkdown } from "./record-format.ts";
 import { commands, dmCommands } from "./manifest.ts";
 import { object } from "./protocol.ts";
@@ -73,12 +73,29 @@ test("all list sections fit eight records and never emit an empty selector", () 
       positions: { [section]: { ids: records.map(row => row.id), page: 0, filters: {} } },
       screen: "list", contentPage: 0, snapshot: 0 };
     const message = render(panel, records, policy);
+    expect(message.embeds[0]?.footer.text).not.toMatch(/\|\s*\d+-\d+ of \d+/);
     expect(message.embeds[0]?.fields.length).toBe(Math.min(8, size));
     expect(message.components.length).toBeLessThanOrEqual(5);
     for (const row of message.components) expect(row.components?.length).toBeLessThanOrEqual(5);
     const next = message.components.flatMap(row => row.components ?? []).find(component => component.custom_id?.endsWith(":next"));
     expect(next?.disabled).toBe(size <= 8);
+    const previous = message.components.flatMap(row => row.components ?? []).find(component => component.custom_id?.endsWith(":prev"));
+    expect(previous?.label).toBeUndefined();
+    expect(next?.label).toBeUndefined();
+    expect(previous?.emoji?.name).toBe("\u25C0\uFE0F");
+    expect(next?.emoji?.name).toBe("\u25B6\uFE0F");
+    expect(message.components.flatMap(row => row.components ?? []).some(component => component.custom_id?.endsWith(":close"))).toBe(false);
     const empty = render({ ...panel, positions: { [section]: { ids: [], page: 0, filters: {} } } }, [], policy);
     expect(empty.components.flatMap(row => row.components ?? []).some(component => component.placeholder === "Open item")).toBe(false);
+  }
+});
+
+test.each(["paused", "hibernated"])("unfinished %s lanes still offer verified closure", state => {
+  const record: AdminRecord = { id: "lane-one", title: "Unfinished lane", summary: state, state, revision: "1" };
+  for (const owner of [false, true]) {
+    const available = actions("lanes", record, owner).map(action => action.value);
+    expect(available).toContain("resume");
+    expect(available).toContain("close");
+    expect(available.includes("abandon")).toBe(owner);
   }
 });

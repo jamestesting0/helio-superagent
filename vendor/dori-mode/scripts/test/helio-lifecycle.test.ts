@@ -26,7 +26,8 @@ test("isolated lanes preserve input brief and recover failed pane launch", async
    if(argv.slice(0,3).join(" ")==="herdr pane list") return {code:0,out:JSON.stringify({result:{panes:[]}}),err:""};
    return {code:0,out:"",err:""};
   }};
-  await expect(launchLane(deps,{key:"lane-one",job:"lane-one",title:"test",brief,done:"closed owner/repo#1"})).rejects.toThrow("pane run failed");
+  await expect(launchLane(deps,{key:"lane-one",job:"lane-one",title:"test",brief,
+   done:"closed owner/repo#1; file ../../completions/lane-one.json json:.passed=true"})).rejects.toThrow("pane run failed");
   const lane=await registry.read("lane-one"); expect(lane?.launchState).toBe("failed"); expect(lane?.status).toBe("not-done"); expect(lane?.pane).toBe("pane");
   expect(lane?.cwd).toBe(join(state,"worktrees","lane-one")); expect(readFileSync(brief,"utf8")).toBe("original brief\n");
   expect(readFileSync(lane!.brief,"utf8")).toContain("## Lane footer");

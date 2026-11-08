@@ -40,6 +40,8 @@ export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: Ad
   const criteria = clauses(lane.done);
   if (!criteria.length) conditions.push("No Done contract is recorded.");
   const independent = criteria.some(value => /^(merged|closed|command|url|published)\s/i.test(value));
+  let closeProblem = independent ? undefined :
+    "No independent completion checks are registered. Resume the work to establish acceptance checks, or the owner can abandon it without claiming completion.";
   if (!independent) conditions.push("Done has no independent command, URL, registry, or remote-state criterion.");
   const cwd = lane.cwd ?? runtime.published.values.HELIO_PROJECT;
   const roots = [...new Set(lane.worktrees?.length ? lane.worktrees : [cwd])];
@@ -61,6 +63,8 @@ export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: Ad
 
   const files = criteria.filter(value => /^file\s/i.test(value));
   if (files.length) {
+    if (!lane.job || !lane.source) closeProblem ??= "A bound job and original source are required before recording completion.";
+    if (!head?.ok) closeProblem ??= "The current Git revision must be readable before recording completion.";
     const canonical = join(runtime.state, "completions", `${lane.key}.json`);
     for (const criterion of files) {
       const token = /^file\s+("(?:\\.|[^"\\])*"|\S+)/i.exec(criterion)?.[1];
@@ -69,6 +73,7 @@ export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: Ad
       const expanded = path.startsWith("~/") ? join(runtime.home, path.slice(2)) : path;
       if ((isAbsolute(expanded) ? expanded : resolve(cwd, expanded)) !== canonical) {
         conditions.push("A Done file does not refer to this lane's bound completion receipt.");
+        closeProblem ??= `The Done contract uses a legacy file path. Its receipt must be ${canonical}; preserve the independent checks when correcting the contract.`;
       }
     }
     if (!existsSync(canonical)) conditions.push("The bound completion receipt is missing.");
@@ -158,5 +163,7 @@ export async function laneEvidence(runtime: RuntimeState, lane: Lane, record: Ad
   if (deferred) fields.push({ name: "Explicit verification", value: `${deferred} command, URL, or registry criteria are not executed by this read-only view; Close performs its normal checks.` });
   fields.push({ name: "Open/cleanup condition", value: conditions.join("\n") ||
     "No blocker found by these read-only observations; Close still performs its normal verification." });
-  return { ...record, fields };
+  return { ...record, fields,
+    ...(closeProblem ? { summary: `${record.summary}\nVerified close unavailable: ${closeProblem}`,
+      blockedActions: { ...record.blockedActions, close: closeProblem } } : {}) };
 }

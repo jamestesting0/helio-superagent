@@ -7,7 +7,8 @@ import type { Runner } from "./run.ts";
 export type SessionExecution =
   | { readonly status: "unknown" | "missing"; readonly reason: string }
   | { readonly status: "working" | "idle" | "blocked"; readonly session: string; readonly id: string;
-      readonly pid: number; readonly since: string; readonly state: string; readonly version: string; readonly reason: string };
+      readonly pid: number; readonly since: string; readonly state: string; readonly version: string; readonly reason: string;
+      readonly stopReady: boolean };
 
 class StateUnavailable extends Error {}
 const lifecycleStates = new Set(["running", "waiting_children", "waiting_background", "waiting_human",
@@ -125,6 +126,7 @@ export async function paneExecution(run: Runner, pane: string): Promise<SessionE
     return { status: active ? "working" : reasons.length ? "blocked" : "idle",
       session: String(current.sessionFile), id: String(current.sessionId), pid: agent.pid, since: lifecycle.since, state: lifecycle.state,
       version: `${agent.pid}:${count(lifecycle.seq)}`,
+      stopReady: !active && reasons.every(reason => reason === "Goal is paused"),
       reason: active ? "Active engine turn" : reasons[0] ?? (human.length ? `Idle; ${String(human[0]?.kind)}` :
         background.length ? "Passive monitors only" : "No active engine turn") };
   } catch (error) {
