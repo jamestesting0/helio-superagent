@@ -18,7 +18,7 @@ import { excludedChannels, learningAllowed, learningChannelAllowed, normalChanne
 import { contextReplayAllowed } from "./learning/context-replay.ts";
 import { prepareMessageBody } from "./messages/forwarded.ts";
 import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
-import { DiscordRestError, IgnoredChannelError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES, type ApiChannel } from "./discord/rest.ts";
+import { DiscordRestError, DiscordTransportError, IgnoredChannelError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES, type ApiChannel } from "./discord/rest.ts";
 import { contextSummary, monitorLine } from "./delivery/monitor-summary.ts";
 import { watch } from "node:fs";
 import { join } from "node:path";
@@ -57,20 +57,25 @@ const fetchPage: FetchPage = async (channelId, before) => {
   return rest<RestMessage[]>(`/channels/${channelId}/messages?limit=${PAGE_SIZE}${before ? `&before=${before}` : ""}`);
 };
 
-let skipped = 0;
-const skip = (id: string, err: unknown) => {
-  skipped++;
-  console.log(monitorLine(`CONTEXT_WARN ${id} skipped: ${String(err)}`));
-};
+const warned = new Set<string>();
 
-async function refresh(): Promise<void> {
+async function refresh(): Promise<{ channels: number; messages: number; skipped: number; retryable: boolean } | undefined> {
   const revision = runtimePolicy()?.revision;
   const values = policyValues();
   const ids = (values.DORI_DISCORD_CONTEXT ?? requireEnv("DORI_DISCORD_CONTEXT")).split(",").map(s => s.trim()).filter(Boolean);
   const excluded = currentExclusions();
   const ignored = excludedChannels(values.DORI_DISCORD_IGNORED_CHANNELS ?? "");
   const lastRead = await LastSeen.load(statePath);
-  skipped = 0;
+  let skipped = 0;
+  let retryable = false;
+  const skip = (id: string, error: unknown) => {
+    if (!(error instanceof DiscordRestError) && !(error instanceof DiscordTransportError)) throw error;
+    skipped++;
+    retryable ||= error instanceof DiscordTransportError || error.retryable;
+    const key = `${id}:${error.name}:${error instanceof DiscordRestError ? error.status : error.code}`;
+    if (!warned.has(key)) console.log(monitorLine(`CONTEXT_WARN ${id} skipped: ${String(error)}`));
+    warned.add(key);
+  };
   await sweepOrphanAttachments(delivery, stateDir, "context");
   const emitted = new Set<string>();
   let total = 0;
@@ -79,7 +84,11 @@ async function refresh(): Promise<void> {
     try {
       if (await learningChannelAllowed(channel, excluded, rest)) channels.push(channel);
     } catch (err) {
-      if (!(err instanceof DiscordRestError)) throw err;
+      if (err instanceof IgnoredChannelError) {
+        if (runtimePolicy()?.revision !== revision) return;
+        continue;
+      }
+      if (!(err instanceof DiscordRestError) && !(err instanceof DiscordTransportError)) throw err;
       skip(channel.id, err);
     }
   }
@@ -90,7 +99,11 @@ async function refresh(): Promise<void> {
       if (await delivery.ignored.settle("context", item.id, item.payload, ignored, async id =>
         rest<{ parent_id?: string }>(`/channels/${id}`))) continue;
     } catch (error) {
-      if (!(error instanceof DiscordRestError)) throw error;
+      if (error instanceof IgnoredChannelError) {
+        if (runtimePolicy()?.revision !== revision) return;
+        withheld++; continue;
+      }
+      if (!(error instanceof DiscordRestError) && !(error instanceof DiscordTransportError)) throw error;
       skip(item.id, error); withheld++; continue;
     }
     let payload: unknown;
@@ -108,7 +121,11 @@ async function refresh(): Promise<void> {
     try {
       if (!await contextReplayAllowed(item.payload, policyValues(), rest)) { withheld++; continue; }
     } catch (error) {
-      if (!(error instanceof DiscordRestError)) throw error;
+      if (error instanceof IgnoredChannelError) {
+        if (runtimePolicy()?.revision !== revision) return;
+        withheld++; continue;
+      }
+      if (!(error instanceof DiscordRestError) && !(error instanceof DiscordTransportError)) throw error;
       skip(item.id, error); withheld++; continue;
     }
     if (!announced.has(item.id)) console.log(contextSummary(item.id, item.payload));
@@ -116,7 +133,10 @@ async function refresh(): Promise<void> {
     emitted.add(item.id);
     total++;
   }
-  if (withheld) console.log(`CONTEXT_WITHHELD pending=${withheld}`);
+  if (withheld && !warned.has(`withheld:${withheld}`)) {
+    console.log(`CONTEXT_WITHHELD pending=${withheld}`);
+    warned.add(`withheld:${withheld}`);
+  }
   if (total) console.log(`CONTEXT_PENDING count=${total} read="ack pending context"`);
   for (const channel of channels) {
     try {
@@ -165,32 +185,58 @@ async function refresh(): Promise<void> {
       const newest = messages.at(-1);
       if (newest) await lastRead.advance(channel.id, newest.id);
     } catch (err) {
-      if (err instanceof IgnoredChannelError) continue;
-      if (!(err instanceof DiscordRestError)) throw err;
+      if (err instanceof IgnoredChannelError) {
+        if (runtimePolicy()?.revision !== revision) return;
+        continue;
+      }
+      if (!(err instanceof DiscordRestError) && !(err instanceof DiscordTransportError)) throw err;
       skip(channel.id, err);
     }
   }
   // Only a refresh that reached every channel may forget read positions of channels no longer learned.
+  if (runtimePolicy()?.revision !== revision) return;
   await cleanupIgnored(delivery, stateDir);
   if (skipped === 0) await lastRead.retain(new Set(channels.map((channel) => channel.id)));
   await lastRead.save();
-  console.log(`CONTEXT_DONE channels=${channels.length} messages=${total}`);
+  return { channels: channels.length, messages: total, skipped, retryable };
 }
 
 try {
+  let partial: string | undefined;
+  let retryDelay = 30_000;
+  let reportedDelay: number | undefined;
   do {
     const revision = runtimePolicy()?.revision;
-    await refresh();
+    const result = await refresh();
+    if (runtimePolicy()?.revision !== revision || !result) { warned.clear(); continue; }
+    const summary = `CONTEXT_DONE channels=${result.channels} messages=${result.messages} skipped=${result.skipped}`;
+    if (result.skipped === 0 || summary !== partial) console.log(summary);
+    if (result.skipped === 0) {
+      if (partial !== undefined) console.log(`CONTEXT_RECOVERED channels=${result.channels}`);
+      partial = undefined;
+      warned.clear();
+      retryDelay = 30_000;
+      reportedDelay = undefined;
+    } else {
+      partial = summary;
+    }
     if (!process.argv.includes("--loop")) break;
-    if (runtimePolicy()?.revision !== revision) continue;
+    const delay = result.retryable ? retryDelay : 30 * 60 * 1000;
+    if (result.retryable) {
+      if (reportedDelay !== delay) console.log(`CONTEXT_RETRY after_ms=${delay} skipped=${result.skipped}`);
+      reportedDelay = delay;
+      retryDelay = Math.min(300_000, retryDelay * 2);
+    } else {
+      reportedDelay = undefined;
+    }
     acknowledgePolicy("learning", revision);
     if (revision === undefined) {
-      await Bun.sleep(30 * 60 * 1000);
+      await Bun.sleep(delay);
       continue;
     }
     await new Promise<void>(resolve => {
       const directory = process.env.DORI_POLICY_DIR ?? join(process.env.HOME ?? "", ".dori/elobot/policy");
-      const timer = setTimeout(() => { watcher?.close(); resolve(); }, 30 * 60 * 1000);
+      const timer = setTimeout(() => { watcher?.close(); resolve(); }, delay);
       const watcher = watch(directory, { persistent: false }, (_event, name) => {
         if (name !== "policy.json") return;
         clearTimeout(timer); watcher?.close(); resolve();

@@ -119,7 +119,7 @@ INBOUND_FILES = (
     # tests
     "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/catchup-pages.test.ts", "tests/ignored-threads.test.ts", "tests/upkeep-independent.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
     "tests/stage-first.test.ts", "tests/gateway-message.test.ts", "tests/quiet-input.test.ts", "tests/reconciliation.test.ts",
-    "tests/learning-context.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
+    "tests/learning-context.test.ts", "tests/learning-recovery.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",
     "tests/turns-flow.test.ts",
     # fixtures

@@ -55,7 +55,6 @@ if (process.env.DORI_TEST_PREPARE_FAILURE === "1") {
 }
 
 Date.now = turnClock.now;
-let channel100Reads = 0;
 if (process.env.DORI_TEST_REFRESH === "1") {
   let refreshes = 0;
   spyOn(Bun, "sleep").mockImplementation(async (milliseconds) => {
@@ -114,8 +113,7 @@ globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init
     ]);
   }
   if (url.pathname === "/api/v10/channels/100") {
-    channel100Reads++;
-    if (process.env.DORI_TEST_POLICY_TRANSIENT === "1" && channel100Reads === 1) {
+    if (process.env.DORI_TEST_POLICY_TRANSIENT === "1") {
       return new Response("Temporary policy lookup failure", { status: 503 });
     }
     return Response.json({ id: "100", guild_id: "300", type: 0, name: "test", parent_id: "400" });

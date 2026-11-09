@@ -1,5 +1,5 @@
 import { insideAllowed } from "../intake/filter.ts";
-import { policyValues } from "../intake/runtime-policy.ts";
+import { policyValues, runtimePolicy } from "../intake/runtime-policy.ts";
 
 const API = "https://discord.com/api/v10";
 
@@ -18,9 +18,18 @@ export const THREAD_PARENT_TYPES = new Set([0, 5, 15]);
 export type Rest = <T>(path: string, init?: { method?: string; body?: unknown; retryRateLimit?: boolean }) => Promise<T>;
 
 export class DiscordRestError extends Error {
+  readonly retryable: boolean;
   constructor(readonly status: number, method: string, path: string, body: string) {
     super(`${method} ${path} -> ${status} ${body}`);
     this.name = "DiscordRestError";
+    this.retryable = [429, 500, 502, 503, 504].includes(status);
+  }
+}
+
+export class DiscordTransportError extends Error {
+  constructor(readonly code: string, method: string, path: string, cause: Error) {
+    super(`${method} ${path} -> transport ${code}`, { cause });
+    this.name = "DiscordTransportError";
   }
 }
 
@@ -47,41 +56,63 @@ export function cachedReads(rest: Rest): Rest {
 export function discordRest(token: string, options: { readonly allowIgnoredMetadata?: boolean; readonly metadataActor?: string } = {}): Rest {
   const raw: Rest = async <T>(path: string, init: { method?: string; body?: unknown; retryRateLimit?: boolean } = {}): Promise<T> => {
     const method = init.method ?? "GET";
+    const revision = runtimePolicy()?.revision;
+    let deadline = Date.now() + 15_000;
     for (let attempt = 1; ; attempt++) {
-      const res = await fetch(`${API}${path}`, {
-        method, signal: AbortSignal.timeout(15_000),
-        headers: { Authorization: `Bot ${token}`, ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }) },
-        body: init.body instanceof FormData ? init.body : init.body === undefined ? undefined : JSON.stringify(init.body),
-      });
-      if (res.status === 429 && init.retryRateLimit !== false) {
-        const { retry_after } = (await res.json()) as { retry_after: number };
-        if (attempt >= 3 || !Number.isFinite(retry_after) || retry_after < 0) {
-          throw new DiscordRestError(429, method, path, "rate limit could not be resolved");
+      const ignored = new Set((policyValues().DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
+      if ([...ignored].some(id => !/^\d+$/.test(id))) throw new TypeError("Invalid DORI_DISCORD_IGNORED_CHANNELS");
+      const channel = /^\/channels\/([0-9]+)(?:\/|$)/.exec(path)?.[1];
+      const metadata = channel !== undefined && method === "GET" && path === `/channels/${channel}`;
+      const membership = channel !== undefined && options.metadataActor !== undefined && method === "GET" &&
+        path === `/channels/${channel}/thread-members/${options.metadataActor}`;
+      if (channel && ignored.size && !(options.allowIgnoredMetadata && (metadata || membership))) {
+        if (ignored.has(channel)) throw new IgnoredChannelError(channel);
+        if (!metadata && await insideAllowed(channel, ignored,
+          async id => (await raw<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined)) {
+          throw new IgnoredChannelError(channel);
         }
-        await Bun.sleep(Math.ceil(retry_after * 1000));
-        continue;
       }
-      if (!res.ok) throw new DiscordRestError(res.status, method, path, await res.text());
-      if (res.status === 204) return undefined as T;
-      return (await res.json()) as T;
-    }
-  };
-  return async <T>(path: string, init?: { method?: string; body?: unknown; retryRateLimit?: boolean }): Promise<T> => {
-    const ignored = new Set((policyValues().DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
-    if ([...ignored].some(id => !/^\d+$/.test(id))) throw new TypeError("Invalid DORI_DISCORD_IGNORED_CHANNELS");
-    const channel = /^\/channels\/([0-9]+)(?:\/|$)/.exec(path)?.[1];
-    const metadata = channel !== undefined && (init?.method ?? "GET") === "GET" && path === `/channels/${channel}`;
-    const membership = channel !== undefined && options.metadataActor !== undefined && (init?.method ?? "GET") === "GET" &&
-      path === `/channels/${channel}/thread-members/${options.metadataActor}`;
-    if (channel && ignored.size && !(options.allowIgnoredMetadata && (metadata || membership))) {
-      if (ignored.has(channel)) throw new IgnoredChannelError(channel);
-      if (!metadata && await insideAllowed(channel, ignored,
-        async id => (await raw<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined)) {
+      if (method === "GET" && channel && runtimePolicy()?.revision !== revision) {
         throw new IgnoredChannelError(channel);
       }
+      try {
+        const res = await fetch(`${API}${path}`, {
+          method, signal: AbortSignal.timeout(method === "GET" ? Math.max(1, deadline - Date.now()) : 15_000),
+          headers: { Authorization: `Bot ${token}`, ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }) },
+          body: init.body instanceof FormData ? init.body : init.body === undefined ? undefined : JSON.stringify(init.body),
+        });
+        if (res.status === 429 && init.retryRateLimit !== false) {
+          const { retry_after } = (await res.json()) as { retry_after: number };
+          if (attempt >= 3 || !Number.isFinite(retry_after) || retry_after < 0) {
+            throw new DiscordRestError(429, method, path, "rate limit could not be resolved");
+          }
+          const paused = Date.now();
+          await Bun.sleep(Math.ceil(retry_after * 1000));
+          deadline += Date.now() - paused;
+          continue;
+        }
+        if (!res.ok) throw new DiscordRestError(res.status, method, path, await res.text());
+        if (res.status === 204) return undefined as T;
+        return (await res.json()) as T;
+      } catch (error) {
+        if (method !== "GET" || !(error instanceof Error)) throw error;
+        let failure: DiscordRestError | DiscordTransportError;
+        if (error instanceof DiscordRestError && error.status !== 429 && error.retryable) {
+          failure = error;
+        } else {
+          const detail = "code" in error ? error : error.cause instanceof Error ? error.cause : error;
+          const code = "code" in detail && typeof detail.code === "string" ? detail.code : error.name;
+          if (!["EAI_AGAIN", "DNS_EAI_AGAIN", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE",
+            "ConnectionRefused", "ConnectionClosed", "TimeoutError"].includes(code)) throw error;
+          failure = new DiscordTransportError(code, method, path, error);
+        }
+        const delay = 250 * 4 ** (attempt - 1);
+        if (attempt >= 3 || Date.now() + delay >= deadline) throw failure;
+        await Bun.sleep(delay);
+      }
     }
-    return raw<T>(path, init);
   };
+  return raw;
 }
 
 export async function expandChannels(
