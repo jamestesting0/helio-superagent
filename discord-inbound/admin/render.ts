@@ -43,6 +43,8 @@ const button = (panel: Panel, verb: string, label: string | { readonly name: str
   ({ type: 2, custom_id: id(panel, verb), ...(typeof label === "string" ? { label } : { emoji: label }), style, disabled });
 const previous = { name: "\u25C0\uFE0F" };
 const next = { name: "\u25B6\uFE0F" };
+const back = { name: "\u2B05\uFE0F" };
+const refresh = { name: "\uD83D\uDD04" };
 const select = (panel: Panel, verb: string, placeholder: string, options: readonly { readonly label: string; readonly value: string; readonly default?: boolean }[]): Component =>
   ({ type: 3, custom_id: id(panel, verb), placeholder, options });
 const sectionRow = (panel: Panel) => row(select(panel, "section", labels[panel.section],
@@ -92,12 +94,13 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
   const saved = position(panel);
   const selected = records.find(record => record.id === saved.selected);
   const controls: Component[] = panel.screen === "pending" ? [] : [sectionRow(panel)];
+  const buttons: Component[] = [];
   const fields: Field[] = [];
   let title = labels[panel.section], description = panel.notice ?? "", footer = "";
   if (panel.screen === "pending") {
     title = "Checking change";
     fields.push({ name: "Operation", value: panel.pending?.operation ?? "" });
-    controls.push(row(button(panel, "refresh", "Refresh")));
+    buttons.push(button(panel, "refresh", refresh));
   } else if (panel.screen === "filters") {
     title += " filters";
     const draft = panel.draft ?? saved.filters;
@@ -121,9 +124,9 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
         referenceLink(typeof named === "object" ? named : { kind: "user", id: draft.user, label: "Selected user" }) : "Any" });
       if (panel.section === "conversations") fields.push({ name: "Channel ID", value: draft.channel || "Any" });
     }
-    controls.push(row(...(dmIds ? [button(panel, "filter-ids", panel.section === "audit" ? "Actor" : "Requester / channel")] : []),
+    buttons.push(...(dmIds ? [button(panel, "filter-ids", panel.section === "audit" ? "Actor" : "Requester / channel")] : []),
       button(panel, "apply-filters", "Apply", false, 1),
-      button(panel, "clear-filters", "Clear"), button(panel, "back", "Back")));
+      button(panel, "clear-filters", "Clear"), button(panel, "back", back));
   } else if (panel.screen === "confirm") {
     title = panel.proposal?.label ?? "Review change";
     description = [description, selected ? `**${escapeMarkdown(selected.title)}**\n${selected.summary}` : undefined,
@@ -136,11 +139,11 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     const proposed = proposalFields(panel.proposal, selected);
     const pages = Math.max(1, Math.ceil(proposed.length / 5)), page = Math.min(panel.contentPage, pages - 1);
     fields.push(...proposed.slice(page * 5, page * 5 + 5));
-    controls.push(row(button(panel, "commit", panel.proposal?.label ?? "Save", false,
+    buttons.push(button(panel, "commit", panel.proposal?.label ?? "Save", false,
       ["conversations.close", "lanes.abandon", "trusted.remove"].includes(panel.proposal?.action ?? "") ? 4 : 1),
-      button(panel, "cancel", "Cancel")));
-    if (pages > 1) controls.push(row(button(panel, "content-prev", previous, page === 0),
-      button(panel, "content-next", next, page + 1 >= pages)));
+      button(panel, "cancel", "Cancel"));
+    if (pages > 1) buttons.push(button(panel, "content-prev", previous, page === 0),
+      button(panel, "content-next", next, page + 1 >= pages));
   } else if (panel.screen === "guidance") {
     title = "Choose command inputs";
     if (panel.guild === undefined && panel.draft?.entity) {
@@ -155,7 +158,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     if (panel.guild !== undefined && panel.draft?.entity === "channel") controls.push(row({
       type: 8, custom_id: id(panel, "entity-channel"), placeholder: "Choose channel", min_values: 1, max_values: 1,
     }));
-    controls.push(row(button(panel, "back", "Back")));
+    buttons.push(button(panel, "back", back));
   } else if (panel.screen === "detail" || panel.screen === "activity") {
     if (!selected) {
       description = [description, `This ${panel.section === "conversations" ? "conversation" : "item"} is no longer available.`].filter(Boolean).join("\n");
@@ -174,12 +177,12 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
         [{ label: "Summary", value: "detail", default: !activity }, { label: "Activity", value: "activity", default: activity }])));
       const available = actions(panel.section, selected, owner);
       if (available.length) controls.push(row(select(panel, "action", "Actions", available)));
-      if (pages > 1) controls.push(row(button(panel, "content-prev", previous, page === 0),
-        button(panel, "content-next", next, page + 1 >= pages)));
+      if (pages > 1) buttons.push(button(panel, "content-prev", previous, page === 0),
+        button(panel, "content-next", next, page + 1 >= pages));
     }
-    controls.push(row(button(panel, "back", "Back"),
+    buttons.push(button(panel, "back", back),
       ...(selected?.url ? [{ type: 2, style: 5, label: "Source", url: selected.url }] : []),
-      button(panel, "refresh", "Refresh")));
+      button(panel, "refresh", refresh));
   } else if (panel.section === "overview") {
     const overview = records[0];
     description = [description, overview?.summary].filter(Boolean).join("\n");
@@ -194,7 +197,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       `Checked <t:${Math.floor(observation.checkedAt / 1000)}:R>. Runtime readiness is reported separately.`,
     ].filter(Boolean).join("\n"), 900) : "No registration observation yet." });
     fields.push(...contentFields(overview?.fields ?? []));
-    controls.push(row(button(panel, "refresh", "Refresh")));
+    buttons.push(button(panel, "refresh", refresh));
   } else {
     const byId = new Map(records.map(record => [record.id, record]));
     const listed = saved.ids.flatMap(id => { const record = byId.get(id); return record ? [record] : []; });
@@ -207,9 +210,9 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       `No ${labels[panel.section].toLowerCase()}.`].filter(Boolean).join("\n");
     if (visible.length) controls.push(row(select(panel, "item", "Open item",
       visible.map((record, index) => ({ label: short(record.title, 100), value: String(page * 8 + index) })))));
-    controls.push(row(button(panel, "prev", previous, page === 0), button(panel, "next", next, (page + 1) * 8 >= listed.length),
+    buttons.push(button(panel, "prev", previous, page === 0), button(panel, "next", next, (page + 1) * 8 >= listed.length),
       ...(filterOptions(panel.section).length ? [button(panel, "filters", "Filters")] : []),
-      button(panel, "refresh", "Refresh")));
+      button(panel, "refresh", refresh));
     footer = `Page ${page + 1} of ${Math.max(1, Math.ceil(listed.length / 8))}`;
   }
   const footerText = footer || "Helio administration";
@@ -218,7 +221,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
   return { content: "", allowed_mentions: { parse: [] },
     embeds: [{ title, ...(description ? { description: clipReferences(githubReferences(description), descriptionBudget) } : {}), fields: fields.slice(0, 10), footer: { text: footerText },
       ...(panel.screen === "list" && panel.section !== "overview" ? { timestamp: new Date(panel.snapshot).toISOString() } : {}) }],
-    components: controls };
+    components: [...controls, ...(buttons.length ? [row(...buttons)] : [])] };
 }
 
 export function terminal(description: string, panel?: Panel): Message {
@@ -226,6 +229,6 @@ export function terminal(description: string, panel?: Panel): Message {
   const budget = Math.min(1400, 5000 - fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0));
   return { content: "", allowed_mentions: { parse: [] },
     embeds: [{ title: panel?.proposal?.label ?? "Helio", description: short(description, budget), fields, footer: { text: "Helio administration" } }],
-    components: panel ? [row(button(panel, "refresh", "Refresh"),
-      ...(!panel.pending ? [button(panel, "back", "Back")] : []))] : [] };
+    components: panel ? [row(button(panel, "refresh", refresh),
+      ...(!panel.pending ? [button(panel, "back", back)] : []))] : [] };
 }

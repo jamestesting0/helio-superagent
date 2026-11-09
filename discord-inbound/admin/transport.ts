@@ -1,6 +1,6 @@
 import { DiscordAPIError, HTTPError, RateLimitError, RequestMethod, REST, type RouteLike } from "@discordjs/rest";
 
-export type Call = (method: "GET" | "POST" | "PATCH", path: RouteLike, body?: unknown) => Promise<unknown>;
+export type Call = (method: "GET" | "POST" | "PATCH" | "DELETE", path: RouteLike, body?: unknown) => Promise<unknown>;
 
 export class CallError extends Error {
   constructor(readonly status: number | undefined, message: string) {
@@ -25,7 +25,7 @@ export class DiscordTransport {
   }
 
   readonly call: Call = async (method, path, body) => {
-    const methods = { GET: RequestMethod.Get, POST: RequestMethod.Post, PATCH: RequestMethod.Patch };
+    const methods = { GET: RequestMethod.Get, POST: RequestMethod.Post, PATCH: RequestMethod.Patch, DELETE: RequestMethod.Delete };
     try {
       return await this.rest.request({
         fullRoute: path, method: methods[method], body,

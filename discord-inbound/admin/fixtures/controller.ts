@@ -96,9 +96,10 @@ export async function fixture(dm = false) {
     rmSync(home, { recursive: true, force: true });
     if (original === undefined) delete process.env.HELIO_ADMIN_SOCKET; else process.env.HELIO_ADMIN_SOCKET = original;
   });
-  const messages: Record<string, unknown>[] = [], callbacks: Record<string, unknown>[] = [];
+  const messages: Record<string, unknown>[] = [], callbacks: Record<string, unknown>[] = [], deleted: string[] = [];
   const controller = new Controller(panels, async (method, path, body) => {
     if (method === "PATCH") { messages.push(object(body)); return { id: "77777" }; }
+    if (method === "DELETE") deleted.push(path);
     if (path.endsWith("/callback")) callbacks.push(object(body));
     return undefined;
   });
@@ -132,7 +133,7 @@ export async function fixture(dm = false) {
   };
   const click = (verb: string, values: readonly string[] = [], actor = "11111") =>
     controller.handle(event({ custom_id: custom(verb), component_type: 3, values }, actor));
-  return { controller, panels, event, invoke, click, custom, last, messages, callbacks,
+  return { controller, panels, event, invoke, click, custom, last, messages, callbacks, deleted,
     path: join(home, "panels.sqlite"), failReadsAfterMutation: () => { readFailure = true; },
     setRecords: (value: AdminRecord[]) => { records = value; },
     records: () => records, revoke: () => { trusted = ""; }, mutations: () => mutations,

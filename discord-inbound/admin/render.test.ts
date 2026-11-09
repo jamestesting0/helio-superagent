@@ -102,3 +102,43 @@ test.each(["paused", "hibernated"])("unfinished %s lanes still offer verified cl
     expect(available.includes("abandon")).toBe(owner);
   }
 });
+
+test.each(["list", "detail", "activity", "filters", "confirm", "guidance", "pending", "unavailable"] as const)(
+  "%s panels keep all buttons together and use icon navigation in guilds and DMs", screen => {
+    const policy: AdminPolicy = { version: 1, revision: "a".repeat(64), values: { DORI_DISCORD_OWNER_ID: "22222" }, timing: [] };
+    const selected: AdminRecord = { id: "one", title: "Request", summary: "Waiting", state: "waiting_on_helio", revision: "1",
+      fields: Array.from({ length: 8 }, (_, i) => ({ name: `Field ${i}`, value: "Value" })),
+      activity: Array.from({ length: 8 }, (_, i) => ({ title: `Entry ${i}`, text: "Text" })),
+      url: "https://discord.com/channels/99999/44444/77777" };
+    for (const guild of ["99999", undefined]) {
+      const panel: Panel = { id: "a".repeat(24), actor: "22222", ...(guild ? { guild } : {}), channel: "44444",
+        application: "88888", message: "77777", token: "offline", expires: 600000, revision: 1,
+        section: "conversations", positions: { conversations: { ids: ["one"], selected: "one", filters: {}, page: 0 } },
+        screen, contentPage: 0, snapshot: 0,
+        proposal: { action: "conversations.close", target: "one", expected: "1", operation: "op", label: "Close",
+          input: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`value-${i}`, "Value"])) } };
+      const message = render(panel, [selected], policy);
+      const buttonRows = message.components.filter(row => row.components?.some(component => component.type === 2));
+      expect(buttonRows).toHaveLength(1);
+      expect(message.components.length).toBeLessThanOrEqual(5);
+      expect(buttonRows[0]?.components?.length).toBeLessThanOrEqual(5);
+      for (const row of message.components) {
+        if (!row.components?.some(component => component.type === 2)) expect(row.components).toHaveLength(1);
+        for (const component of row.components ?? []) {
+          if (component.custom_id?.endsWith(":refresh") || component.custom_id?.endsWith(":back")) {
+            expect(component.label).toBeUndefined();
+            expect(component.emoji?.name).toBe(component.custom_id.endsWith(":refresh") ? "\uD83D\uDD04" : "\u2B05\uFE0F");
+          }
+        }
+      }
+      if (screen === "detail" || screen === "activity") {
+        expect(buttonRows[0]?.components?.map(component => component.custom_id?.split(":").at(-1) ?? component.label))
+          .toEqual(["content-prev", "content-next", "back", "Source", "refresh"]);
+      }
+      if (screen === "confirm") {
+        expect(buttonRows[0]?.components?.map(component => component.custom_id?.split(":").at(-1)))
+          .toEqual(["commit", "cancel", "content-prev", "content-next"]);
+      }
+    }
+  },
+);

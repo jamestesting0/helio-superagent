@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { CallError, DiscordTransport } from "./transport.ts";
 
-test.each(["lost-response", "server-error"])("administration writes are not retried after %s", async failure => {
+test.each((["PATCH", "DELETE"] as const).flatMap(method =>
+  ["lost-response", "server-error"].map(failure => ({ method, failure })),
+))("administration $method writes are not retried after $failure", async ({ method, failure }) => {
   let requests = 0;
   using transport = new DiscordTransport("bot-secret");
   transport.rest.options.makeRequest = async () => {
@@ -11,12 +13,24 @@ test.each(["lost-response", "server-error"])("administration writes are not retr
   };
   let observed: unknown;
   try {
-    await transport.call("PATCH", "/webhooks/33333333333333333/interaction-secret/messages/@original", { embeds: [] });
+    await transport.call(method, "/webhooks/33333333333333333/interaction-secret/messages/@original",
+      method === "DELETE" ? undefined : { embeds: [] });
   } catch (error) { observed = error; }
   expect(observed).toBeInstanceOf(CallError);
   expect(requests).toBe(1);
   expect(String(observed)).not.toContain("interaction-secret");
   expect(String(observed)).not.toContain("bot-secret");
+});
+
+test("ephemeral response deletion reaches Discord as a bodyless DELETE", async () => {
+  const requests: { method: string | undefined; body: unknown }[] = [];
+  using transport = new DiscordTransport("bot-secret");
+  transport.rest.options.makeRequest = async (_url, options) => {
+    requests.push({ method: options.method, body: options.body });
+    return new Response(null, { status: 204 });
+  };
+  await transport.call("DELETE", "/webhooks/33333333333333333/interaction-secret/messages/@original");
+  expect(requests).toEqual([{ method: "DELETE", body: undefined }]);
 });
 
 test("rate-limited callbacks reject immediately instead of waiting beyond the interaction deadline", async () => {

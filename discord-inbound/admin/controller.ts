@@ -220,7 +220,7 @@ export class Controller {
       await this.panels.serialize(panel.id, async () => {
         if (!this.panels.expired(Date.now()).some(current => current.id === panel.id)) return;
         try {
-          await this.call("PATCH", `/webhooks/${panel.application}/${panel.token}/messages/@original`, terminal("Panel expired. Run /status."));
+          await this.call("DELETE", `/webhooks/${panel.application}/${panel.token}/messages/@original`);
           this.panels.remove(panel.id);
         } catch (error) {
           if (!(error instanceof CallError)) throw error;

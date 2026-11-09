@@ -217,17 +217,20 @@ test.each(["lost", "malformed"])("an uncertain %s response retains read-only rec
   expect(f.mutations()).toBe(1);
 });
 
-test("expiring a panel removes its controls without changing domain state", async () => {
+test("expiring a panel deletes its ephemeral response without changing domain state", async () => {
   const f = await fixture();
   await f.invoke();
   const identity = f.custom("next").split(":")[1] ?? "";
   const panel = f.panels.get(identity, Date.now());
   panel.expires = 0;
   f.panels.save(panel, false);
+  const rendered = f.messages.length;
   await f.controller.expire();
-  expect(f.last().components).toEqual([]);
-  expect(JSON.stringify(f.last())).toContain("Panel expired");
+  expect(f.deleted).toEqual([`/webhooks/${panel.application}/${panel.token}/messages/@original`]);
+  expect(f.messages.length).toBe(rendered);
+  expect(f.panels.expired(Date.now())).toEqual([]);
   expect(f.mutations()).toBe(0);
+  expect(f.configurationChanges()).toBe(0);
 });
 
 test("the trust command previews an owner grant and preserves pending application feedback", async () => {

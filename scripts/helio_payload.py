@@ -62,7 +62,7 @@ INBOUND_FILES = (
     "ack.ts", "blacklist.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "package.json", "recovery.ts",
     "patches/agent-messenger@2.40.0.patch",
     # owner-side controller and isolated administration bridge
-    "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts",
+    "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts", "admin/expiry.test.ts",
     "admin/editor.ts", "admin/interaction.ts", "admin/lane-session.ts", "admin/main.ts", "admin/manifest.ts", "admin/panels.ts", "admin/panel-read.ts",
     "admin/forms.ts", "admin/forms.test.ts", "admin/panel-output.ts", "admin/display-fields.ts",
     "admin/records.test.ts", "admin/references.test.ts",
