@@ -12,6 +12,15 @@ Its process-bound intake receipt and Oracle observations have timestamps; neithe
 current gateway connectivity. Monitor process presence does not establish that
 a subscription is unpaused. Verify those separately when they matter.
 
+For Oracle, report `gateway_health` at `observed_at`, alongside the observation's
+age. `connected` means a gateway TCP connection was observed then; `no_connection`
+means none was observed then; absent or `unavailable` means the check supplied no
+connection evidence. `current_connectivity_verified=false` means doctor performed
+no live probe, not that Oracle failed. Keep login time separate from observation
+time: an older login can belong to the same still-running process. When asked
+about current connectivity, run the returned `helio release inspect` command and
+report its fresh evidence; do not ask the owner to run it or restart EloBot.
+
 Run `helio recovery scan`. Read the report and every page using `helio recovery show REPORT --offset N`. It contains original message IDs/timestamps, current dispositions, earlier send receipts, lane pointers and a timestamped GitHub snapshot. `github_limited` means the recent list is incomplete: query the specific target. Unavailable dependencies remain unavailable; report them instead of guessing.
 
 For each recovered message:
@@ -49,4 +58,4 @@ dori reconcile apply --manifest /tmp/dori-repair.json
 
 The preview verifies current issue metadata, exact records, briefs, panes and Git resources. A deployment source inspector may bind an original request only after checking its current top-level author, channel policy and message identity. Helio exposes that read-only proof as `helio recovery source discord:CHANNEL:MESSAGE --job issue-N`; it grants historical job identity only, never fresh action authority. Lane names and quoted authorization are insufficient. Preserve already closed records, live or uncertain workers, dirty or unpushed work, unreadable resources and missing completion evidence. A closed issue or merged PR does not independently complete a worker. Legacy lanes without verified jobs stay awake until binding is established.
 
-Send the greeting once receiving status is known, reporting ingestion, recovery and dependency evidence separately. A failed queue read or incomplete recovery remains explicit; neither delays receiving new work nor proves intake is down. For example: "Helio is ready for new requests. Recovery: 1 needs review. Oracle was observed running at 19:38 UTC; login observed at 09:20 UTC, current connectivity unverified. Recorded lane launch failure from 09:06 UTC remains open for inspection." Use actual dates/times, ages and monitor evidence, never these example values. Doctor's saved Oracle observation is enough for this evidence line; inspect a dependency afresh when an operation needs current facts. No extra live Oracle inspection is required merely to greet.
+Send the greeting once receiving status is known, reporting ingestion, recovery and dependency evidence separately. A failed queue read or incomplete recovery remains explicit; neither delays receiving new work nor proves intake is down. For example: "Helio is ready for new requests. Recovery: 1 needs review. Oracle was observed running with a gateway connection at 19:38 UTC (checked 30 seconds ago); login observed at 09:20 UTC. Recorded lane launch failure from 09:06 UTC remains open for inspection." Use actual dates/times, ages and monitor evidence, never these example values. Doctor's saved Oracle observation is enough for this evidence line; inspect a dependency afresh when an operation needs current facts. No extra live Oracle inspection is required merely to greet.

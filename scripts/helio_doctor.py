@@ -154,11 +154,13 @@ def snapshot(home: Path, *, runtime_home: Path | None = None, processes: list[di
             raw = json.loads(observation[0]["data"])
             if not isinstance(raw, dict):
                 raise ValueError("expected an observation object")
-            oracle = {key: raw.get(key) for key in ("phase", "running_revision", "observed_at", "login_observed_at", "crash_loop")}
+            oracle = {key: raw.get(key) for key in ("phase", "running_revision", "observed_at", "login_observed_at",
+                                                   "login_evidence", "gateway_health", "crash_loop")}
         except (ValueError, TypeError) as error:
             errors.append(f"Oracle observation: {type(error).__name__}")
     oracle["current_connectivity_verified"] = False
     oracle["basis"] = "saved observation; no independent connectivity probe"
+    oracle["inspect"] = "helio release inspect"
     oracle["observation_age_s"] = health["age_seconds"](oracle.get("observed_at"), now)
     oracle["login_age_s"] = health["age_seconds"](oracle.get("login_observed_at"), now)
     try:

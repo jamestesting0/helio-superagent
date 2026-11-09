@@ -70,6 +70,16 @@ class RetentionCoverage(Fixture):
 
 
 class RetentionRules(Fixture):
+    def test_completed_and_uncertain_followup_receipts_survive_retention(self):
+        with self.db("issue-updates.sqlite") as db, db:
+            db.execute("""INSERT INTO followup_creations
+                SELECT key || '-uncertain',repo,previous,channel,message || '3',fingerprint,1,NULL
+                FROM followup_creations""")
+            before = db.execute("SELECT * FROM followup_creations ORDER BY key").fetchall()
+        HK["retention"](self.state, NOW + 400 * DAY, apply=True)
+        with self.db("issue-updates.sqlite") as db:
+            self.assertEqual(db.execute("SELECT * FROM followup_creations ORDER BY key").fetchall(), before)
+
     def test_ignored_receipts_keep_unfinished_cleanup_and_pending_payloads(self):
         with self.db("discord-delivery.sqlite") as db, db:
             for ident, cleaned, payload in [("1", 1, None), ("2", 0, None), ("3", 1, "pending")]:

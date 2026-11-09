@@ -50,6 +50,18 @@ def build_state(state: Path) -> None:
         fake = lambda argv, stdin=None: json.dumps([] if "comments" in argv[2] else body)
         issues["Issues"]("o/r", state, command=fake).update(1, {"projection": "x"})
         issues["Issues"]("o/r", state, command=fake).log_milestones(1, [])
+        created = {"state": "closed", "body": ""}
+        def followup_command(argv, stdin=None):
+            if argv[:3] == ["gh", "api", "user"]:
+                return "helio"
+            if "--slurp" in argv:
+                return "[]"
+            if stdin:
+                created.update(json.loads(stdin), number=2)
+            return json.dumps(created)
+        followup = runpy.run_path(str(SCRIPTS / "helio_issue_followup.py"))
+        followup["create"](issues["Issues"]("o/r", state, command=followup_command),
+                           followup["Request"](1, "1", "2", "Follow-up", "New scope", ("bug",)))
         work = runpy.run_path(str(SCRIPTS / "helio-work.py"), run_name="helio_work_fixture")
         work["connect"]().close()
 

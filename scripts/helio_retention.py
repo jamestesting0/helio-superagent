@@ -99,6 +99,8 @@ RULES: tuple[Rule, ...] = (
           f"UPDATE operations SET after_body='',change='' WHERE completed IN (1,2) AND change != '' AND completed_at < :now_s - {RAW_DAYS * DAY_S}",
           f"DELETE FROM operations WHERE completed IN (1,2) AND completed_at < :now_s - {DERIVED_DAYS * DAY_S}")),
     Rule("issue-updates.sqlite", "milestones", "receipt", "Milestone keys only; they prevent duplicate progress comments."),
+    Rule("issue-updates.sqlite", "followup_creations", "receipt",
+         "Creation identities prevent duplicate follow-up issues; confirmed and uncertain outcomes stay recoverable."),
     Rule("issue-updates.sqlite", "meta", "singleton", "The milestone baseline."),
     Rule("decisions.sqlite", "decisions", "derived", "Ended guidance is kept 180 days; active guidance stays.",
          (f"DELETE FROM decisions WHERE status != 'active' AND coalesce(invalid_at, created_at) < :now_s - {DERIVED_DAYS * DAY_S}",)),

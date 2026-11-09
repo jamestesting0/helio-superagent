@@ -68,6 +68,22 @@ class DoctorTests(unittest.TestCase):
         self.processes.pop()
         self.assertEqual(self.snapshot()["ingestion"]["pids"], [])
 
+    def test_oracle_gateway_evidence_keeps_its_observation_time_without_claiming_a_live_probe(self):
+        observed = "2026-11-09T16:03:00+00:00"
+        observer = runpy.run_path(str(ROOT / "scripts/helio_observations.py"))
+        for gateway in ("connected", "no_connection", "unavailable", None):
+            with self.subTest(gateway=gateway):
+                with closing(sqlite3.connect(self.state / "discord-conversations.sqlite")) as db:
+                    observer["poll"](db, lambda: {"phase": "running", "gateway_health": gateway,
+                                                  "observed_at": observed, "login_evidence": "observed"})
+                with patch("time.time", return_value=1794240200):
+                    oracle = self.snapshot()["dependencies"]["oracle"]
+                self.assertEqual(oracle["gateway_health"], gateway)
+                self.assertEqual(oracle["observed_at"], observed)
+                self.assertEqual(oracle["observation_age_s"], 20)
+                self.assertEqual(oracle["login_evidence"], "observed")
+                self.assertFalse(oracle["current_connectivity_verified"])
+
     def test_installed_dori_monitors_are_recognized_and_lane_questions_do_not_mask_the_lead_watcher(self):
         for pid, action in enumerate(("watch", "dead-panes", "guard", "freshness"), 20):
             self.processes.append({"pid": pid, "argv": ["bun", "/home/james/.bun/bin/dori", action], "started_at": 0})
