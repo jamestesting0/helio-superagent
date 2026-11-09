@@ -17,7 +17,7 @@ PROFILES = ("isolated", "owner")
 EXECUTABLES = ("start", "inbound", "ack", "context")
 HELPERS = ("knowledge-setup.py", "helio-sessions.py", "browser-env", "browser-env.test.ts",
            "reply.ts", "reply.test.ts", "evidence.ts", "evidence.test.ts", "thread-target.ts", "thread-target.test.ts")
-RUNBOOKS = ("discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md", "autofix-workflow.md",
+RUNBOOKS = ("github-writing-workflow.md", "discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md", "autofix-workflow.md",
             "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md")
 PROFILE_RUNBOOKS = ("beta-maintenance-workflow.md", "oracle-restart-workflow.md")
 # Skills passed to the lead and every lane with `omo --skill`; installed under ~/.dori/elobot/skills.
@@ -173,6 +173,7 @@ def documents(profile: str, mapping: dict[str, str]) -> dict[str, bytes]:
         "work-policy.md": render_text([AGENT / "prompts/policy.md", overlay / "policy.md"], mapping),
         "discord-qa-workflow.md": render_text([AGENT / "runbooks/discord-qa-workflow.md"], mapping),
         "autofix-workflow.md": render_text([AGENT / "runbooks/autofix-workflow.md"], mapping),
+        "github-writing-workflow.md": render_text([AGENT / "runbooks/github-writing-workflow.md"], mapping),
         "issue-plan-workflow.md": render_text([AGENT / "runbooks/issue-plan-workflow.md"], mapping),
         "decisions-workflow.md": render_text([AGENT / "runbooks/decisions-workflow.md"], mapping),
         "issue-truth-workflow.md": render_text([AGENT / "runbooks/issue-truth-workflow.md"], mapping),

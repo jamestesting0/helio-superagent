@@ -22,6 +22,9 @@ from typing import Final
 DEFAULT_DENY: Final = ("requirements*.txt,pyproject.toml,.github/**,database_models/**,"
                       "common/tokens/**,**/migrations/**,main.py,beta.py,watchdog.py,"
                       "scripts/**,models/**,assets/**,*.env*")
+POSTS = runpy.run_path(str(Path(__file__).with_name("helio_github_posts.py")))
+PUBLICATION = runpy.run_path(str(Path(__file__).with_name("helio_pr_publication.py")))
+ISSUES = runpy.run_path(str(Path(__file__).with_name("helio_issues.py")))
 RUNNER: Final = """
 import json, pathlib, sys, unittest
 root, output, *paths = sys.argv[1:]
@@ -105,10 +108,10 @@ def execute(args: argparse.Namespace) -> str:
         pulls = json.loads(run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--limit", "10000",
                                "--json", "url,headRefName,body,title,closingIssuesReferences,labels"], project))
         existing = next((p["url"] for p in pulls if p["headRefName"] == branch), None)
-        if args.command == "submit" and existing:
+        if args.command == "submit" and existing and not args.report_file and not args.adopt_body:
             return f"AUTOFIX_PR {existing}"
         issue = json.loads(run(["gh", "issue", "view", str(args.issue), "--repo", repo,
-                               "--json", "state,labels"], project))
+                               "--json", "state,labels,body,comments"], project))
         if issue["state"] != "OPEN" or "bug" not in {label["name"] for label in issue["labels"]}:
             raise Refused(gate, "issue must be open and labelled bug")
         reference = re.compile(rf"(?:{re.escape(repo)})?#0*{args.issue}\b|"
@@ -164,12 +167,13 @@ def execute(args: argparse.Namespace) -> str:
         before, after, full = proof(project, head, tests)
         gate = "rate"
         count = sum(any(label["name"] == "helio-autofix" for label in p["labels"]) for p in pulls)
-        if count >= int(os.environ.get("HELIO_AUTOFIX_MAX_OPEN", "3")):
+        if not existing and count >= int(os.environ.get("HELIO_AUTOFIX_MAX_OPEN", "3")):
             raise Refused(gate, f"open helio-autofix PR cap reached ({count})")
         if args.command == "check":
             return "AUTOFIX_OK"
         gate = "remote"
-        summary = args.summary_file.read_text().strip()
+        summary = (args.report_file or args.summary_file).read_text()
+        author = POSTS["report"](summary, args.report_file is not None)
         if not summary:
             raise Refused(gate, "summary file must describe the root cause and fix")
         remote = run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"], project)
@@ -181,14 +185,15 @@ def execute(args: argparse.Namespace) -> str:
         for name in ("helio-autofix", "needs-owner-review"):
             if name not in {label["name"] for label in labels}:
                 run(["gh", "label", "create", name, "--repo", repo], project)
-        with tempfile.TemporaryDirectory(prefix="helio-autofix-body-") as temporary:
-            body = Path(temporary) / "body.md"
-            body.write_text(f"Fixes #{args.issue}\n\n{summary}\n\n"
-                            f"Fail before: {before}\nPass after: {after}\nFull unit suite: {full}\n\n"
-                            f"Gates passed: issue, branch, size ({lines} lines / {files} files), paths, proof, rate, remote.\n\n"
-                            "Automatic fix from a report; review before merge.\n")
-            url = run(["gh", "pr", "create", "--repo", repo, "--base", "main", "--head", branch,
-                       "--title", f"Fix #{args.issue}", "--body-file", str(body), "--label", "helio-autofix"], project)
+        body = POSTS["pr_body"](args.issue, None, author, (), full.run,
+                               extra_checks=(("Regression before fix", f"Tests: {before.run}; failures: {before.failures}; errors: {before.errors}"),
+                                             ("Regression after fix", f"Tests: {after.run}; all passed")))
+        authority = {"kind": "autofix", "paths": paths, "lines": lines, "files": files, "deny": DEFAULT_DENY}
+        state = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
+        store = ISSUES["Issues"](repo, state, command=lambda argv, _stdin=None: run(argv, project))
+        url = PUBLICATION["publish"](store, args.issue, branch, head, body, f"Fix #{args.issue}", authority,
+                                     ISSUES["digest"](ISSUES["split"](issue.get("body") or "")[0]),
+                                     existing, args.adopt_body, ("helio-autofix",))
         return f"AUTOFIX_PR {url}"
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
         raise Refused(gate, str(error).replace("\n", " ")) from error
@@ -200,7 +205,10 @@ def main() -> int:
     for command in ("check", "submit"):
         sub = commands.add_parser(command)
         sub.add_argument("--issue", type=int, required=True)
-        sub.add_argument("--summary-file", type=Path, required=command == "submit")
+        reports = sub.add_mutually_exclusive_group(required=command == "submit")
+        reports.add_argument("--summary-file", type=Path)
+        reports.add_argument("--report-file", type=Path)
+        sub.add_argument("--adopt-body")
     args = parser.parse_args()
     if args.issue < 1:
         parser.error("--issue must be positive")

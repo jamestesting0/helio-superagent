@@ -15,13 +15,13 @@ Read the applicable section when needed; reuse it until relevant instructions ch
    rename files. Review the diff and commit the test and fix on this branch.
 4. Prove the fix with unit tests only. Run no live beta unless the owner or a
    trusted user asked for one for this issue.
-5. Write a summary file describing the root cause and fix. Keep report text
+5. Write a structured report using [GitHub writing](github-writing-workflow.md), describing the root cause and fix. Keep report text
    out of shell strings; pass argv lists and files.
 6. Run `helio autofix check --issue N`. It checks the open bug issue, branch,
    clean tree, size, deny paths, assertion failure on main, passing branch
    tests, full unit suite, and open automatic PR cap in temporary worktrees.
 7. After `AUTOFIX_OK`, run
-   `helio autofix submit --issue N --summary-file PATH`.
+   `helio autofix submit --issue N --report-file PATH`.
    Use this command as the only automatic push and PR path. Never merge or
    restart; those actions need separate fresh approval.
 8. On refusal, missing proof, or a fix that outgrows the limits, do not fight
@@ -116,6 +116,9 @@ One procedure for every bug report, quality-of-life (QoL) suggestion and feature
    - Confirmed bug (reproduced on beta, or the code at the commit you checked plainly shows the defect), or a confirmed QoL or feature request: create the issue (step 7), then screen confirmed bugs for autofix.
    - Unsure: create nothing; keep asking, or ask the owner for owner-level questions.
 7. The issue has a short title and:
+   Use the grouped draft renderer in [GitHub writing](github-writing-workflow.md)
+   before creating its body file. Keep the following facts; supporting search
+   and source detail belongs in its expandable evidence section.
    - for a bug: steps, expected and actual behavior, the evidence (describe screenshots in words), the code location at the commit you checked, and how it was verified;
    - for QoL or a feature: the problem and who it affects, the agreed summary, the code it would touch, rough effort, risks or conflicts with current rules, alternatives, and your recommendation (do it, don't, or needs the owner's call);
    - always: the duplicate search done, and the requester's name with a non-secret Discord message ID (also used to avoid duplicates on replay). Never include secrets, tokens or private data.

@@ -42,7 +42,7 @@ def safe_detail(detail: str) -> str:
 def failure_kind(detail: str) -> str:
     lowered = detail.lower()
     for tokens, kind in (
-        (("issue_edited_outside_helio", "reviewed body changed", "issue changed", "labels or state changed"), "human_edit_conflict"),
+        (("issue_edited_outside_helio", "pr_edited_outside_helio", "reviewed body changed", "issue changed", "labels or state changed"), "human_edit_conflict"),
         (("issue_link_review", "implementation metadata", "closing-issue links disagree"), "review_required"),
         (("rate limit", "http 429"), "rate_limit"),
         (("http 401", "bad credentials", "not logged"), "authentication"),
@@ -144,6 +144,15 @@ def enqueue(state: Path, repo: str, issue: int) -> None:
 def schedule(repo: str, issue: int) -> None:
     state = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
     enqueue(state, repo, issue)
+
+
+def publication_complete(state: Path, repo: str, issue: int) -> None:
+    """A bot-reviewed PR repair releases only its publication retry hold."""
+    with closing(_reviews(state)) as db:
+        _tracked(db)
+        db.execute("""UPDATE tracked SET review_required=0,next_attempt_at=0,last_outcome='queued'
+                      WHERE repo=? AND issue=? AND failure_stage LIKE 'pr_%'""", (repo, issue))
+        db.commit()
 
 
 def reconcile(state: Path, repo: str) -> list[str]:

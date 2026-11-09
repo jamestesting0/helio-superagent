@@ -78,6 +78,7 @@ class OriginalDocumentationMigrationTests(unittest.TestCase):
             new_runbook = b"beta maintenance runbook"
             with redirect_stdout(StringIO()):
                 DOCS["organize"](base, True, {"beta-maintenance-workflow.md": new_runbook,
+                                             "github-writing-workflow.md": b"github writing runbook",
                                              "autofix-workflow.md": b"automatic fix runbook",
                                              "issue-plan-workflow.md": b"issue plan runbook",
                                              "decisions-workflow.md": b"decision runbook",

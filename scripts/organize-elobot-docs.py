@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INDEX = ROOT / "agent/runbooks/README.md"
 RUNBOOKS = (
+    "github-writing-workflow.md",
     "discord-qa-workflow.md",
     "beta-maintenance-workflow.md",
     "oracle-restart-workflow.md",
@@ -18,7 +19,7 @@ RUNBOOKS = (
     "issue-truth-workflow.md",
     "startup-recovery-workflow.md",
 )
-NEW_RUNBOOKS = ("beta-maintenance-workflow.md", "autofix-workflow.md", "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md")
+NEW_RUNBOOKS = ("github-writing-workflow.md", "beta-maintenance-workflow.md", "autofix-workflow.md", "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md")
 
 
 def validate(base: Path) -> None:

@@ -235,7 +235,7 @@ class MonitorReloadTests(unittest.TestCase):
                 script.write_text(source)
                 (self.home / "helio_discord_text.py").write_text((ROOT / "scripts/helio_discord_text.py").read_text())
                 if name == "followups":
-                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py"):
+                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py", "helio_github_posts.py", "helio_github_body.py", "helio_issue_format.py", "helio_pr_publication.py", "helio_pr_authority.py", "helio_pr_finalize.py"):
                         (self.home / helper).write_text((ROOT / "scripts" / helper).read_text())
                     self.executable("dori", "#!/bin/sh\necho '[]'\n")
                 argv = [sys.executable, str(script)]

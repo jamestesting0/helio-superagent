@@ -128,8 +128,8 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
    records that scope/source without another permission round. Mechanical details need no approval.
 5. Write a result file, one entry per Scope row and per Done-when item, in order:
    `{"scope": [{"status": "met", "evidence": "test_name"}], "done_when": [...]}` (status `met` or
-   `deviation`), and a summary file. Then run
-   `helio pr submit --issue N --result-file RESULT.json --summary-file SUMMARY.md`.
+   `deviation`), and a report from [GitHub writing](github-writing-workflow.md). Then run
+   `helio pr submit --issue N --result-file RESULT.json --report-file REPORT.json`.
    Run focused checks while implementing; `pr submit` owns its full-suite integration gate.
    Do not immediately repeat a passing full suite. Submission discovers the matching task worktree
    independently of the shared checkout and interpreter. Named lane branches are valid:

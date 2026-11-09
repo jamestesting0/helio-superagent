@@ -28,6 +28,9 @@ Installed runbooks live in `~/.dori/elobot/docs/`.
   [owner](../profiles/owner/runbooks/oracle-restart-workflow.md),
   [isolated](../profiles/isolated/runbooks/oracle-restart-workflow.md).
 
+- [GitHub writing](github-writing-workflow.md) covers grouped issue/PR drafts,
+  named verification evidence and bot-owned publication recovery.
+
 Installed copies keep the old root runbook paths as relative symlinks for
 existing prompts, notes and external references. Edit the files in this repository,
 not the installed copies. `setup-prompt.md` and `work-policy.md` stay at the

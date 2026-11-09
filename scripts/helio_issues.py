@@ -8,55 +8,28 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import runpy
 import sqlite3
 import subprocess
 import sys
 import time
-from typing import TypedDict
 
-START = "<!-- helio-status:start -->"
-END = "<!-- helio-status:end -->"
-HASH = re.compile(r"\n?<!-- helio-body-sha256:([0-9a-f]{64}) -->\s*\Z")
+FORMAT = runpy.run_path(str(Path(__file__).with_name("helio_issue_format.py")))
+START, END, HASH = (FORMAT[key] for key in ("START", "END", "HASH"))
+split, render, without_timestamp, only_status_refreshed = (FORMAT[key] for key in (
+    "split", "render", "without_timestamp", "only_status_refreshed"))
 SYNC = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
 
 
-class Refused(Exception):
+class Refused(RuntimeError):
     """An issue edit cannot safely proceed."""
     def __init__(self, message: str, stage: str = "issue_review", uncertain: bool = False) -> None:
         super().__init__(message)
         self.stage = stage
         self.uncertain = uncertain
 
-class StatusBlock(TypedDict):
-    status: str
-    note: str
-    observed: str
-    summary: str
-    links: list[str]
-
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
-
-
-def split(body: str) -> tuple[str, str | None]:
-    marker = HASH.search(body)
-    unsigned = body[:marker.start()] if marker else body
-    content = unsigned.split(END, 1)[1].lstrip("\n") if unsigned.startswith(START) and END in unsigned else unsigned
-    return content.rstrip(), marker.group(1) if marker else None
-
-
-def render(content: str, block: StatusBlock) -> str:
-    note = " ".join(block["note"].split())
-    summary = " ".join(block["summary"].split())
-    body = f"{START}\n**Status:** {block['status']}\n**In short:** {summary}\n**Links:** {' · '.join(block['links'])}\n**Updated:** {block['observed']}" + (f" · {note}" if note else "") + f"\n{END}\n\n{content.rstrip()}"
-    return body + f"\n<!-- helio-body-sha256:{digest(body)} -->"
-
-
-def without_timestamp(body: str) -> str:
-    unsigned = body[:HASH.search(body).start()] if HASH.search(body) else body
-    return re.sub(r"(?m)^\*\*Updated:\*\*.*$", "", unsigned)
 
 
 def metadata(issue: dict) -> dict:
@@ -71,12 +44,6 @@ def intended_metadata(change: dict) -> dict:
     if change.get("close"):
         intended.update(state="closed", state_reason=change["close"])
     return intended
-
-
-def only_status_refreshed(current: str, written: str) -> bool:
-    marker = HASH.search(current)
-    content, recorded = split(current)
-    return marker is not None and digest(current[:marker.start()]) == recorded and content == split(written)[0]
 
 
 def run(argv: list[str], stdin: str | None = None) -> str:
@@ -168,7 +135,8 @@ class Issues:
             for pending, pending_change in db.execute(
                     "SELECT id,change FROM operations WHERE repo=? AND issue=? AND completed=0 ORDER BY rowid",
                     (self.repo, issue)).fetchall():
-                self._finish(db, issue, pending, json.loads(pending_change))
+                if json.loads(pending_change).get("kind") != "pr":
+                    self._finish(db, issue, pending, json.loads(pending_change))
             current = self.get(issue)
             body = current.get("body") or ""
             # A plain status sync is tied to the description it starts from; an intent (note, body, close, labels) is not,
@@ -185,6 +153,8 @@ class Issues:
                     raise Refused("Issue changed after the previous update; read and adopt its current body.")
                 return operation
             content, recorded = split(body)
+            if not FORMAT["valid"](body) and (change.get("adopt") != digest(body) or change.get("body") is None):
+                raise Refused(f"ISSUE_EDITED_OUTSIDE_HELIO reviewed_sha256={digest(body)}; review ambiguous body markers.")
             unsigned = body[:HASH.search(body).start()] if HASH.search(body) else body
             expected = change.get("adopt")
             if (recorded and digest(unsigned) != recorded) or (not recorded and change.get("body") is not None):
@@ -202,7 +172,8 @@ class Issues:
             status += " · " + change.get("projection", "implementation/live state unverified")
             after = render(content, {"status": status, "note": change.get("note", ""), "observed": observed,
                                     "summary": change.get("summary") or current.get("title") or "See current scope below.",
-                                    "links": change.get("links") or [f"https://github.com/{self.repo}/issues/{issue}"]})
+                                    "links": change.get("links") or [f"https://github.com/{self.repo}/issues/{issue}"],
+                                    "delivery": change.get("delivery", [])})
             if not intent and recorded and without_timestamp(after) == without_timestamp(body):
                 return operation
             db.execute("INSERT INTO operations(id,repo,issue,before_body,after_body,change,before_meta) VALUES (?,?,?,?,?,?,?)",
@@ -217,6 +188,20 @@ class Issues:
                 raise Refused("Unknown operation.")
             return row[0], self._finish(db, row[0], operation, json.loads(row[1]) if row[2] == 0 else {})
 
+    def resource(self, operation: str) -> str:
+        with self.operations() as db:
+            row = db.execute("SELECT change FROM operations WHERE id=? AND repo=?", (operation, self.repo)).fetchone()
+            return json.loads(row[0]).get("kind", "issue") if row and row[0] else "issue"
+
+    def publications(self, issue: int) -> None:
+        """Finish pending publication work in the bot's normal reconciliation cycle."""
+        with self.operations() as db:
+            for operation, raw in db.execute("SELECT id,change FROM operations WHERE repo=? AND issue=? AND completed=0 ORDER BY rowid",
+                                              (self.repo, issue)).fetchall():
+                change = json.loads(raw)
+                if change.get("kind") == "pr":
+                    self._finish(db, issue, operation, change)
+
     def cancel(self, operation: str) -> None:
         """Waits for any update in flight, so a cancel is never reported for an operation that then completes."""
         with self.operations() as db:
@@ -229,6 +214,10 @@ class Issues:
             db.commit()
 
     def _finish(self, db: sqlite3.Connection, issue: int, operation: str, change: dict) -> str:
+        if change.get("kind") == "pr":
+            publication = runpy.run_path(str(Path(__file__).with_name("helio_pr_publication.py")))
+            publication["finish"](self, db, operation, change)
+            return operation
         before, after, written, commented, completed, before_meta = db.execute(
             "SELECT before_body,after_body,written,commented,completed,before_meta FROM operations WHERE id=?", (operation,)).fetchone()
         if completed == 2:
@@ -259,7 +248,7 @@ class Issues:
             comments = json.loads(self.command(["gh", "api", "--paginate", f"repos/{self.repo}/issues/{issue}/comments", "--slurp"]))
             seen = any(marker in (comment.get("body") or "") for page in comments for comment in page)
             if not seen:
-                text = f"**Issue updated:** {change['note']}\n<!-- helio-issue-log -->\n{marker}"
+                text = FORMAT["POSTS"]["update_note"](change["note"]) + f"\n<!-- helio-issue-log -->\n{marker}"
                 self.command(["gh", "api", f"repos/{self.repo}/issues/{issue}/comments", "--method", "POST", "--input", "-"], json.dumps({"body": text}))
             db.execute("UPDATE operations SET commented=1 WHERE id=?", (operation,));db.commit()
         db.execute("UPDATE operations SET completed=1,completed_at=? WHERE id=?", (int(time.time()), operation));db.commit()

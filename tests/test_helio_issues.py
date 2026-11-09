@@ -1,4 +1,5 @@
 """Real operation storage protects issue edits and resumes notification failures."""
+import datetime
 import json
 import os
 from pathlib import Path
@@ -323,6 +324,49 @@ class IssueTests(unittest.TestCase):
         self.assertEqual(self.body, "Human request")
         self.gh.update(4, {"body": "Changed scope", "adopt": M["digest"](self.body), "note": "Loss cap is -30"})
         self.assertIn("Loss cap is -30", self.comments[0]["body"])
+
+    def test_update_note_has_one_owned_prefix_for_legacy_caller_notes(self):
+        self.gh.update(4, {"body": "Clear scope", "adopt": M["digest"](self.body),
+                           "note": "Issue updated: clarified the timestamp."})
+        self.assertEqual(self.comments[0]["body"].splitlines()[0],
+                         "**Issue updated:** clarified the timestamp.")
+
+    def test_version_two_issue_updates_do_not_repeat_native_state_or_the_title(self):
+        draft = "<!-- helio-issue-format:2 -->\n## Summary\nClear scope."
+        self.gh.update(4, {"body": draft, "adopt": M["digest"](self.body), "note": "Clarified scope",
+                           "delivery": ["PR #6 merged; checks passed"], "projection": "CLOSED: COMPLETED"})
+        self.assertIn("**Delivery:** PR #6 merged; checks passed", self.body)
+        self.assertNotIn("**Status:**", self.body)
+        self.assertNotIn("**In short:**", self.body)
+        self.assertNotIn("**Updated:**", self.body)
+
+    def test_human_updated_lines_are_not_mistaken_for_timestamp_only_sync_noise(self):
+        self.gh.update(4, {"body": "Scope\n**Updated:** first decision", "adopt": M["digest"](self.body), "note": "First decision"})
+        self.gh.update(4, {"body": "Scope\n**Updated:** corrected decision", "adopt": M["digest"](self.body), "note": "Corrected decision"})
+        self.assertIn("**Updated:** corrected decision", self.body)
+        self.assertEqual(len(self.comments), 2)
+
+    def test_version_two_sync_does_not_rewrite_only_to_refresh_its_snapshot_clock(self):
+        change = {"body": "<!-- helio-issue-format:2 -->\n## Summary\nClear scope.",
+                  "adopt": M["digest"](self.body), "note": "Clarified scope", "delivery": ["PR #6 merged"]}
+        clock = unittest.mock.Mock()
+        clock.datetime.now.side_effect = [datetime.datetime(2026, 11, 9, tzinfo=datetime.timezone.utc),
+                                          datetime.datetime(2026, 11, 10, tzinfo=datetime.timezone.utc)]
+        clock.timezone.utc = datetime.timezone.utc
+        with patch.dict(self.gh.update.__globals__, {"datetime": clock}):
+            self.gh.update(4, change)
+            before = self.body
+            self.gh.update(4, {"delivery": ["PR #6 merged"]})
+        self.assertEqual(self.body, before)
+        self.assertEqual(len(self.comments), 1)
+
+    def test_ambiguous_metadata_is_preserved_for_bot_review_instead_of_being_nested(self):
+        self.gh.update(4, {"body": "Reviewed scope", "adopt": M["digest"](self.body), "note": "Clarified scope"})
+        self.body += "\nA human added an important requirement after the signature."
+        before = self.body
+        with self.assertRaisesRegex(M["Refused"], "ambiguous body markers"):
+            self.gh.update(4, {})
+        self.assertEqual(self.body, before)
 
     def test_a_later_change_first_finishes_an_interrupted_update(self):
         note = {"body": "Keep the wording", "adopt": M["digest"](self.body), "note": "Owner keeps the wording"}

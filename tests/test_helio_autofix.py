@@ -17,7 +17,7 @@ class Regression(unittest.TestCase):
         self.assertEqual(value(), 2)
 """
 FAKE_GH = """#!{python}
-import json, os, pathlib, sys
+import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 root = pathlib.Path(os.environ["FAKE_GH_ROOT"])
 with (root / "calls").open("a") as output:
@@ -25,8 +25,14 @@ with (root / "calls").open("a") as output:
 data = json.loads((root / "github.json").read_text())
 if args[:2] == ["issue", "view"]:
     print(json.dumps(data["issue"]))
+elif args[0] == "api" and "/git/ref/heads/" in args[1]:
+    print(subprocess.run(["git", "rev-parse", "HEAD"], cwd=os.environ["HELIO_PROJECT"], check=True, capture_output=True, text=True).stdout.strip())
 elif args[:2] == ["pr", "list"]:
-    print(json.dumps(data["pulls"]))
+    published = json.loads((root / "published").read_text()) if (root / "published").exists() else []
+    pulls = data["pulls"] + published
+    if "--head" in args:
+        pulls = [p for p in pulls if p["headRefName"] == args[args.index("--head") + 1]]
+    print(json.dumps(pulls))
 elif args[:2] == ["label", "list"]:
     print(json.dumps(data["labels"]))
 elif args[:2] == ["label", "create"]:
@@ -34,7 +40,19 @@ elif args[:2] == ["label", "create"]:
     (root / "github.json").write_text(json.dumps(data))
 elif args[:2] == ["pr", "create"]:
     (root / "body").write_text(pathlib.Path(args[args.index("--body-file") + 1]).read_text())
+    (root / "published").write_text(json.dumps([{{"url": "https://github.com/o/r/pull/8", "headRefName": args[args.index("--head") + 1],
+                                               "body": (root / "body").read_text(), "title": "Fix", "closingIssuesReferences": [{{"number": 7}}],
+                                               "labels": [{{"name": "helio-autofix"}}]}}]))
     print("https://github.com/o/r/pull/8")
+elif args[:2] == ["pr", "view"]:
+    branch = "helio/autofix-7"
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=os.environ["HELIO_PROJECT"], check=True, capture_output=True, text=True).stdout.strip()
+    body = (root / "body").read_text() if (root / "body").exists() else data["pulls"][0]["body"]
+    print(json.dumps({{"state": "OPEN", "headRefName": branch, "headRefOid": head, "baseRefName": "main",
+                      "isCrossRepository": False, "body": body,
+                      "closingIssuesReferences": [{{"number": 7}}] if body.startswith("Fixes #7") else []}}))
+elif args[:2] == ["pr", "edit"]:
+    (root / "body").write_text(pathlib.Path(args[args.index("--body-file") + 1]).read_text())
 else:
     sys.exit(3)
 """
@@ -80,6 +98,7 @@ class AutofixTests(unittest.TestCase):
         self.summary = self.root / "summary.md"
         self.summary.write_text("Root cause: wrong value.\nFix: return the expected value.\n`$not_a_shell`")
         self.env = {**os.environ, "PATH": f"{bins}:{os.environ['PATH']}", "FAKE_GH_ROOT": str(self.root),
+                    "DORI_STATE_DIR": str(self.root / "state"),
                     "HELIO_PROJECT": str(self.project), "HELIO_GITHUB_REPO": "o/r", "HELIO_AUTOFIX": "on",
                     "HELIO_AUTOFIX_MAX_LINES": "40", "HELIO_AUTOFIX_MAX_FILES": "3",
                     "HELIO_AUTOFIX_MAX_OPEN": "3", "HELIO_AUTOFIX_DENY": "private/**,*.env*,**/migrations/**"}
@@ -125,8 +144,8 @@ class AutofixTests(unittest.TestCase):
         body = (self.root / "body").read_text()
         self.assertIn("Fixes #7", body)
         self.assertIn(self.summary.read_text(), body)
-        self.assertIn("failures=1", body)
-        self.assertIn("errors=0", body)
+        self.assertIn("| Regression before fix | Tests: 1; failures: 1; errors: 0 |", body)
+        self.assertIn("errors: 0", body)
         self.assertEqual(self.git("worktree", "list", "--porcelain").count("worktree "), 1)
 
     def test_check_leaves_remote_and_github_unchanged(self) -> None:

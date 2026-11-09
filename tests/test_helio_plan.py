@@ -5,6 +5,7 @@ import datetime
 import io
 import json
 import os
+import re
 import runpy
 import sqlite3
 import subprocess
@@ -40,6 +41,10 @@ class FakeGitHub:
         self.issue_body = "Use an 8-hour window and send one reminder."
 
     def __call__(self, argv, stdin=None, cwd=None):
+        if argv[:2] == ["gh", "api"] and "/git/ref/heads/" in argv[2]:
+            branch = argv[2].split("/git/ref/heads/", 1)[1]
+            return subprocess.run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
+                                  cwd=os.environ["HELIO_PROJECT"], check=True, capture_output=True, text=True).stdout.split()[0]
         if argv[:3] == ["gh", "issue", "view"]:
             return json.dumps({"state": "OPEN", "title": "t", "body": self.issue_body, "comments": self.comments})
         if argv[:3] == ["gh", "api", "user"]:
@@ -78,7 +83,8 @@ class FakeGitHub:
             remote = subprocess.run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
                                     cwd=project, check=True, capture_output=True, text=True).stdout.split()[0]
             return json.dumps({"state": "OPEN", "headRefOid": remote, "headRefName": branch, "baseRefName": "main",
-                               "isCrossRepository": False, "body": self.created_bodies[-1]})
+                               "isCrossRepository": False, "body": self.created_bodies[-1],
+                               "closingIssuesReferences": [{"number": int(n)} for n in re.findall(r"(?m)^Fixes #(\d+)\b", self.created_bodies[-1])]})
         raise AssertionError(f"unexpected gh call {argv}")
 
     def hand_edit(self, old, new):
@@ -484,6 +490,20 @@ class StateTests(PlanCase):
 
 
 class SubmitTests(PlanCase):
+    def test_direct_pr_links_scope_without_copying_the_issue_status_or_investigation(self):
+        self.setUp_result(direct=True)
+        self.gh_fake.issue_body = "<!-- helio-status:start -->\nStatus: open\n<!-- helio-status:end -->\n\n## Problem\nRequest context."
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+        code, out = self.submit()
+        self.assertEqual(code, 0, out)
+        body = self.gh_fake.created_bodies[0]
+        self.assertNotIn("helio-status", body)
+        self.assertNotIn("## Problem", body)
+        self.assertIn("## Summary", body)
+        self.assertIn("## Verification", body)
+        self.assertEqual(body.count("Fixes #12"), 1)
+
     def test_followup_pr_preserves_its_predecessor_hold_until_explicitly_lifted(self):
         ledger = runpy.run_path(str(ROOT / "scripts/helio_decisions.py"))
         self.gh_fake.issue_body = (f"Current scope.\nRelated history: https://github.com/{REPO}/issues/8\n"
@@ -564,7 +584,7 @@ class SubmitTests(PlanCase):
         self.assertTrue(self.gh_fake.created_bodies[0].startswith("Fixes #8"))
         self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
                      discord_fn=discord(content="implement the current correction to PR #13"))
-        code, out = self.submit()
+        code, out = self.submit(adopt=P["ISSUES"]["digest"](self.gh_fake.created_bodies[0]))
         self.assertEqual(code, 0, out)
         self.assertEqual(len(self.gh_fake.created_bodies), 1)
         self.assertTrue(self.gh_fake.created_bodies[0].startswith("Fixes #12"))
@@ -722,7 +742,7 @@ class SubmitTests(PlanCase):
         with patch.dict(os.environ, {"HELIO_PROJECT": str(shared)}):
             code, out = self.submit(suite=P["full_suite"])
         self.assertEqual(code, 0, out)
-        self.assertIn("Full unit suite: 1 tests passed", self.gh_fake.created_bodies[0])
+        self.assertIn("| Unit suite | 1 test passed |", self.gh_fake.created_bodies[0])
         self.assertFalse((self.work / ".venv").exists())
 
     def test_submission_finds_the_task_tree_without_touching_dirty_shared_main(self):
@@ -943,8 +963,10 @@ class SubmitTests(PlanCase):
                      discord_fn=discord(content="implement #12"))
         original = self.gh.run
 
+        attempted = []
         def fail_create(argv, **kwargs):
             if argv[:3] == ["gh", "pr", "create"]:
+                attempted.append(Path(argv[argv.index("--body-file") + 1]).read_text())
                 raise P["Refused"]("GitHub unavailable before creation")
             return original(argv, **kwargs)
 
@@ -953,6 +975,7 @@ class SubmitTests(PlanCase):
         self.gh.run = original
         code, out = self.submit()
         self.assertEqual(code, 0, out)
+        self.assertEqual(len(attempted), 1)
         self.assertEqual(len(self.gh_fake.created_bodies), 1)
 
     def setUp(self):
@@ -977,9 +1000,9 @@ class SubmitTests(PlanCase):
         (self.dir / "result.json").write_text(json.dumps(result))
         (self.dir / "summary.md").write_text("Shortened the window and added the reminder.")
 
-    def submit(self, suite=None):
+    def submit(self, suite=None, adopt=None):
         return self.run_cli("pr", "submit", "--issue", "12", "--result-file", str(self.dir / "result.json"),
-                            "--summary-file", str(self.dir / "summary.md"), suite=suite)
+                            "--summary-file", str(self.dir / "summary.md"), *(["--adopt-body", adopt] if adopt else []), suite=suite)
 
     def test_submit_refuses_without_an_approved_unchanged_plan(self):
         self.post()
@@ -1056,7 +1079,10 @@ class SubmitTests(PlanCase):
                                  "--summary-file", str(self.dir / "summary.md"), now=POSTED + datetime.timedelta(days=6))
         self.assertEqual(code, 0, out)
         body = self.gh_fake.created_bodies[0]
-        self.assertIn("Use a 6-hour window and send one reminder.", body)
+        self.assertNotIn("Use a 6-hour window and send one reminder.", body)
+        with sqlite3.connect(Path(os.environ["DORI_STATE_DIR"]) / "issue-updates.sqlite") as db:
+            saved = json.loads(db.execute("SELECT change FROM operations WHERE completed=1").fetchone()[0])
+        self.assertEqual(saved["scope"], P["ISSUES"]["digest"](self.gh_fake.issue_body))
         self.assertIn("Refs #12", body)
         self.assertIn('"complete": false', body)
         self.assertIn('"plan_revision": null', body)
@@ -1106,8 +1132,10 @@ class SubmitTests(PlanCase):
         code, out = self.submit()
         self.assertEqual((code, out), (0, f"PLAN_PR https://github.com/{REPO}/pull/13"))
         body = self.gh_fake.created_bodies[0]
-        self.assertIn("### Against the approved plan (r1): 2 of 3 met", body)
-        self.assertIn("| ⚠️ | DM reminder: None → One reminder 1 hour before expiry | reminder at 50 minutes |", body)
+        self.assertIn("Requirement coverage and detailed evidence", body)
+        self.assertEqual(body.count("| met |"), 2)
+        self.assertEqual(body.count("| deviation |"), 1)
+        self.assertIn("| DM reminder: None → One reminder 1 hour before expiry | deviation | reminder at 50 minutes |", body)
         self.assertEqual(self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12"), self.git(self.work, "rev-parse", "HEAD"))
         self.assertEqual(self.run_cli("check", "--issue", "12")[1].split()[0], "PLAN_APPROVED")
         self.assertIn("Approved · implemented in https://github.com", self.gh_fake.comments[0]["body"])

@@ -32,6 +32,10 @@ class DiscordReader(Protocol):
 
 HERE = Path(__file__).resolve().parent
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
+POSTS = runpy.run_path(str(HERE / "helio_github_posts.py"))
+PUBLICATION = runpy.run_path(str(HERE / "helio_pr_publication.py"))
+ISSUES = runpy.run_path(str(HERE / "helio_issues.py"))
+AUTHORITY = runpy.run_path(str(HERE / "helio_pr_authority.py"))
 WORK = runpy.run_path(str(HERE / "helio-work.py"))
 FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
 DISCORD_TEXT = runpy.run_path(str(HERE / "helio_discord_text.py"))
@@ -52,7 +56,7 @@ PLAN_REQUEST = re.compile(r"\b(?:plan|planning|finali[sz]e|finali[sz]ing)\b", re
 REQUEST_MAX_AGE = datetime.timedelta(hours=72)
 
 
-class Refused(Exception):
+class Refused(RuntimeError):
     pass
 
 
@@ -241,18 +245,12 @@ def announcement(issue: int, data: dict, url: str) -> str:
     return f"{prefix}{lead}{tail}"
 
 
-def pr_body(issue: int, data: dict, plan_url: str, result: dict, summary: str, tests_passed: int) -> str:
-    mark = {"met": "✅", "deviation": "⚠️"}
-    rows = [f"| {mark[r['status']]} | {cell(c['where'])}: {cell(c['today'])} → {cell(c['after'])} | {cell(r['evidence'])} |"
-            for c, r in zip(data["scope"]["changes"], result["scope"])]
-    rows += [f"| {mark[r['status']]} | {cell(check)} | {cell(r['evidence'])} |" for check, r in zip(data["done_when"], result["done_when"])]
-    met = sum(r["status"] == "met" for r in [*result["scope"], *result["done_when"]])
-    complete = met == len(rows)
-    metadata = ISSUE_LINK["marker"](issue, data["revision"], complete)
-    return "\n".join([f"{'Fixes' if complete else 'Refs'} #{issue} following the approved plan (revision {data['revision']}): {plan_url}", "",
-                      f"### Against the approved plan (r{data['revision']}): {met} of {len(rows)} met", "",
-                      "| | Planned | Evidence |", "|---|---|---|", *rows, "", summary.strip(), "",
-                      f"Full unit suite: {tests_passed} tests passed.", "", metadata, ""])
+def pr_body(issue: int, data: dict, plan_url: str, result: dict, summary: str, tests_passed: int, structured: bool = False, history: str = "") -> str:
+    coverage = tuple(POSTS["Coverage"](f"{scope['where']}: {scope['today']} \u2192 {scope['after']}", row["status"], row["evidence"])
+                     for scope, row in zip(data["scope"]["changes"], result["scope"], strict=True))
+    coverage += tuple(POSTS["Coverage"](condition, row["status"], row["evidence"])
+                      for condition, row in zip(data["done_when"], result["done_when"], strict=True))
+    return POSTS["pr_body"](issue, data["revision"], POSTS["report"](summary, structured), coverage, tests_passed, plan_url, history)
 
 
 def check_result(data: dict | None, result: object) -> dict:
@@ -628,58 +626,20 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
             raise Refused(f"issue #{args.issue} is not open")
         data = {"title": issue["title"]}
 
+    state_dir = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
+    proof = {"message": authorization.message, "channel": authorization.channel, "author": authorization.author,
+             "source_hash": authorization.source_hash} if authorization else {
+                 **data["approval"], "target": f"{REPO}#{args.issue}", "revision": str(data["revision"]),
+                 "posted_at": data["posted_at"], "state": str(state_dir)}
     def verify_request() -> None:
-        if authorization:
-            message, channel, fingerprint = authorization.message, authorization.channel, authorization.source_hash
-            expected_author = authorization.author
-        else:
-            approval = data["approval"]
-            confirmation = approval.get("confirmation")
-            prompts = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state"))) / "discord-prompts.sqlite"
-            if not confirmation and prompts.exists():
-                try:
-                    with closing(sqlite3.connect(prompts.as_uri() + "?mode=ro", uri=True)) as db:
-                        row = db.execute("SELECT id FROM prompts WHERE result_message_id=? AND kind='plan'",
-                                         (approval["message"],)).fetchone()
-                        confirmation = row[0] if row else None
-                except sqlite3.Error as error:
-                    raise Refused(f"cannot inspect legacy plan confirmation: {error}") from None
-            if confirmation:
-                checker = runpy.run_path(str(HERE / "release-check.py"))
-                try:
-                    checker["load_click"](confirmation, "plan", f"{REPO}#{args.issue}", str(data["revision"]),
-                                          not_before=datetime.datetime.fromisoformat(data["posted_at"]), accepted_plan=True)
-                except checker["Refused"] as error:
-                    raise Refused(str(error)) from None
-                return
-            if not approval.get("channel"):
-                conversations = prompts.with_name("discord-conversations.sqlite")
-                channel = None
-                if conversations.exists():
-                    try:
-                        with closing(sqlite3.connect(conversations.as_uri() + "?mode=ro", uri=True)) as db:
-                            row = db.execute("SELECT channel_id FROM working WHERE message_id=?",
-                                             (approval["message"],)).fetchone()
-                            channel = row[0] if row else None
-                    except sqlite3.Error as error:
-                        raise Refused(f"cannot inspect legacy plan source location: {error}") from None
-                source = discord(approval["message"], channel)
-                expected_author = None
-                message = channel = fingerprint = None
-            else:
-                message, channel, fingerprint = approval["message"], approval["channel"], approval["source_hash"]
-                expected_author = approval["author"]
-        if message:
-            source = discord(message, channel, fingerprint)
-        try:
-            author = source["verify_source"](source["payload"], source["live"], source["owner"], source["trusted"], source["channel_ok"])
-        except source["Refused"] as error:
-            raise Refused(str(error)) from None
-        if expected_author and author != expected_author:
-            raise Refused("work requester identity differs from the recorded request")
+        AUTHORITY["verify"](proof, discord)
     try:
         result = check_result(None if authorization else data, json.loads(args.result_file.read_text()))
-        summary = args.summary_file.read_text().strip()
+        summary = (args.report_file or args.summary_file).read_text()
+        author = POSTS["report"](summary, args.report_file is not None)
+        if authorization and args.report_file:
+            for entry in result["scope"]:
+                POSTS["text"](entry.get("requirement"), "requirement label")
     except (OSError, ValueError) as error:
         raise Refused(f"cannot read result or summary file: {error}") from None
     if not summary:
@@ -712,41 +672,25 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     delivered = git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
     if not delivered or delivered.split()[0] != head:
         raise Refused("remote does not represent the verified task head; inspect the push before retrying")
-    with tempfile.TemporaryDirectory(prefix="helio-pr-body-") as temporary:
-        path = Path(temporary) / "body.md"
-        if authorization:
-            complete = all(entry["status"] == "met" for entry in result["scope"])
-            text = "\n".join([f"{'Fixes' if complete else 'Refs'} #{args.issue}", "", "### Issue scope", issue.get("body", ""),
-                              "", "### Result", "| Requirement | Status | Evidence |", "|---|---|---|",
-                              *(f"| {index} | {entry['status']} | {cell(entry['evidence'])} |"
-                                for index, entry in enumerate(result["scope"], 1)), "", summary,
-                              "", f"Full unit suite: {passed} tests passed.", "", ISSUE_LINK["marker"](args.issue, None, complete), ""])
-        else:
-            text = pr_body(args.issue, data, plan_url, result, summary, passed)
-        if previous:
-            history = f"https://github.com/{gh.repo}/issues/{previous}"
-            if not re.search(re.escape(history) + r"\b", text):
-                text += f"\nRelated history: {history}\n"
-        path.write_text(text)
-        if existing:
-            gh.run(["gh", "pr", "edit", existing, "--repo", gh.repo, "--body-file", str(path)])
-            url = existing
-        else:
-            url = gh.run(["gh", "pr", "create", "--repo", gh.repo, "--base", "main", "--head", branch,
-                          "--title", f"{data['title']} (#{args.issue})", "--body-file", str(path)])
-        pull = json.loads(gh.run(["gh", "pr", "view", url, "--repo", gh.repo, "--json",
-                                 "state,headRefOid,headRefName,baseRefName"]))
-        if (pull.get("state"), pull.get("headRefOid"), pull.get("headRefName"), pull.get("baseRefName")) != (
-                "OPEN", head, branch, "main"):
-            raise Refused("PR does not yet represent the verified task head; inspect it before reporting success")
-        latest = git("ls-remote", "--heads", "origin", "refs/heads/main")
-        if not latest or latest.split()[0] != base:
-            raise Refused("main advanced during PR publication; update this same PR and verify its new head before reporting delivery")
-        if authorization:
-            WORK["consume"](REPO, args.issue, authorization.message)
-    if not authorization:
-        data["status_note"] = f"implemented in {url}"
-        gh.save(args.issue, comment_id, render(args.issue, data))
+    if authorization:
+        coverage = tuple(POSTS["Coverage"](entry.get("requirement") or entry["evidence"], entry["status"], entry["evidence"])
+                         for entry in result["scope"])
+        text = POSTS["pr_body"](args.issue, None, author, coverage, passed,
+                               history=f"https://github.com/{gh.repo}/issues/{previous}" if previous else "")
+    else:
+        text = pr_body(args.issue, data, plan_url, result, summary, passed, args.report_file is not None,
+                       f"https://github.com/{gh.repo}/issues/{previous}" if previous else "")
+    url = PUBLICATION["publish"](ISSUES["Issues"](gh.repo, state_dir, command=gh.run), args.issue, branch, head,
+        text, data["title"], proof, ISSUES["digest"](ISSUES["split"](current_issue.get("body") or "")[0]),
+        existing, args.adopt_body, plan_body=current_body if not authorization else "", authorize=verify_request)
+    pull = json.loads(gh.run(["gh", "pr", "view", url, "--repo", gh.repo, "--json",
+                             "state,headRefOid,headRefName,baseRefName"]))
+    if (pull.get("state"), pull.get("headRefOid"), pull.get("headRefName"), pull.get("baseRefName")) != (
+            "OPEN", head, branch, "main"):
+        raise Refused("PR does not yet represent the verified task head; inspect it before reporting success")
+    latest = git("ls-remote", "--heads", "origin", "refs/heads/main")
+    if not latest or latest.split()[0] != base:
+        raise Refused("main advanced during PR publication; update this same PR and verify its new head before reporting delivery")
     return [f"PLAN_PR {url}"]
 
 
@@ -781,7 +725,10 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     pr = prs.add_parser("submit")
     pr.add_argument("--issue", type=int, required=True)
     pr.add_argument("--result-file", type=Path, required=True)
-    pr.add_argument("--summary-file", type=Path, required=True)
+    reports = pr.add_mutually_exclusive_group(required=True)
+    reports.add_argument("--summary-file", type=Path)
+    reports.add_argument("--report-file", type=Path)
+    pr.add_argument("--adopt-body")
     pr.add_argument("--worktree", type=Path, help="task worktree in the canonical repository; otherwise discovered automatically")
     args = parser.parse_args(argv)
     if getattr(args, "issue", 1) < 1:
@@ -822,7 +769,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
                 lines = [f"PLAN_DROPPED issue={args.issue}"]
             else:
                 lines = [f"{found} issue={args.issue}" + (f" revision={data['revision']} url={url}" if data else "")]
-    except (Refused, WORK["Refused"], FOLLOWUP["Refused"], RuntimeError) as error:
+    except (Refused, WORK["Refused"], FOLLOWUP["Refused"], ISSUES["Refused"], ValueError, RuntimeError) as error:
         print(f"PLAN_REFUSED {error}".replace("\n", " "))
         return 1
     print("\n".join(lines))

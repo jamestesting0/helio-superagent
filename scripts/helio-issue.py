@@ -17,6 +17,7 @@ ISSUES = runpy.run_path(str(HERE / "helio_issues.py"))
 ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
 SYNC = runpy.run_path(str(HERE / "helio_issue_sync.py"))
 FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
+POSTS = runpy.run_path(str(HERE / "helio_github_posts.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 STATE = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
 
@@ -28,6 +29,7 @@ class Projection(TypedDict):
     warnings: list[str]
     events: list[tuple[str, str, float]]
     discussed: int
+    delivery: list[str]
 
 
 def timestamp(value: str | None) -> float:
@@ -55,12 +57,14 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
     summary = info.get("title") or "See current scope below."
     links = [f"https://github.com/{REPO}/issues/{issue}"]
     warnings = []
+    delivery = []
     events: list[tuple[str, str, float]] = []
     discussed = int(max((timestamp(item.get("createdAt")) for item in human_comments(info, login)), default=0))
     if plans:
         data = plans[-1]
         if data:
             parts.append(f"Plan r{data['revision']}: {plan['status'](data)}")
+            delivery.append(f"Plan r{data['revision']}: {plan['status'](data)}")
             if plan["approved"](data):
                 summary = data["in_short"]
             links.extend(item["url"] for item in info.get("comments", []) if item.get("body", "").startswith(plan["MARKER"]) and (item.get("author") or {}).get("login") == login)
@@ -83,6 +87,10 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
             events.append((f"pr{number}:closed", f"PR #{number} closed without merging", timestamp(detail.get("closedAt"))))
         checks = [item.get("conclusion") or item.get("state") or item.get("status") for item in detail.get("statusCheckRollup") or []]
         parts.append(f"PR #{pr['number']}: {detail['state']} ({', '.join(checks) or 'checks unavailable'})")
+        check_text = "checks passed" if checks and all(value == "SUCCESS" for value in checks) else "checks not fully verified"
+        if any(value in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") for value in checks):
+            check_text = "checks need attention"
+        delivery.append(f"[PR #{number}](https://github.com/{REPO}/pull/{number}) {detail['state'].lower()}; {check_text}")
         if detail.get("url"):
             links.append(detail["url"])
         implementation = ISSUE_LINK["parse"](detail.get("body", ""))
@@ -113,6 +121,7 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
                 comparison = gh.api(f"compare/{detail['mergeCommit']['oid']}...{observation['running_revision']}")
                 if comparison.get("status") in ("ahead", "identical"):
                     parts.append(f"PR #{pr['number']} live revision observed; gateway health unverified")
+                    delivery.append(f"Production revision `{observation['running_revision'][:12]}` observed; gateway health not verified")
                     events.append((f"pr{number}:live", f"PR #{number} observed running in production", age_at))
     ledger_path = STATE / "decisions.sqlite"
     if ledger_path.exists():
@@ -130,13 +139,18 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
             db.close()
         if holds:
             parts.append("On hold: owner/author review required")
+            delivery.append("Owner/author review required")
     return {"status": " · ".join(parts + warnings + ([] if any("live revision observed" in part for part in parts) else ["live state unverified"])),
-            "summary": summary, "links": links, "warnings": warnings, "events": events, "discussed": discussed}
+            "summary": summary, "links": links, "warnings": warnings, "events": events, "discussed": discussed,
+            "delivery": delivery + warnings}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    draft = sub.add_parser("render")
+    draft.add_argument("--draft-file", type=Path, required=True)
+    draft.add_argument("--output-file", type=Path, required=True)
     for name in ("update", "sync"):
         command = sub.add_parser(name)
         command.add_argument("--issue", type=int, required=True)
@@ -165,6 +179,10 @@ def main() -> int:
     if getattr(args, "issue", 1) <= 0:
         parser.error("--issue must be positive")
     try:
+        if args.command == "render":
+            args.output_file.write_text(POSTS["issue_draft"](args.draft_file.read_text()))
+            print(f"ISSUE_DRAFT_RENDERED {args.output_file}; no GitHub changes")
+            return 0
         gh = ISSUES["Issues"](REPO, STATE)
         now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
         if args.command == "followup":
@@ -197,14 +215,17 @@ def main() -> int:
             print("ISSUE_OPERATION_CANCELLED: saved history retained; external changes are not reverted")
             return 0
         if args.command == "resume":
+            resource = gh.resource(args.operation)
             issue, operation = gh.resume(args.operation)
-            print(f"ISSUE_UPDATED issue={issue} operation={operation}")
+            print(f"{'PR_PUBLICATION_UPDATED' if resource == 'pr' else 'ISSUE_UPDATED'} issue={issue} operation={operation}")
             return 0
+        if args.command == "sync":
+            gh.publications(args.issue)
         facts = projection(args.issue, gh, args.close)
         change = {"projection": facts["status"], "summary": facts["summary"], "links": facts["links"],
                   "body": args.body_file.read_text() if args.body_file else None,
                   "note": args.note_file.read_text().strip() if args.note_file else "", "close": args.close,
-                  "adopt": args.adopt, "labels": args.labels}
+                  "adopt": args.adopt, "labels": args.labels, "delivery": facts["delivery"]}
         if args.labels is None and "Plan " in change["projection"] and ": Approved" in change["projection"]:
             current = gh.get(args.issue)
             change["labels"] = [item["name"] for item in current.get("labels", []) if item["name"] != "needs-owner-review"]

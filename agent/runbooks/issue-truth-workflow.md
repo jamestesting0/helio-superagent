@@ -1,5 +1,9 @@
 # Current issue descriptions
 
+Use [GitHub writing](github-writing-workflow.md) for grouped drafts, PR reports
+and bot-owned publication recovery. The bot handles routine retries; users
+should not have to operate recovery commands or repeat task authorization.
+
 The body describes the current request, confirmed requirements (with sources),
 open questions and decisions. Unverified claims stay open questions. Update an
 active issue without another confirmation. Closing needs the owner or a current
