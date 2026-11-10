@@ -18,7 +18,7 @@ import { excludedChannels, learningAllowed, learningChannelAllowed, normalChanne
 import { contextReplayAllowed } from "./learning/context-replay.ts";
 import { prepareMessageBody } from "./messages/forwarded.ts";
 import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
-import { DiscordRestError, DiscordTransportError, IgnoredChannelError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES, type ApiChannel } from "./discord/rest.ts";
+import { DiscordRestError, DiscordTransportError, IgnoredChannelError, PolicyChangedError, discordRest, expandChannels, MESSAGE_CHANNEL_TYPES, type ApiChannel } from "./discord/rest.ts";
 import { contextSummary, monitorLine } from "./delivery/monitor-summary.ts";
 import { watch } from "node:fs";
 import { join } from "node:path";
@@ -207,7 +207,11 @@ try {
   let reportedDelay: number | undefined;
   do {
     const revision = runtimePolicy()?.revision;
-    const result = await refresh();
+    let result: Awaited<ReturnType<typeof refresh>>;
+    try { result = await refresh(); }
+    catch (error) {
+      if (!(error instanceof PolicyChangedError)) throw error;
+    }
     if (runtimePolicy()?.revision !== revision || !result) { warned.clear(); continue; }
     const summary = `CONTEXT_DONE channels=${result.channels} messages=${result.messages} skipped=${result.skipped}`;
     if (result.skipped === 0 || summary !== partial) console.log(summary);

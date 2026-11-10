@@ -74,8 +74,8 @@ export const replyFollowup = {
  message_reference:{message_id:"89",channel_id:"100",guild_id:"300"},
 };
 export const replyParents:Record<string,object>={
- "89":{id:"89",channel_id:"100",guild_id:"300",author:{id:"88",username:"Helio",bot:true},content:"The Final test is blocked: browser not connected",message_reference:{message_id:"88",channel_id:"100",guild_id:"300"}},
- "88":{id:"88",channel_id:"100",guild_id:"300",author:{id:"99",username:"owner"},content:"Run the Final test"},
+ "89":{id:"89",channel_id:"100",guild_id:"300",author:{id:"88",username:"Helio",bot:true},content:"The Final test is blocked: browser not connected",timestamp:new Date(now-1000).toISOString(),message_reference:{message_id:"88",channel_id:"100",guild_id:"300"}},
+ "88":{id:"88",channel_id:"100",guild_id:"300",author:{id:"99",username:"owner"},content:"Run the Final test",timestamp:new Date(now-2000).toISOString()},
 };
 export const replyEvent = process.env.DORI_TEST_REPLY_PARENT === "1" ? {
   ...replyFollowup,

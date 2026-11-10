@@ -231,12 +231,22 @@ class MonitorReloadTests(unittest.TestCase):
                 # A marker in the copied source proves exec loads fresh Python code.
                 marker = '\nprint("START old " + str(os.getpid()), flush=True)\n'
                 source = source.replace("from pathlib import Path", "from pathlib import Path" + marker)
-                script = self.home / f"helio-{name}.py"
+                helpers = self.home / "scripts"
+                helpers.mkdir(exist_ok=True)
+                script = helpers / f"helio-{name}.py"
                 script.write_text(source)
-                (self.home / "helio_discord_text.py").write_text((ROOT / "scripts/helio_discord_text.py").read_text())
+                (helpers / "helio_discord_text.py").write_text((ROOT / "scripts/helio_discord_text.py").read_text())
                 if name == "followups":
                     for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py", "helio_github_posts.py", "helio_github_body.py", "helio_issue_format.py", "helio_pr_publication.py", "helio_pr_authority.py", "helio_pr_finalize.py"):
-                        (self.home / helper).write_text((ROOT / "scripts" / helper).read_text())
+                        (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
+                    for helper in ("helio_followup_delivery.py", "helio_plan_publication.py",
+                                   "helio_plan_request_cli.py", "helio_plan_requests.py", "helio_approval.py",
+                                   "helio_plan_source.py", "helio_runtime_policy.py"):
+                        (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
+                    for relative in ("conversations/followups.sql", "delivery/plan-requests.sql"):
+                        destination = self.home / "discord-inbound" / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(ROOT / "discord-inbound" / relative, destination)
                     self.executable("dori", "#!/bin/sh\necho '[]'\n")
                 argv = [sys.executable, str(script)]
                 if name == "followups":
@@ -247,7 +257,7 @@ class MonitorReloadTests(unittest.TestCase):
                     )
                     argv.extend(["watch", "--interval", "1800"])
                 else:
-                    (self.home / "helio_runtime_policy.py").write_text((ROOT / "scripts/helio_runtime_policy.py").read_text())
+                    (helpers / "helio_runtime_policy.py").write_text((ROOT / "scripts/helio_runtime_policy.py").read_text())
                     argv.extend(["watch", "--lane", "lane-one"])
                 process = self.launch(argv)
                 self.assertEqual(self.line(process), f"START old {process.pid}")

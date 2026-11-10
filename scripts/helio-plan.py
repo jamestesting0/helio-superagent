@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import closing
+from contextlib import closing, ExitStack
 from dataclasses import dataclass
 import datetime
 import hashlib
@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import runpy
 import sqlite3
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,9 @@ PUBLICATION = runpy.run_path(str(HERE / "helio_pr_publication.py"))
 ISSUES = runpy.run_path(str(HERE / "helio_issues.py"))
 AUTHORITY = runpy.run_path(str(HERE / "helio_pr_authority.py"))
 WORK = runpy.run_path(str(HERE / "helio-work.py"))
+REQUEST_CLI = runpy.run_path(str(HERE / "helio_plan_request_cli.py"))
+PLAN_SOURCE = runpy.run_path(str(HERE / "helio_plan_source.py"))
+PLAN_PUBLICATION = runpy.run_path(str(HERE / "helio_plan_publication.py"))
 FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
 DISCORD_TEXT = runpy.run_path(str(HERE / "helio_discord_text.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
@@ -52,8 +56,6 @@ ANNOUNCE_LIMIT = 500
 CODE = re.compile(r"```|\b[\w.-]+/[\w./-]*\w\.[A-Za-z]{1,5}\b|\b\w+\.(?:py|ts|js|json|md|sql|toml|ya?ml)\b|\b\w+\(\)")
 FILLER = re.compile(r"\b(?:TBD|TODO|etc)\b", re.I)
 PLAN_PATTERN = re.compile(r"^\W*Plan for #(\d+) \(r(\d+)\)")
-PLAN_REQUEST = re.compile(r"\b(?:plan|planning|finali[sz]e|finali[sz]ing)\b", re.I)
-REQUEST_MAX_AGE = datetime.timedelta(hours=72)
 
 
 class Refused(RuntimeError):
@@ -194,6 +196,11 @@ def visible(issue: int, data: dict) -> str:
 
 
 def render(issue: int, data: dict) -> str:
+    data = dict(data)
+    semantic = {key: value for key, value in data.items() if key not in ("posted_at", "publication_id")}
+    if "publication_id" in data:
+        data["publication_id"] = hashlib.sha256(
+            json.dumps([issue, semantic], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     lines = [visible(issue, data)]
     if data.get("technical_notes") and not data.get("github_edit"):
         lines += ["", "<details><summary>Technical notes (optional reading)</summary>", "", data["technical_notes"].strip(), "</details>"]
@@ -281,32 +288,93 @@ def command(argv: list[str], stdin: str | None = None, cwd: Path | None = None) 
     return result.stdout.strip()
 
 
+def github_command(argv: list[str], stdin: str | None = None) -> str:
+    return ISSUES["run"](argv, stdin).strip()
+
+
 class GitHub:
-    def __init__(self, repo: str, run: Callable[..., str] = command):
+    def __init__(self, repo: str, run: Callable[..., str] = github_command):
         self.repo, self.run = repo, run
 
     def issue(self, number: int) -> dict:
-        return json.loads(self.run(["gh", "issue", "view", str(number), "--repo", self.repo, "--json", "state,title,body,comments"]))
+        result = json.loads(self.run(["gh", "issue", "view", str(number), "--repo", self.repo, "--json", "state,title,body,comments,labels"]))
+        if result.get("state") == "CLOSED":
+            REQUEST_CLI["REQUESTS"]["closed"](self.repo, number, datetime.datetime.now(datetime.timezone.utc))
+        return result
 
     def plan_comment(self, number: int) -> tuple[dict, int | None, str, str]:
         issue = self.issue(number)
+        pages = json.loads(self.run(["gh", "api", f"repos/{self.repo}/issues/{number}/comments?per_page=100",
+                                    "--paginate", "--slurp"]))
+        issue["comments"] = [{"body": comment["body"], "url": comment["html_url"],
+                              "author": {"login": (comment.get("user") or {}).get("login")}}
+                             for page in pages for comment in page]
         login = self.run(["gh", "api", "user", "--jq", ".login"])
+        matches = []
         for comment in issue.get("comments") or []:
-            match = re.search(r"#issuecomment-(\d+)$", comment.get("url", ""))
+            match = re.fullmatch(rf"https://github\.com/{re.escape(self.repo)}/issues/{number}#issuecomment-(\d+)",
+                                 comment.get("url", ""))
             if match and (comment.get("author") or {}).get("login") == login and comment.get("body", "").startswith(MARKER):
-                return issue, int(match.group(1)), comment["url"], comment["body"]
+                matches.append((issue, int(match.group(1)), comment["url"], comment["body"]))
+        if len(matches) > 1:
+            raise Refused("multiple bot-owned plan comments; resolve their identity before writing")
+        if matches:
+            return matches[0]
         return issue, None, "", ""
 
-    def save(self, number: int, comment_id: int | None, body: str) -> str:
-        path = f"repos/{self.repo}/issues/comments/{comment_id}" if comment_id else f"repos/{self.repo}/issues/{number}/comments"
-        reply = self.run(["gh", "api", path, "--method", "PATCH" if comment_id else "POST", "--input", "-"], json.dumps({"body": body}))
-        return json.loads(reply)["html_url"]
+    def save(self, number: int, comment_id: int | None, body: str,
+             authorize: Callable[[], object] | None = None, *, expected_body: str) -> str:
+        PLAN_PUBLICATION["reconcile"](self, number)
+        return PLAN_PUBLICATION["save"](self, number, comment_id, body, expected_body, authorize)
 
     def label(self, number: int, add: bool) -> None:
-        if add:
-            self.run(["gh", "label", "create", LABEL, "--repo", self.repo, "--force",
-                      "--description", "Helio plan mode: build only after the plan comment is approved"])
-        self.run(["gh", "issue", "edit", str(number), "--repo", self.repo, "--add-label" if add else "--remove-label", LABEL])
+        PLAN_PUBLICATION["reconcile"](self, number)
+        PLAN_PUBLICATION["operation"](self, number, "label", "", "present" if add else "absent")
+
+    def cleanup_cancelled(self, number: int) -> None:
+        PLAN_PUBLICATION["reconcile"](self, number)
+        _, comment_id, _, body = self.plan_comment(number)
+        data = parse(body)
+        binding = (data or {}).get("planning_request")
+        if not binding:
+            return
+        receipt = REQUEST_CLI["REQUESTS"]["get"](self.repo, number, binding["message"])
+        if receipt and receipt.state == "cancelled":
+            self.save(number, comment_id, f"Plan dropped after cancellation (was revision {data['revision']}).",
+                      expected_body=body)
+            self.label(number, False)
+
+    def resume_command(self, operation: sqlite3.Row) -> str:
+        data = parse(operation["after_body"])
+        if data is None:
+            return f"helio plan drop --issue {operation['issue']}"
+        before = parse(operation["before_body"])
+        if before and data["revision"] == before["revision"] and data.get("approval") != before.get("approval"):
+            approval = data.get("approval") or {}
+            option = "--confirmation" if approval.get("confirmation") else "--message"
+            source = approval.get("confirmation") or approval.get("message")
+            command = ["helio", "plan", "approve", "--issue", str(operation["issue"]), option, source]
+            if option == "--message":
+                command.append("--resolved-approval")
+            return shlex.join(command)
+        if data["history"][0]["note"] == "adopted GitHub edit":
+            return f"helio plan adopt --issue {operation['issue']}"
+        fields = {key: data[key] for key in FIELDS if key in data}
+        if data["revision"] > 1:
+            fields["change_note"] = data["history"][0]["note"]
+        directory = PLAN_PUBLICATION["state_dir"]()
+        draft = directory / f"plan-{operation['id']}.json"
+        with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
+            json.dump(fields, temporary)
+        os.replace(temporary.name, draft)
+        command = ["helio", "plan", "post", "--issue", str(operation["issue"]), "--file", str(draft),
+                   "--announcement-file", str(directory / f"plan-{operation['id']}.txt")]
+        binding = data.get("planning_request")
+        if binding:
+            command.extend(["--request-message", binding["message"]])
+        if data.get("revision_source"):
+            command.extend(["--from-message", data["revision_source"]["message"]])
+        return shlex.join(command)
 
     def open_pr(self, branch: str) -> str | None:
         pulls = json.loads(self.run(["gh", "pr", "list", "--repo", self.repo, "--head", branch, "--state", "open", "--json", "url"]))
@@ -321,9 +389,10 @@ class GitHub:
 def discord_message(message_id: str, channel: str | None = None, fingerprint: str | None = None) -> dict:
     checker = runpy.run_path(str(HERE / "release-check.py"))
     try:
-        return {**checker["load"](message_id, channel, fingerprint), "verify": checker["verify"],
+        source = PLAN_SOURCE["load"](message_id, channel, fingerprint, checker["api"])
+        return {**source, "verify": checker["verify"],
                 "verify_source": checker["verify_source"], "Refused": checker["Refused"]}
-    except checker["Refused"] as error:
+    except (checker["Refused"], PLAN_SOURCE["Refused"]) as error:
         raise Refused(str(error)) from None
 
 
@@ -428,33 +497,22 @@ def adopt(issue: int, gh: GitHub, now: datetime.datetime) -> str | None:
     data["revision"] = old["revision"] + 1
     data["posted_at"] = now.isoformat()
     data["approval"] = None
+    data["publication_id"] = ""
     data.pop("revision_source", None)
     data.pop("status_note", None)
     data["history"] = [{"revision": data["revision"], "note": "adopted GitHub edit"}, *old["history"]]
-    gh.save(issue, comment_id, render(issue, data))
+    gh.save(issue, comment_id, render(issue, data), expected_body=body)
     gh.label(issue, True)
     return f"PLAN_ADOPTED issue={issue} revision={data['revision']} url={url}: approval reset; review the adopted GitHub text"
 
 
-def requested(message: dict, issue: int, now: datetime.datetime) -> str:
-    payload, live = message["payload"], message["live"]
-    author = str(payload.get("author_id", ""))
-    if payload.get("for_owner"):
-        raise Refused("a message addressed to the owner never starts plan mode")
-    if (live.get("author") or {}).get("id") != author or (live.get("author") or {}).get("bot") or live.get("webhook_id"):
-        raise Refused("plan request is not from a matching human sender")
-    if not (author == message["owner"] or author in message["trusted"]) or not message["channel_ok"]:
-        raise Refused("only the owner or a trusted user can ask for a plan, in a permitted location")
-    sent = datetime.datetime.fromisoformat(str(live.get("timestamp", "")).replace("Z", "+00:00"))
-    if now - sent > REQUEST_MAX_AGE:
-        raise Refused("plan request is older than 72 hours; ask again")
-    approval = runpy.run_path(str(HERE / "helio_approval.py"))
-    if not PLAN_REQUEST.search(approval["instruction_text"](str(live.get("content", "")))):
-        raise Refused(f"that message does not ask for a plan for #{issue}")
-    return str(payload.get("author") or author)
-
-
-def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], now: datetime.datetime) -> list[str]:
+def post(args: argparse.Namespace, gh: GitHub, discord: DiscordReader, now: datetime.datetime) -> list[str]:
+    sources = REQUEST_CLI["REQUESTS"]
+    receipt = None
+    if args.request_message:
+        request = sources["for_post"](gh.repo, args.issue, args.request_message)
+        receipt = sources["record"](request, discord, now)
+    PLAN_PUBLICATION["reconcile"](gh, args.issue)
     issue, comment_id, url, body = gh.plan_comment(args.issue)
     if issue.get("state") != "OPEN":
         raise Refused(f"issue #{args.issue} is not open")
@@ -464,28 +522,48 @@ def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], n
         if not intact(args.issue, body, old):
             return [f"PLAN_EDITED_OUTSIDE_HELIO issue={args.issue} url={url}: adopt or discard the hand edit before revising"]
         requester = old["requested_by"]
+        if old.get("planning_request"):
+            bound = old["planning_request"]
+            request = sources["Request"](gh.repo, args.issue, bound["message"], bound["channel"])
+            receipt = sources["record"](request, discord, now)
     else:
         if not args.request_message:
             raise Refused("the first plan needs --request-message, the owner's or a trusted user's request")
         autofix = gh.open_pr(f"helio/autofix-{args.issue}")
         if autofix:
             return [f"PLAN_AUTOFIX_ACTIVE issue={args.issue} pr={autofix}: stop or point to the automatic fix first"]
-        requester = requested(discord(args.request_message), args.issue, now)
+        requester = receipt.author_name
     try:
         fields = json.loads(args.file.read_text())
     except (OSError, ValueError) as error:
         raise Refused(f"cannot read plan file: {error}") from None
+    comparable = {key: old.get(key, "" if key == "technical_notes" else None)
+                  for key in FIELDS if key != "change_note"} if old else None
+    candidate = {"decisions": [], "open_questions": [], "done_when": [], "risks": [],
+                 "technical_notes": "", **fields}
+    candidate["scope"] = {"not_included": [], **candidate.get("scope", {})}
+    if (old and all(candidate.get(key) == value for key, value in comparable.items())
+            and ("change_note" not in fields or fields["change_note"] == old["history"][0]["note"])):
+        gh.label(args.issue, True)
+        if receipt:
+            sources["published"](receipt.request, str(comment_id))
+        args.announcement_file.write_text(announcement(args.issue, old, url) + "\n")
+        return [f"PLAN_POSTED issue={args.issue} revision={old['revision']} url={url}",
+                f"PLAN_ANNOUNCEMENT_FILE {args.announcement_file}"]
     revision = old["revision"] + 1 if old else 1
     errors = validate(fields, revision, editorial=False)
     if errors:
         return [f"PLAN_INVALID field={field} reason={reason}" for field, reason in errors]
     advice = validate(fields, revision)
     note = fields.pop("change_note", None) or "first version"
-    data = {"decisions": [], "open_questions": [], "done_when": [], "risks": [], **fields,
+    data = {"decisions": [], "open_questions": [], "done_when": [], "risks": [], "publication_id": "", **fields,
             "scope": {"not_included": [], **fields["scope"]}, "revision": revision, "posted_at": now.isoformat(),
             "requested_by": requester, "history": [{"revision": revision, "note": note}, *(old["history"] if old else [])],
             "approval": old.get("approval") if old else None,
             "source_bindings": dict(old.get("source_bindings", {})) if old else {}}
+    if receipt:
+        data["planning_request"] = {"message": receipt.request.message, "channel": receipt.request.channel,
+                                    "author": receipt.author, "source_hash": receipt.source_hash}
     if old and old.get("revision_source"):
         prior = old["revision_source"]
         data["source_bindings"].setdefault(prior["message"], {"revision": old["revision"], "hash": content_hash(old)})
@@ -501,8 +579,12 @@ def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], n
         data["source_bindings"].setdefault(args.from_message, {"revision": revision, "hash": content_hash(data)})
     if len(render(args.issue, data)) > 65536:
         return ["PLAN_INVALID field=plan reason=rendered comment exceeds GitHub's 65536-character limit"]
+    url = gh.save(args.issue, comment_id, render(args.issue, data),
+                  (lambda: sources["record"](receipt.request, discord, now)) if receipt else None,
+                  expected_body=body)
     gh.label(args.issue, True)
-    url = gh.save(args.issue, comment_id, render(args.issue, data))
+    if receipt:
+        sources["published"](receipt.request, url.rsplit("#issuecomment-", 1)[1])
     args.announcement_file.write_text(announcement(args.issue, data, url) + "\n")
     lines = [f"PLAN_POSTED issue={args.issue} revision={revision} status={status(data).replace(' ', '_')} url={url}",
              f"PLAN_ANNOUNCEMENT_FILE {args.announcement_file}"]
@@ -514,20 +596,37 @@ def post(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], n
     return lines
 
 
-def approve(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict], now: datetime.datetime) -> list[str]:
+def approve(args: argparse.Namespace, gh: GitHub, discord: DiscordReader, now: datetime.datetime) -> list[str]:
+    PLAN_PUBLICATION["reconcile"](gh, args.issue)
     _, comment_id, url, body = gh.plan_comment(args.issue)
     found, data = state(args.issue, body)
     if found in ("PLAN_NONE", "PLAN_EDITED_OUTSIDE_HELIO", "PLAN_DRAFT"):
         raise Refused({"PLAN_NONE": f"issue #{args.issue} has no plan", "PLAN_DRAFT": "the plan still has open questions",
                        "PLAN_EDITED_OUTSIDE_HELIO": "the plan was edited outside Helio; adopt or discard the edit first"}[found])
+    data["publication_id"] = ""
     if args.confirmation:
         click = click_approval(args.confirmation, args.issue, data, now)
         data["approval"] = {"revision": data["revision"], "hash": content_hash(data), "by": click["username"],
                             "message": click["result_id"], "confirmation": args.confirmation}
-        gh.save(args.issue, comment_id, render(args.issue, data))
+        gh.save(args.issue, comment_id, render(args.issue, data), expected_body=body)
         consume(args.confirmation, now)
         return [f"PLAN_APPROVED issue={args.issue} revision={data['revision']} by={click['username']} url={url}"]
-    message = discord(args.message)
+    existing = data.get("approval") or {}
+    location = ((existing["channel"], existing["source_hash"])
+                if approved(data) and existing.get("message") == args.message and
+                existing.get("channel") and existing.get("source_hash") else None)
+    with closing(PLAN_PUBLICATION["connect"]()) as db:
+        prepared = db.execute("""SELECT after_body FROM plan_publications WHERE repo=? AND issue=?
+            AND state='prepared' AND before_hash=?""",
+                              (gh.repo, args.issue, hashlib.sha256(body.encode()).hexdigest())).fetchall()
+    for row in prepared:
+        saved = parse(row["after_body"])
+        proof = (saved or {}).get("approval") or {}
+        if (saved and saved["revision"] == data["revision"] and proof.get("hash") == content_hash(data)
+                and proof.get("message") == args.message and proof.get("channel") and proof.get("source_hash")):
+            location = (proof["channel"], proof["source_hash"])
+            break
+    message = discord(args.message, *location) if location else discord(args.message)
     binding = data.get("source_bindings", {}).get(args.message)
     if binding and (binding["revision"] != data["revision"] or binding["hash"] != content_hash(data)):
         raise Refused(f"message {args.message} is bound to r{binding['revision']}; ask for approval of r{data['revision']}")
@@ -539,18 +638,24 @@ def approve(args: argparse.Namespace, gh: GitHub, discord: Callable[[str], dict]
     if answered and int(answered.group(2)) != data["revision"] and not is_source:
         raise Refused(f"that approves r{answered.group(2)}; the current plan is r{data['revision']} "
                       f"({data['history'][0]['note']}); ask for approval of r{data['revision']}")
-    try:
-        message["verify"](message["payload"], message["live"], "plan", f"{REPO}#{args.issue}", None, message["owner"],
-                          message["trusted"], message["channel_ok"], message["is_dm"], message["bot_id"], now=now,
-                          not_before=None if is_source else datetime.datetime.fromisoformat(data["posted_at"]),
-                          resolved_plan=args.resolved_approval)
-    except message["Refused"] as error:
-        raise Refused(str(error)) from None
+    def verify_approval(current: dict) -> None:
+        try:
+            current["verify"](current["payload"], current["live"], "plan", f"{REPO}#{args.issue}", None, current["owner"],
+                              current["trusted"], current["channel_ok"], current["is_dm"], current["bot_id"], now=now,
+                              not_before=None if is_source else datetime.datetime.fromisoformat(data["posted_at"]),
+                              resolved_plan=args.resolved_approval)
+        except current["Refused"] as error:
+            raise Refused(str(error)) from None
+
+    verify_approval(message)
     by = str(message["payload"].get("author") or message["payload"].get("author_id"))
     data["approval"] = {"revision": data["revision"], "hash": content_hash(data), "by": by, "message": args.message}
     data["approval"].update(author=message["payload"]["author_id"], channel=message["live"]["channel_id"],
                             source_hash=hashlib.sha256(message["live"]["content"].encode()).hexdigest())
-    gh.save(args.issue, comment_id, render(args.issue, data))
+    proof = data["approval"]
+    gh.save(args.issue, comment_id, render(args.issue, data),
+            lambda: verify_approval(discord(args.message, proof["channel"], proof["source_hash"])),
+            expected_body=body)
     return [f"PLAN_APPROVED issue={args.issue} revision={data['revision']} by={by} url={url}"]
 
 
@@ -698,7 +803,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
          suite: Callable[[Path, str], int] = full_suite, now: datetime.datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("post", "approve", "check", "show", "drop"):
+    REQUEST_CLI["register"](commands)
+    for name in ("post", "approve", "check", "show", "drop", "adopt"):
         sub = commands.add_parser(name)
         sub.add_argument("--issue", type=int, required=True)
         if name == "post":
@@ -736,18 +842,25 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     gh = gh or GitHub(REPO)
     now = now or datetime.datetime.now(datetime.timezone.utc)
     args.now = now
+    stack = ExitStack()
     try:
+        if getattr(args, "issue", None) and args.command not in ("pr", "work"):
+            stack.enter_context(PLAN_PUBLICATION["scope"](
+                gh.repo, args.issue, serialize=args.command != "request" or args.request_action == "cancel"))
         if args.command == "pr" and args.pr_command == "check":
             if args.number < 1:
                 parser.error("--number must be positive")
             readiness = runpy.run_path(str(HERE / "helio_pr_readiness.py"))
             print(readiness["check"](gh.repo, args.number, gh.run))
             return 0
-        if args.command != "work" and getattr(args, "issue", None) and args.command != "drop":
-            adopted = adopt(args.issue, gh, now)
-            if adopted:
-                print(adopted)
-        if args.command == "post":
+        if args.command == "adopt":
+            lines = [adopt(args.issue, gh, now) or f"PLAN_ADOPTED issue={args.issue}: no external edit"]
+        elif args.command == "request":
+            lines = REQUEST_CLI["execute"](args, gh.repo, discord)
+            if args.request_action == "cancel":
+                PLAN_PUBLICATION["cancel_prepared"](gh.repo, args.issue, args.message)
+                gh.cleanup_cancelled(args.issue)
+        elif args.command == "post":
             lines = post(args, gh, discord, now)
         elif args.command == "approve":
             lines = approve(args, gh, discord, now)
@@ -759,19 +872,40 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
             waiting = [n for n in gh.labelled() if state(n, gh.plan_comment(n)[3])[0] != "PLAN_APPROVED"]
             lines = [f"PLANS_AWAITING count={len(waiting)}" + (" issues=" + ",".join(f"#{n}" for n in waiting) if waiting else "")]
         else:
+            if args.command == "drop":
+                REQUEST_CLI["REQUESTS"]["dropped"](gh.repo, args.issue, now)
+                PLAN_PUBLICATION["cancel_prepared"](gh.repo, args.issue)
+                PLAN_PUBLICATION["reconcile"](gh, args.issue)
             _, comment_id, url, body = gh.plan_comment(args.issue)
             found, data = state(args.issue, body)
             if args.command == "show" and args.json and data:
                 lines = [json.dumps(data, indent=2, ensure_ascii=False)]
             elif args.command == "drop" and comment_id:
-                gh.save(args.issue, comment_id, f"Plan dropped on {now.date().isoformat()} (was revision {data['revision'] if data else '?'}).")
+                gh.save(args.issue, comment_id, f"Plan dropped on {now.date().isoformat()} (was revision {data['revision'] if data else '?'}).",
+                        expected_body=body)
+                gh.label(args.issue, False)
+                lines = [f"PLAN_DROPPED issue={args.issue}"]
+            elif args.command == "drop":
                 gh.label(args.issue, False)
                 lines = [f"PLAN_DROPPED issue={args.issue}"]
             else:
                 lines = [f"{found} issue={args.issue}" + (f" revision={data['revision']} url={url}" if data else "")]
-    except (Refused, WORK["Refused"], FOLLOWUP["Refused"], ISSUES["Refused"], ValueError, RuntimeError) as error:
+    except PLAN_PUBLICATION["Pending"] as error:
+        resume = shlex.join(["helio", "plan", *(argv if argv is not None else sys.argv[1:])])
+        print(f"PLAN_PENDING cause={error.cause} detail={error} resume={json.dumps(resume)}".replace("\n", " "))
+        return 2
+    except ISSUES["Refused"] as error:
+        pending = error.uncertain or ISSUES["SYNC"]["failure_kind"](str(error)) == "transport"
+        print(f"{'PLAN_PENDING' if pending else 'PLAN_REFUSED'} {error}".replace("\n", " "))
+        return 2 if pending else 1
+    except (Refused, WORK["Refused"], FOLLOWUP["Refused"], REQUEST_CLI["REQUESTS"]["Refused"], ValueError) as error:
         print(f"PLAN_REFUSED {error}".replace("\n", " "))
         return 1
+    except (RuntimeError, OSError, sqlite3.Error, subprocess.SubprocessError) as error:
+        print(f"PLAN_PENDING cause=read_retry detail={error}".replace("\n", " "))
+        return 2
+    finally:
+        stack.close()
     print("\n".join(lines))
     if args.command in ("post", "approve", "pr", "drop", "work") and lines and lines[0].startswith(("PLAN_POSTED", "PLAN_APPROVED", "PLAN_PR", "PLAN_DROPPED", "WORK_AUTHORIZED")):
         try:
@@ -779,7 +913,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
             sync["schedule"](gh.repo, args.issue)
         except (OSError, sqlite3.Error) as error:
             print(f"ISSUE_SYNC_PENDING issue={args.issue}: {type(error).__name__}; run helio issue sync")
-    ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "WORK_AUTHORIZED", "{")
+    ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_ADOPTED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "PLAN_REQUEST", "WORK_AUTHORIZED", "{")
     return 0 if lines and lines[0].startswith(ok) else 1
 
 

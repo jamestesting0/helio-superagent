@@ -119,6 +119,123 @@ test("allowlist and trusted DM revocations withhold old queued requests without 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test.each(["show", "working"] as const)("%s withholds cached evidence when the final authorization read revokes policy", async action => {
+  for (const shared of [false, true]) {
+    const dir = await mkdtemp(join(tmpdir(), "helio-cached-revocation-"));
+    const queuePath = join(dir, "discord-delivery.sqlite"), policyPath = join(dir, "policy.json");
+    const values = { DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: "100",
+      DORI_DISCORD_TRUSTED_CHANNELS: "", DORI_DISCORD_NORMAL_CHANNELS: "", DORI_DISCORD_IGNORED_CHANNELS: "" };
+    await Bun.write(policyPath, JSON.stringify({ version: 1, revision: "a".repeat(64), values }));
+    let queue = new Delivery(queuePath);
+    try {
+      for (const id of ["500", "501"]) {
+        const root = { id, type: 0, channel_id: "100", guild_id: "300", author: { id: "99", username: "Owner" },
+          content: "<@88> explain this", mentions: [{ id: "88" }], timestamp: new Date().toISOString() };
+        queue.stage("inbound", id, JSON.stringify({
+          message_id: id, channel_id: "100", author_id: "99", author: "Owner", content: root.content,
+          sent_at: root.timestamp, attention: "direct", pinged: true, role: "OWNER_REQUEST",
+          scope: "may-request-work", channel_policy: "normal", preparation_complete: true,
+          discord_origin: authorizationMetadata(root), conversation: { context_status: "cached",
+            recent: [{ message_id: "400", author_id: "66", author: "Bystander", content: "PRIVATE_CACHED_EVIDENCE" }] },
+        }));
+      }
+      if (shared) queue.snapshots.capture(["500", "501"]);
+      const before = queue.pending("inbound");
+      queue.close();
+      const script = `
+        import {writeFileSync} from "node:fs";
+        globalThis.fetch=Object.assign(async input=>{
+          const path=new URL(String(input)).pathname;
+          if(path.endsWith("/users/@me"))return Response.json({id:"88"});
+          if(path.endsWith("/channels/100")){
+            writeFileSync(${JSON.stringify(policyPath)},JSON.stringify({
+              version:1,revision:"b".repeat(64),values:{...${JSON.stringify(values)},DORI_DISCORD_ALLOWED:"999"}}));
+            return Response.json({id:"100",type:0,guild_id:"300",parent_id:null});
+          }
+          throw new Error("Unexpected cached-context request "+path);
+        },{preconnect:()=>undefined});
+        process.argv=[process.execPath,"ack.ts",${JSON.stringify(action)},"inbound","500"];
+        await import(${JSON.stringify(join(import.meta.dir, "../ack.ts"))});
+      `;
+      const child = Bun.spawn([process.execPath, "--eval", script], {
+        env: { ...process.env, ...values, HOME: dir, DORI_STATE_DIR: dir, DORI_POLICY_DIR: dir,
+          DORI_DISCORD_TOKEN: "offline", DORI_DISCORD_TRUSTED_IDS: "", DORI_DISCORD_REPORT_CHANNELS: "" },
+        stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000,
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+      ]);
+      expect(stdout).not.toContain("PRIVATE_CACHED_EVIDENCE");
+      expect(stdout).not.toContain("ACK_TURN");
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      expect(stdout.toLowerCase()).toContain("ack_withheld 500: privacy policy changed");
+      queue = new Delivery(queuePath);
+      expect(queue.pending("inbound")).toEqual(before);
+      expect(queue.status("inbound", "500").disposition).toBe("pending");
+    } finally { queue.close(); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test.each([false, true])("show rechecks author blocks after a later root is authorized (sender blocked: %s)", async blockSender => {
+  const dir = await mkdtemp(join(tmpdir(), "helio-output-author-block-"));
+  const queuePath = join(dir, "discord-delivery.sqlite");
+  let queue = new Delivery(queuePath);
+  try {
+    const roots = ["500", "501"].map((id, index) => ({
+      id, type: 0, channel_id: "100", guild_id: "300",
+      author: { id: index ? "99" : "200", username: "Reporter" },
+      content: index ? "<@88> second request" : "<@88> PRIVATE_ROOT", mentions: [{ id: "88" }],
+      timestamp: new Date().toISOString(),
+    }));
+    for (const [index, root] of roots.entries()) queue.stage("inbound", root.id, JSON.stringify({
+      message_id: root.id, channel_id: "100", author_id: root.author.id, author: "Reporter", content: root.content,
+      sent_at: root.timestamp, preparation_complete: true, pinged: true, role: index ? "OWNER_REQUEST" : "TRUSTED_REQUEST",
+      scope: "may-request-work", attention: "direct", channel_policy: "normal",
+      discord_origin: { ...authorizationMetadata(root), ...(index ? { message_type: undefined } : {}) },
+      ...(index ? {} : { reply_context: { status: "parent_only",
+        messages: [{ message_id: "400", author_id: "66", author: "Bystander", content: "PRIVATE_QUOTED_EVIDENCE" }] } }),
+    }));
+    const before = queue.pending("inbound");
+    queue.close();
+    const script = `
+      import {Database} from "bun:sqlite";
+      const root=${JSON.stringify(roots[1])};
+      globalThis.fetch=Object.assign(async input=>{
+        const path=new URL(String(input)).pathname;
+        if(path.endsWith("/users/@me"))return Response.json({id:"88"});
+        if(path.endsWith("/channels/100"))return Response.json({id:"100",type:0,guild_id:"300",parent_id:null});
+        if(path.endsWith("/messages/501")){
+          const db=new Database(${JSON.stringify(queuePath)});
+          for(const user of ${JSON.stringify(blockSender ? ["66", "200"] : ["66"])})
+            db.run("INSERT OR IGNORE INTO blocked_users(user_id,source,reason,created_by,created_at) VALUES(?,'owner','Fixture','99',0)",[user]);
+          db.close();return Response.json(root);
+        }
+        throw new Error("Unexpected author-block request "+path);
+      },{preconnect:()=>undefined});
+      process.argv=[process.execPath,"ack.ts","show","inbound","500,501"];
+      await import(${JSON.stringify(join(import.meta.dir, "../ack.ts"))});
+    `;
+    const child = Bun.spawn([process.execPath, "--eval", script], {
+      env: { ...process.env, HOME: dir, DORI_POLICY_DIR: "", DORI_STATE_DIR: dir, DORI_DISCORD_TOKEN: "offline",
+        DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: "100", DORI_DISCORD_TRUSTED_IDS: "200",
+        DORI_DISCORD_TRUSTED_CHANNELS: "", DORI_DISCORD_NORMAL_CHANNELS: "" },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000,
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(stdout).not.toContain("PRIVATE_QUOTED_EVIDENCE");
+    const frames = stdout.split("\n").filter(line => line.startsWith("ACK_TURN "));
+    expect(frames).toHaveLength(1);
+    const frame = JSON.parse(frames.join("").slice(9));
+    expect(frame.message_ids).toEqual(blockSender ? ["501"] : ["500", "501"]);
+    if (blockSender) expect(stdout).not.toContain("PRIVATE_ROOT");
+    queue = new Delivery(queuePath);
+    expect(queue.pending("inbound")).toEqual(before);
+  } finally { queue.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("revoking the exact bot source withholds its queued evidence and never permits irrelevance", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dori-revoked-report-"));
   try {

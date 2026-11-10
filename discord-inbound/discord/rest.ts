@@ -1,5 +1,6 @@
 import { insideAllowed } from "../intake/filter.ts";
 import { policyValues, runtimePolicy } from "../intake/runtime-policy.ts";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const API = "https://discord.com/api/v10";
 
@@ -15,7 +16,19 @@ export const CATEGORY = 4;
 export const MESSAGE_CHANNEL_TYPES = new Set([0, 5]);
 export const THREAD_PARENT_TYPES = new Set([0, 5, 15]);
 
-export type Rest = <T>(path: string, init?: { method?: string; body?: unknown; retryRateLimit?: boolean }) => Promise<T>;
+export interface RestInit {
+  readonly method?: string;
+  readonly body?: unknown;
+  readonly retryRateLimit?: boolean;
+  readonly signal?: AbortSignal;
+}
+export type Rest = <T>(path: string, init?: RestInit) => Promise<T>;
+
+async function wait(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) { await Bun.sleep(milliseconds); return; }
+  try { await sleep(milliseconds, undefined, { signal }); }
+  catch (error) { signal.throwIfAborted(); throw error; }
+}
 
 export class DiscordRestError extends Error {
   readonly retryable: boolean;
@@ -40,25 +53,34 @@ export class IgnoredChannelError extends Error {
   }
 }
 
+export class PolicyChangedError extends RangeError {
+  constructor(channelId: string) {
+    super(`Privacy policy changed while reading channel ${channelId}; retained pending`);
+    this.name = "PolicyChangedError";
+  }
+}
+
 /** Within one short-lived command, reuse channel and bot-identity reads; writes and message fetches are never cached. */
 export function cachedReads(rest: Rest): Rest {
   const cache = new Map<string, Promise<unknown>>();
-  return <T>(path: string, init?: { method?: string; body?: unknown; retryRateLimit?: boolean }): Promise<T> => {
+  return <T>(path: string, init?: RestInit): Promise<T> => {
+    init?.signal?.throwIfAborted();
     const cacheable = (init?.method ?? "GET") === "GET" && init?.body === undefined &&
       (path === "/users/@me" || /^\/channels\/[0-9]+$/.test(path));
     if (!cacheable) return rest<T>(path, init);
     let hit = cache.get(path);
-    if (!hit) { hit = rest<T>(path); cache.set(path, hit); }
+    if (!hit) { hit = rest<T>(path, init); cache.set(path, hit); }
     return hit as Promise<T>;
   };
 }
 
 export function discordRest(token: string, options: { readonly allowIgnoredMetadata?: boolean; readonly metadataActor?: string } = {}): Rest {
-  const raw: Rest = async <T>(path: string, init: { method?: string; body?: unknown; retryRateLimit?: boolean } = {}): Promise<T> => {
+  const raw: Rest = async <T>(path: string, init: RestInit = {}): Promise<T> => {
     const method = init.method ?? "GET";
     const revision = runtimePolicy()?.revision;
     let deadline = Date.now() + 15_000;
     for (let attempt = 1; ; attempt++) {
+      init.signal?.throwIfAborted();
       const ignored = new Set((policyValues().DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
       if ([...ignored].some(id => !/^\d+$/.test(id))) throw new TypeError("Invalid DORI_DISCORD_IGNORED_CHANNELS");
       const channel = /^\/channels\/([0-9]+)(?:\/|$)/.exec(path)?.[1];
@@ -68,16 +90,18 @@ export function discordRest(token: string, options: { readonly allowIgnoredMetad
       if (channel && ignored.size && !(options.allowIgnoredMetadata && (metadata || membership))) {
         if (ignored.has(channel)) throw new IgnoredChannelError(channel);
         if (!metadata && await insideAllowed(channel, ignored,
-          async id => (await raw<ApiChannel>(`/channels/${id}`)).parent_id ?? undefined)) {
+          async id => (await raw<ApiChannel>(`/channels/${id}`, { signal: init.signal })).parent_id ?? undefined)) {
           throw new IgnoredChannelError(channel);
         }
       }
+      init.signal?.throwIfAborted();
       if (method === "GET" && channel && runtimePolicy()?.revision !== revision) {
-        throw new IgnoredChannelError(channel);
+        throw new PolicyChangedError(channel);
       }
       try {
+        const timeout = AbortSignal.timeout(method === "GET" ? Math.max(1, deadline - Date.now()) : 15_000);
         const res = await fetch(`${API}${path}`, {
-          method, signal: AbortSignal.timeout(method === "GET" ? Math.max(1, deadline - Date.now()) : 15_000),
+          method, signal: init.signal ? AbortSignal.any([timeout, init.signal]) : timeout,
           headers: { Authorization: `Bot ${token}`, ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }) },
           body: init.body instanceof FormData ? init.body : init.body === undefined ? undefined : JSON.stringify(init.body),
         });
@@ -87,14 +111,20 @@ export function discordRest(token: string, options: { readonly allowIgnoredMetad
             throw new DiscordRestError(429, method, path, "rate limit could not be resolved");
           }
           const paused = Date.now();
-          await Bun.sleep(Math.ceil(retry_after * 1000));
+          await wait(Math.ceil(retry_after * 1000), init.signal);
           deadline += Date.now() - paused;
           continue;
         }
         if (!res.ok) throw new DiscordRestError(res.status, method, path, await res.text());
         if (res.status === 204) return undefined as T;
-        return (await res.json()) as T;
+        const result = (await res.json()) as T;
+        init.signal?.throwIfAborted();
+        if (method === "GET" && channel && runtimePolicy()?.revision !== revision) {
+          throw new PolicyChangedError(channel);
+        }
+        return result;
       } catch (error) {
+        init.signal?.throwIfAborted();
         if (method !== "GET" || !(error instanceof Error)) throw error;
         let failure: DiscordRestError | DiscordTransportError;
         if (error instanceof DiscordRestError && error.status !== 429 && error.retryable) {
@@ -108,7 +138,7 @@ export function discordRest(token: string, options: { readonly allowIgnoredMetad
         }
         const delay = 250 * 4 ** (attempt - 1);
         if (attempt >= 3 || Date.now() + delay >= deadline) throw failure;
-        await Bun.sleep(delay);
+        await wait(delay, init.signal);
       }
     }
   };

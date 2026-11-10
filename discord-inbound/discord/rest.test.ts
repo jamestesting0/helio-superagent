@@ -159,3 +159,41 @@ test("a read retry rechecks an ignored-channel change before fetching again", as
     else process.env.DORI_DISCORD_IGNORED_CHANNELS = previous;
   }
 });
+
+test.each(["before-dispatch", "cooldown", "ancestry"] as const)(
+  "caller cancellation stops a read and its nested work: %s", async phase => {
+    const previous = process.env.DORI_DISCORD_IGNORED_CHANNELS;
+    process.env.DORI_DISCORD_IGNORED_CHANNELS = phase === "ancestry" ? "999" : "";
+    const controller = new AbortController();
+    const reason = new DOMException("Optional context cancelled", "AbortError");
+    const first = Promise.withResolvers<void>();
+    let calls = 0;
+    const sleeping = spyOn(Bun, "sleep").mockResolvedValue(undefined);
+    const fetcher = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => {
+      calls++;
+      first.resolve();
+      if (phase === "ancestry") {
+        controller.abort(reason);
+        return Response.json({ id: "100", type: 0, parent_id: null });
+      }
+      return Response.json({ retry_after: 60 }, { status: 429 });
+    }, { preconnect: fetch.preconnect }));
+    try {
+      if (phase === "before-dispatch") controller.abort(reason);
+      const options = { method: "GET", signal: controller.signal };
+      const result = discordRest("fixture")(phase === "ancestry" ? "/channels/100/messages" : "/users/@me", options)
+        .then(() => undefined, (error: unknown) => error);
+      if (phase === "cooldown") {
+        await first.promise;
+        controller.abort(reason);
+      }
+
+      expect(await result).toBe(reason);
+      expect(calls).toBe(phase === "before-dispatch" ? 0 : 1);
+    } finally {
+      fetcher.mockRestore(); sleeping.mockRestore();
+      if (previous === undefined) delete process.env.DORI_DISCORD_IGNORED_CHANNELS;
+      else process.env.DORI_DISCORD_IGNORED_CHANNELS = previous;
+    }
+  },
+);

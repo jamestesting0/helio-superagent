@@ -35,12 +35,12 @@ def finish(repo: str, command: Callable[..., str], change: dict, pull: dict,
     data["status_note"] = f"implemented in {change['url']}"
     expected = plan["render"](change["issue"], data)
     github = plan["GitHub"](repo, run=command)
-    _, comment, _, current = github.plan_comment(change["issue"])
-    if current == expected:
-        return
-    if current != change["plan_body"] or comment is None:
-        raise Refused("The plan changed; the bot must refresh its current report without overwriting it.")
-    permitted()
-    github.save(change["issue"], comment, expected)
-    if github.plan_comment(change["issue"])[3] != expected:
-        raise Refused("Plan progress read-back is pending; the bot will reconcile this publication.", True)
+    with plan["PLAN_PUBLICATION"]["scope"](repo, change["issue"]):
+        _, comment, _, current = github.plan_comment(change["issue"])
+        if current == expected:
+            return
+        if current != change["plan_body"] or comment is None:
+            raise Refused("The plan changed; the bot must refresh its current report without overwriting it.")
+        github.save(change["issue"], comment, expected, permitted, expected_body=current)
+        if github.plan_comment(change["issue"])[3] != expected:
+            raise Refused("Plan progress read-back is pending; the bot will reconcile this publication.", True)

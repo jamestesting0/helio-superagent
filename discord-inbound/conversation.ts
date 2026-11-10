@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { Conversations, CONVERSATION_OUTCOMES } from "./conversations/conversations.ts";
 import { conversationEntry } from "./conversations/conversation-context.ts";
 import { detailPage } from "./delivery/context-render.ts";
+import { followupStatus } from "./conversations/followup-status.ts";
 import { Delivery } from "./delivery/delivery.ts";
 import { object } from "./delivery/monitor-summary.ts";
 
@@ -79,6 +80,7 @@ try {
         if (!row) throw new RangeError("No conversation in this channel");
         console.log(`CONVERSATION_SHOW ${detailPage({
           ...row, state: store.state(row), idle_ms: Math.max(0, now - row.last_activity),
+          subscriptions: followupStatus(`${state}/discord-conversations.sqlite`, channel, user, now),
           transcript: store.transcriptOf(row),
         }, `helio conversation show ${channel} ${user} --topic ${row.anchor_message_id}`, offset)}`);
         break;

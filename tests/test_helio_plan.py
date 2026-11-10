@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+from plan_fixture import stage_source
 
 ROOT = Path(__file__).resolve().parent.parent
 P = runpy.run_path(str(ROOT / "scripts/helio-plan.py"))
@@ -46,9 +47,13 @@ class FakeGitHub:
             return subprocess.run(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"],
                                   cwd=os.environ["HELIO_PROJECT"], check=True, capture_output=True, text=True).stdout.split()[0]
         if argv[:3] == ["gh", "issue", "view"]:
-            return json.dumps({"state": "OPEN", "title": "t", "body": self.issue_body, "comments": self.comments})
+            return json.dumps({"state": "OPEN", "title": "t", "body": self.issue_body, "comments": self.comments,
+                               "labels": [{"name": "helio-plan"}] if 12 in self.labels else []})
         if argv[:3] == ["gh", "api", "user"]:
             return "helio-bot"
+        if argv[:2] == ["gh", "api"] and "--paginate" in argv:
+            return json.dumps([[{"body": c["body"], "html_url": c["url"], "user": c["author"]}
+                                for c in self.comments]])
         if argv[:2] == ["gh", "api"]:
             body = json.loads(stdin)["body"]
             if "PATCH" in argv:
@@ -134,11 +139,23 @@ class PlanCase(unittest.TestCase):
         return code, out.getvalue().strip()
 
     def post(self, plan=PLAN, now=POSTED, request=True, discord_fn=None, from_message=None):
+        current_reader = discord_fn or discord()
+        if not self.gh_fake.comments:
+            self.planning_reader = current_reader
+        original_reader = getattr(self, "planning_reader", current_reader)
+
+        def reader(message, channel=None, fingerprint=None):
+            # Planning origin and revision feedback are distinct live messages in production.
+            # The compact legacy fixture reuses 555; its fingerprint selects the origin.
+            return (original_reader if fingerprint else current_reader)(message, channel, fingerprint)
+
+        if request:
+            stage_source(Path(os.environ["DORI_STATE_DIR"]), json.dumps(original_reader("555")["payload"]))
         path = self.dir / "plan.json"
         path.write_text(json.dumps(plan))
         argv = ["post", "--issue", "12", "--file", str(path), "--announcement-file", str(self.dir / "announce.txt")]
         return self.run_cli(*argv, *(["--request-message", "555"] if request else []),
-                            *(["--from-message", from_message] if from_message else []), discord_fn=discord_fn, now=now)
+                            *(["--from-message", from_message] if from_message else []), discord_fn=reader, now=now)
 
     def approve(self, now, sent, referenced=None, author=OWNER, content="approve"):
         source = discord(author=author, content=content, sent=sent, referenced=referenced)
@@ -335,7 +352,7 @@ class PostTests(PlanCase):
         self.post()
         later = POSTED + datetime.timedelta(hours=1)
         self.assertEqual(self.approve(later, later, referenced=announcement_of(1))[0], 0)
-        self.assertIn("field=change_note", self.post(now=later)[1])
+        self.assertIn("field=change_note", self.post(plan={**PLAN, "in_short": "Players get 6 hours to confirm."}, now=later)[1])
         code, out = self.post(plan={**PLAN, "in_short": "Players get 6 hours to confirm.", "change_note": "window 8 to 6 hours"}, now=later)
         self.assertEqual(code, 0, out)
         self.assertIn("PLAN_APPROVAL_RESET", out)
@@ -455,7 +472,8 @@ class StateTests(PlanCase):
     def test_adopting_removed_questions_allows_approval_of_the_new_revision(self):
         self.post(plan={**PLAN, "open_questions": ["Keep the old deadline?"]})
         self.gh_fake.hand_edit("### ❓ Needs your answer\n- Keep the old deadline?\n\n", "")
-        self.run_cli("check", "--issue", "12", now=POSTED + datetime.timedelta(hours=1))
+        code, output = self.run_cli("adopt", "--issue", "12", now=POSTED + datetime.timedelta(hours=1))
+        self.assertEqual(code, 0, output)
         code, out = self.approve(POSTED + datetime.timedelta(hours=2), POSTED + datetime.timedelta(hours=2),
                                  content="approve #12")
         self.assertEqual(code, 0, out)
@@ -469,6 +487,10 @@ class StateTests(PlanCase):
         self.gh_fake.hand_edit("8-hour window", "4-hour window")
         code, out = self.run_cli("check", "--issue", "12", now=POSTED + datetime.timedelta(hours=2))
         self.assertEqual(code, 1, out)
+        self.assertIn("PLAN_EDITED_OUTSIDE_HELIO", out)
+        self.assertEqual(self.data()["revision"], 1)
+        code, out = self.run_cli("adopt", "--issue", "12", now=POSTED + datetime.timedelta(hours=2))
+        self.assertEqual(code, 0, out)
         self.assertIn("PLAN_ADOPTED issue=12 revision=2", out)
         self.assertEqual(self.data()["scope"]["changes"][0]["after"], "4-hour window")
         self.assertFalse(P["approved"](self.data()))
@@ -1028,6 +1050,8 @@ class SubmitTests(PlanCase):
                 if name == "adopted":
                     self.approved_plan()
                     self.gh_fake.hand_edit("8-hour window", "4-hour window")
+                    code, output = self.run_cli("adopt", "--issue", "12")
+                    self.assertEqual(code, 0, output)
                 else:
                     self.post(plan={**PLAN, "open_questions": ["Which deadline?"] if name == "draft" else []})
                 (self.dir / "result.json").write_text(json.dumps({"scope": [{"status": "met", "evidence": "window tested"}], "done_when": []}))

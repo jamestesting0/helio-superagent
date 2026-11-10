@@ -1,5 +1,6 @@
 import { object } from "./monitor-summary.ts";
 import { messageUrl, referenceLink } from "../messages/references.ts";
+import { contextExcerpt } from "./context-excerpt.ts";
 
 export const SECTION_NAMES = ["turn", "conversation", "channel_since_last_claim", "reply_chain", "preceding"] as const;
 export type SectionName = typeof SECTION_NAMES[number];
@@ -27,19 +28,24 @@ function boundedEntry(entry: Record<string, unknown>, budget: number) {
 }
 
 function section(entries: readonly Record<string, unknown>[], options: {
-  readonly budget: number; readonly limit: number; readonly each?: number; readonly read: string;
+  readonly budget: number; readonly limit: number; readonly each?: number; readonly read: string; readonly compact?: boolean;
 }) {
   const messages: Record<string, unknown>[] = [];
-  const result = { messages, truncated: false, read_more: options.read };
+  const result = { messages, truncated: false, omitted_count: entries.length, read_more: options.read };
   const selected = entries.slice(-options.limit);
   result.truncated = selected.length < entries.length;
   for (const [index, entry] of selected.entries()) {
     const remaining = options.budget - JSON.stringify(result).length - 2;
     if (remaining < 180) { result.truncated = true; break; }
-    const rendered = boundedEntry(entry, Math.min(options.each ?? Math.floor(remaining / (selected.length - index)), remaining));
+    const budget = Math.min(options.each ?? Math.floor(remaining / (selected.length - index)), remaining);
+    const rendered = options.compact ?
+      contextExcerpt(entry, Math.min(budget, Math.floor(remaining / (selected.length - index)))) :
+      boundedEntry(entry, budget);
+    if (!rendered) { result.truncated = true; continue; }
     result.messages.push(rendered);
     if (rendered.truncated) result.truncated = true;
   }
+  result.omitted_count = entries.length - result.messages.length;
   return result;
 }
 
@@ -86,6 +92,8 @@ export function contextSections(messages: readonly Record<string, unknown>[]) {
     conversation: [{
       request: conversation.request, decided: conversation.decided, waiting_on: conversation.waiting_on, result: conversation.result,
       relation: conversation.relation,
+      topic_binding: conversation.topic_binding,
+      context_status: conversation.context_status, context_read: conversation.context_read,
       topic: conversation.topic, summary: conversation.summary ?? conversation.topic, state: conversation.state,
       hold_reason: conversation.hold_reason, recently_resolved: conversation.recently_resolved,
       anchor_message_id: conversation.anchor_message_id, opened_at: conversation.opened_at,
@@ -129,7 +137,7 @@ export function renderTurn(messages: readonly Record<string, unknown>[]): string
     reply_to: last.message_id,
     turn: section(sections.turn, { budget: 8000, limit: 10, read: read("turn") }),
     conversation: conversationData,
-    channel_since_last_claim: section(sections.channel_since_last_claim, { budget: 2000, limit: 5, each: 380, read: read("channel_since_last_claim") }),
+    channel_since_last_claim: section(sections.channel_since_last_claim, { budget: 2000, limit: 10, each: 700, compact: true, read: read("channel_since_last_claim") }),
     reply_chain: reply,
     preceding: section(sections.preceding, { budget: 1500, limit: 5, each: 280, read: read("preceding") }),
   };
@@ -137,6 +145,7 @@ export function renderTurn(messages: readonly Record<string, unknown>[]): string
   for (const name of ["preceding", "channel_since_last_claim", "reply_chain"] as const) {
     while (text.length > 19_990 && result[name].messages.length) {
       result[name].messages.shift();
+      result[name].omitted_count++;
       result[name].truncated = true;
       text = JSON.stringify(result);
     }

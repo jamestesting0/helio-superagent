@@ -34,6 +34,7 @@ export function conversationSnapshot(store: Conversations, channel: string, user
       request: row.request, decided: row.decided, waiting_on: row.waiting_on, result: row.result,
       job: row.job, issue: row.issue, revision: row.revision, reply_disposition: row.reply_disposition,
       ...(message ? { relation: relation(store, row, message) } : {}),
+      ...(message ? { topic_binding: relation(store, row, message) === "reply" ? "explicit" : "candidate" } : {}),
       topic: row.topic, summary: row.summary || row.topic, state: store.state(row),
       anchor_message_id: row.anchor_message_id, opened_at: new Date(row.opened_at).toISOString(),
       last_activity: row.last_activity, hold_reason: row.hold_reason,

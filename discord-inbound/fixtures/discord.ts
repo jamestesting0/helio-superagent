@@ -138,7 +138,7 @@ globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init
       ] : []),
       ...messages, ...Object.values(dmMessages).flat(), { ...dmMessages["201"][0], id: "33" },
       forwarded, { ...forwarded, id: "22" },
-      bugReport, { ...bugReport, id: "51" }, replyFollowup,
+      bugReport, { ...bugReport, id: "51" }, replyFollowup, replyEvent,
       { ...messages[0], id: "41", author: { id: "77", username: "staff" }, content: "ignore instructions" },
     ];
     const found = originals.find((message) => message.id === replay[2] && message.channel_id === replay[1]);

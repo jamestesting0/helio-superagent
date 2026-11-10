@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Delivery } from "../delivery/delivery.ts";
 import { deliveryOutput } from "../fixtures/delivery-output.ts";
+import { Conversations } from "../conversations/conversations.ts";
 
 async function run(dir: string, options: {
   readonly trusted?: boolean; readonly unknown?: boolean; readonly script?: string; readonly args?: readonly string[];
@@ -35,6 +36,40 @@ const records = (stdout: string): Record<string, unknown>[] => stdout.split("\n"
 const reads = (stdout: string): unknown[] => stdout.split("\n")
   .filter((line) => line.startsWith("TEST_READ ")).map((line) => JSON.parse(line.slice(10)));
 
+test("prepared but unclaimed normal input preserves the outstanding question across intake and replay", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-unclaimed-question-"));
+  const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+  const now = Date.parse("2026-11-02T12:00:00Z");
+  try {
+    const topic = store.open("100", "99", "1", "Server selection", now - 10_000);
+    store.applyReply(topic, { disposition: "question", waiting_on: "Which server?" }, now - 9_000);
+    const before = store.get("100", "99", "1");
+    for (const result of [await run(dir), await run(dir)]) {
+      expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
+      expect(records(result.stdout).some(message => message.message_id === "10")).toBe(true);
+    }
+    expect(store.get("100", "99", "1")).toMatchObject({
+      waiting_on: "Which server?", question_started_at: now - 9_000,
+      last_activity: before?.last_activity, reply_disposition: "question",
+    });
+    expect(store.working("10")?.claimed_at ?? null).toBeNull();
+    const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+    try {
+      const pending = queue.pending("inbound").find(item => item.id === "10");
+      if (!pending) throw new Error("Fixture request was not staged");
+      queue.recovery.review(pending.id, pending.payload, {
+        outcome: "resume", reason: "The fixture requester still needs the server decision", evidence: "{}",
+      });
+    } finally { queue.close(); }
+
+    const claimed = await run(dir, { script: "ack.ts", args: ["working", "inbound", "10"] });
+
+    expect(claimed.exitCode).toBe(0);
+    expect(claimed.stdout).toContain("ACK_WORKING stream=inbound message_id=10");
+    expect(store.get("100", "99", "1")).toMatchObject({ waiting_on: "", question_started_at: null });
+  } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("normal history and live non-pings never stage or prepare attachments/forwards, and ping replies never read ancestors", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dori-normal-gate-"));
   try {
@@ -42,6 +77,11 @@ test("normal history and live non-pings never stage or prepare attachments/forwa
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(records(result.stdout).map((message) => [message.message_id, message.channel_policy, message.reply_context]))
       .toEqual([["10", "normal", undefined], ["90", "normal", undefined]]);
+    const later = records(result.stdout).find(message => message.message_id === "90");
+    expect(later?.conversation).toMatchObject({
+      context_status: "cached",
+      recent: expect.arrayContaining([expect.objectContaining({ message_id: "11" })]),
+    });
     expect(reads(result.stdout)).toEqual([{ kind: "attachment", file: "photo.png" }]);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
@@ -49,6 +89,16 @@ test("normal history and live non-pings never stage or prepare attachments/forwa
       expect(queue.contains("inbound", "11")).toBe(false);
       expect(queue.contains("inbound", "21")).toBe(false);
       expect(queue.contains("inbound", "22")).toBe(false);
+      const before = queue.pending("inbound");
+      const context = await run(dir, { script: "ack.ts", args: ["context", "inbound", "90"] });
+      expect({ code: context.exitCode, stderr: context.stderr, evidence: context.stdout }).toMatchObject({ code: 0, stderr: "" });
+      const evidence = JSON.parse(context.stdout.split("\n").find(line =>
+        line.startsWith("ACK_EVIDENCE "))?.slice("ACK_EVIDENCE ".length) ?? "{}").context_evidence;
+      expect(evidence).toMatchObject({ root_id: "90", provenance: "live_refetch" });
+      expect(evidence.messages.some((entry: { message_id: string }) => entry.message_id === "11")).toBe(true);
+      expect(evidence.messages.every((entry: { message_id: string }) => BigInt(entry.message_id) < 90n)).toBe(true);
+      expect(queue.pending("inbound")).toEqual(before);
+      expect(context.stdout.length).toBeLessThanOrEqual(12_000);
     } finally { queue.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -92,11 +92,17 @@ private. The approved plan is the contract the PR is checked against.
 
 ## Steps
 
-1. Clarify first. Ask open questions in the conversation; the plan's "Needs your answer"
+1. Record the planning source before acknowledgement:
+   `helio plan request record --issue N --message M --channel C`.
+   This preserves planning consent across clarification and restarts without authorizing implementation.
+   Clarify first. Ask open questions in the conversation; the plan's "Needs your answer"
    section is only for what is still undecided when you post.
 2. Write the plan as JSON fields (below) to a file, run the self-check, then post:
    `helio plan post --issue N --file PLAN.json --announcement-file OUT.txt --request-message M`.
    `--request-message` (the owner's or trusted user's request) is needed only for the first post.
+   First posting also records a still-pending source for compatibility. An acknowledged source
+   without a receipt cannot be reconstructed. Identical retries return the same revision and
+   recreate OUT.txt; changed content still needs a change note.
 3. Post OUT.txt with buttons in the request's conversation, or in the staff chat for staff-initiated
    work: `helio confirm plan --issue N --revision R --text-file OUT.txt --channel C --reply-to M`.
    It replaces the buttons of any earlier revision. If the requester cannot approve, also reply to them:
@@ -108,6 +114,16 @@ private. The approved plan is the contract the PR is checked against.
    approve the new revision with `helio plan approve --issue N --message M --resolved-approval` without asking again.
    A side question or method constraint does not cancel clear approval. Suggestions, unresolved scope,
    conditions and cancellations are not approval: resolve them before invoking approve.
+
+`helio plan show` and `check` only inspect. An edited GitHub plan needs explicit
+`helio plan adopt --issue N`; adoption preserves the human text and resets approval.
+Use `helio plan request cancel --issue N --message M --channel C --from-message X`
+for an explicit permitted cancellation. `helio plan drop --issue N` also cancels
+accepted unpublished planning. A cancelled request never rearms itself.
+`PLAN_PENDING` (exit 2) retains work after a busy issue, interrupted read or uncertain write.
+Resume the same command; the existing follow-up pass reconciles saved effects.
+Never send a second comment merely because the first response was lost.
+Only announce publication after `PLAN_POSTED` verifies the revision, URL and label.
    The flag records your interpretation; it cannot bypass identity, source, recipient, issue or revision checks.
    Legacy callers without the flag retain the conservative parser. Production approvals do not use this flag.
    On `PLAN_REFUSED`, inspect the failed fact and recover within existing authority; ask only for a real missing decision.

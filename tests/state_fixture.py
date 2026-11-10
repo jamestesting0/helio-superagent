@@ -46,6 +46,7 @@ def build_state(state: Path) -> None:
         sync["mark_discussed"](state, "o/r", 1, 1)
         sync["enqueue"](state, "o/r", 1)
         issues = runpy.run_path(str(SCRIPTS / "helio_issues.py"))
+        runpy.run_path(str(SCRIPTS / "helio_plan_publication.py"))["connect"]().close()
         body = {"body": "", "title": "t", "state": "open"}
         fake = lambda argv, stdin=None: json.dumps([] if "comments" in argv[2] else body)
         issues["Issues"]("o/r", state, command=fake).update(1, {"projection": "x"})

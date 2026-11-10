@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import runpy
 import sqlite3
@@ -127,6 +128,13 @@ class MonitorDeliveryTests(unittest.TestCase):
             records = json.loads(content)
             self.assertEqual([row["announcement"]["title"] for row in records], ["\n" * 100_000] * 2)
             self.assertEqual([row["announcement"]["event"] for row in records], ["FOLLOWUP_LIVE"] * 2)
+            with sqlite3.connect(self.state / "reply-sends.sqlite") as sends:
+                sends.execute("CREATE TABLE reply_sends(target TEXT,text_hash TEXT,state TEXT,reply_id TEXT)")
+                for user in ("7", "8"):
+                    identity = hashlib.sha256(json.dumps(["owner/repo", 1, user, "100", "900"],
+                                                        separators=(",", ":")).encode()).hexdigest()
+                    sends.execute("INSERT INTO reply_sends VALUES('900',?,'sent',?)",
+                                  ("event:followup:" + identity, "99" + user))
             for user in ("7", "8"):
                 self.invoke(module, "done", "--issue", "1", "--user", user)
             out = io.StringIO()

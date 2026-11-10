@@ -59,7 +59,7 @@ for _shipped in PREVIOUSLY_SHIPPED.values():
     })
 INBOUND_FILES = (
     # entry points and package
-    "ack.ts", "blacklist.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "package.json", "recovery.ts",
+    "ack.ts", "blacklist.ts", "bun.lock", "context.ts", "conversation.ts", "inbound.ts", "notification.ts", "package.json", "recovery.ts",
     "patches/agent-messenger@2.40.0.patch",
     # owner-side controller and isolated administration bridge
     "admin/backend.ts", "admin/backend.test.ts", "admin/broker.ts", "admin/controller.ts", "admin/controller.test.ts", "admin/expiry.test.ts",
@@ -82,12 +82,14 @@ INBOUND_FILES = (
     "intake/bug-reports.test.ts", "intake/catchup-gaps.test.ts", "intake/catchup.test.ts", "intake/catchup.ts", "intake/channel-policy.test.ts",
     "intake/filter.test.ts", "intake/filter.ts", "intake/lastseen.ts", "intake/owner-mentions.test.ts",
     "intake/preceding.test.ts", "intake/preceding.ts", "intake/recent-ids.test.ts", "intake/recent-ids.ts", "intake/turns.test.ts", "intake/turns.ts",
-    "intake/watched-channels.ts",
+    "intake/watched-channels.ts", "intake/nearby-context.ts", "intake/context-command.ts",
     "intake/source-proof.ts", "intake/source-proof.test.ts",
     "intake/runtime-policy.ts", "intake/runtime-policy.test.ts",
     # delivery
-    "delivery/context-render.ts", "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
-    "delivery/expiry.ts", "delivery/monitor-summary.ts", "delivery/pending-reminder.ts",
+    "delivery/context-render.ts", "delivery/context-render.test.ts", "delivery/context-excerpt.ts",
+    "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
+    "delivery/expiry.ts", "delivery/monitor-summary.ts", "delivery/pending-reminder.ts", "delivery/plan-requests.sql",
+    "delivery/turn-snapshots.ts", "delivery/turn-snapshots.test.ts",
     "delivery/ignored-store.ts", "delivery/ignored-cleanup.ts", "delivery/ignored.test.ts",
     "delivery/reconcile.ts", "delivery/reconcile-manifest.ts",
     "delivery/recovery-schema.sql", "delivery/recovery-store.ts", "delivery/moderation.ts", "delivery/moderation.test.ts",
@@ -105,6 +107,9 @@ INBOUND_FILES = (
     "conversations/issue-review.ts", "conversations/understanding.test.ts",
     "conversations/question-answer.test.ts", "conversations/question-answer.ts", "conversations/receipts.test.ts",
     "conversations/reply-guard.ts", "conversations/reply-once.test.ts", "conversations/reply-once.ts",
+    "conversations/terminal-notification.ts", "conversations/terminal-notification.test.ts",
+    "conversations/followup-status.ts",
+    "conversations/followups.sql",
     "conversations/reply-settlement.ts", "conversations/fulfillment.test.ts",
     "conversations/notice-store.ts", "conversations/notice-races.test.ts",
     "conversations/pending-input.ts",
@@ -117,7 +122,7 @@ INBOUND_FILES = (
     "interactive/questions.test.ts", "interactive/recovery.test.ts",
     "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
     # tests
-    "tests/context-pending.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/catchup-pages.test.ts", "tests/ignored-threads.test.ts", "tests/upkeep-independent.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
+    "tests/context-pending.test.ts", "tests/context-read.test.ts", "tests/conversation.test.ts", "tests/flow.test.ts", "tests/catchup-pages.test.ts", "tests/ignored-threads.test.ts", "tests/upkeep-independent.test.ts", "tests/moderation-flow.test.ts", "tests/blacklist-cli.test.ts",
     "tests/stage-first.test.ts", "tests/gateway-message.test.ts", "tests/quiet-input.test.ts", "tests/reconciliation.test.ts",
     "tests/learning-context.test.ts", "tests/learning-recovery.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",

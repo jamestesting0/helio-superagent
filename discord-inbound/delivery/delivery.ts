@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { RecoveryStore } from "./recovery-store.ts";
 import { Moderation, type Blocked, type BlockRequest } from "./moderation.ts";
 import { IgnoredStore } from "./ignored-store.ts";
+import { TurnSnapshots } from "./turn-snapshots.ts";
 
 export type Stream = "inbound" | "context";
 type Disposition = "done" | "irrelevant";
@@ -39,6 +40,7 @@ export class Delivery {
   readonly recovery: RecoveryStore;
   readonly moderation: Moderation;
   readonly ignored: IgnoredStore;
+  readonly snapshots: TurnSnapshots;
 
   constructor(path: string, busyMs = 5000) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -80,6 +82,8 @@ export class Delivery {
       attachments_cleaned INTEGER NOT NULL DEFAULT 0 CHECK (attachments_cleaned IN (0, 1)),
       PRIMARY KEY (stream, id)
     )`);
+    this.db.exec(readFileSync(join(import.meta.dir, "plan-requests.sql"), "utf8"));
+    this.snapshots = new TurnSnapshots(this.db);
     this.ignored = new IgnoredStore(this.db);
     this.recovery = new RecoveryStore(this.db);
     this.moderation = new Moderation(this.db);

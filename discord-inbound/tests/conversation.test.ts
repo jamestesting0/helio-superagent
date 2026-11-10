@@ -173,16 +173,19 @@ test.each(["old", "fresh", "rest"])("intake excludes unclaimed chatter and retai
     const stdout = await intake(dir, mode);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
-      const pending = queue.pending("inbound").map((item) => JSON.parse(item.payload));
+      const pending = queue.pending("inbound").map((item) => queue.snapshots.hydrate(JSON.parse(item.payload)));
       expect(pending.map((item) => [item.message_id, item.attention])).toEqual([["80", "review"], ["82", "review"]]);
-      const first: Context = pending[0].conversation;
-      const next: Context = pending[1].conversation;
+      const first = pending[0]?.conversation as Context;
+      const next = pending[1]?.conversation as Context;
       expect([first.topic, first.opened_at, first.anchor_message_id, first.transcript])
         .toEqual(["Match timeout", new Date(opened).toISOString(), "9", []]);
-      expect(first.recent.map((entry) => entry.message_id)).toEqual(["67", "68", "69", "70", "71"]);
+      // Only cached messages within five minutes are initial evidence; missing history is lazy.
+      const expected = mode === "fresh" ? Array.from({ length: 10 }, (_, i) => String(62 + i)) :
+        mode === "old" ? ["70", "71"] : [];
+      expect(first.recent.map((entry) => entry.message_id)).toEqual(expected);
       // 81 replies to unclaimed 80, so 82's explicit reply to 81 has no known source topic.
-      expect(next).toBeUndefined();
-      expect(stdout.includes("TEST_CONVERSATION_HISTORY")).toBe(mode === "rest");
+      expect(next.topic).toBeUndefined();
+      expect(stdout.includes("TEST_CONVERSATION_HISTORY")).toBe(false);
       expect(store.transcript("100", "99").map((entry) => entry.message_id)).toEqual(["83"]);
       expect(store.get("100", "99")?.last_activity).toBe(Date.parse("2026-11-02T12:00:00Z"));
       expect(inboundRecords(stdout).map((record) => record.message_id)).toEqual(["82"]);

@@ -70,6 +70,50 @@ class RetentionCoverage(Fixture):
 
 
 class RetentionRules(Fixture):
+    def test_planning_sources_retain_active_consent_and_expire_only_settled_receipts(self):
+        with self.db("discord-delivery.sqlite") as db, db:
+            for message, state, settled in (("1", "accepted", False), ("2", "posted", False),
+                                             ("3", "cancelled", True)):
+                db.execute("""INSERT INTO plan_requests
+                    (repo,issue,message,channel,author,author_name,source_hash,accepted_at,state,settled_at)
+                    VALUES('o/r',1,?,'100','99','Owner','fingerprint',datetime(?,'unixepoch'),?,
+                           CASE WHEN ? THEN datetime(?,'unixepoch') END)""",
+                           (message, NOW - 200 * DAY, state, settled, NOW - 200 * DAY))
+        HK["retention"](self.state, NOW, apply=True)
+        with self.db("discord-delivery.sqlite") as db:
+            self.assertEqual(db.execute("SELECT message,state FROM plan_requests ORDER BY message").fetchall(),
+                             [("1", "accepted"), ("2", "posted")])
+
+    def test_plan_effects_keep_unresolved_bodies_and_erase_settled_content_before_receipts(self):
+        with self.db("issue-updates.sqlite") as db, db:
+            for identity, state, age in (("uncertain", "uncertain", 200), ("prepared", "prepared", 200),
+                                         ("settled", "confirmed", 40), ("expired", "confirmed", 200)):
+                db.execute("""INSERT INTO plan_publications
+                    (id,repo,issue,kind,before_body,after_body,before_hash,after_hash,request_binding,
+                     state,created_at,last_checked_at,completed_at)
+                    VALUES (?,'o/r',1,'comment','private preimage','published body','before','after','{}',?,?,?,?)""",
+                           (identity, state, NOW - age * DAY, NOW - age * DAY,
+                            NOW - age * DAY if state == "confirmed" else None))
+        HK["retention"](self.state, NOW, apply=True)
+        with self.db("issue-updates.sqlite") as db:
+            rows = db.execute("SELECT id,before_body,after_body FROM plan_publications ORDER BY id").fetchall()
+        self.assertEqual(rows, [("prepared", "private preimage", "published body"), ("settled", "", ""),
+                                ("uncertain", "private preimage", "published body")])
+
+    def test_shared_context_snapshot_survives_while_any_input_references_it(self):
+        with self.db("discord-delivery.sqlite") as db, db:
+            for identity in ("active", "settled"):
+                db.execute("INSERT INTO turn_context_snapshots VALUES (?,'100','[]',?)", (identity, NOW - 40 * DAY))
+            db.execute("INSERT INTO delivery VALUES ('inbound','400',?)",
+                       (json.dumps({"conversation": {"context_snapshot": "active"}}),))
+        HK["retention"](self.state, NOW, apply=True)
+        with self.db("discord-delivery.sqlite") as db, db:
+            self.assertEqual(db.execute("SELECT id FROM turn_context_snapshots").fetchall(), [("active",)])
+            db.execute("UPDATE delivery SET payload=NULL WHERE id='400'")
+        HK["retention"](self.state, NOW, apply=True)
+        with self.db("discord-delivery.sqlite") as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM turn_context_snapshots").fetchone()[0], 0)
+
     def test_completed_and_uncertain_followup_receipts_survive_retention(self):
         with self.db("issue-updates.sqlite") as db, db:
             db.execute("""INSERT INTO followup_creations

@@ -2,6 +2,7 @@ import { Delivery } from "./delivery/delivery.ts";
 import { redactBlocked } from "./delivery/moderation.ts";
 import { cleanupAttachments } from "./messages/images.ts";
 import { filterConfig, reauthorize, validateChannelPolicy, type OriginalMetadata } from "./intake/authorization.ts";
+import { runtimePolicy } from "./intake/runtime-policy.ts";
 import { cachedReads, discordRest } from "./discord/rest.ts";
 import { sweepExpired } from "./delivery/expiry.ts";
 import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
@@ -17,6 +18,10 @@ import { settleBlock, strikeLinks } from "./delivery/moderation-effects.ts";
 const args = process.argv.slice(2);
 const [action, stream, id] = args;
 const state = process.env.DORI_STATE_DIR;
+if (action === "context") {
+  const { contextCommand } = await import("./intake/context-command.ts");
+  process.exit(await contextCommand(args));
+}
 if (state && (action === "gaps" || action === "gap")) {
   const gapId = Number(stream);
   if ((action === "gaps" && args.length !== 1) || (action === "gap" && (args.length !== 2 || !Number.isSafeInteger(gapId)))) {
@@ -83,9 +88,16 @@ try {
   conversations = new Conversations(`${state}/discord-conversations.sqlite`);
   const queue = delivery, store = conversations;
   const sourceStream = stream;
+  const authorizationRevision = runtimePolicy()?.revision;
+  function requireCurrentPolicy() {
+    if (runtimePolicy()?.revision !== authorizationRevision) {
+      throw new RangeError("Privacy policy changed during authorization; retained pending");
+    }
+  }
   const rest = process.env.DORI_DISCORD_TOKEN ? cachedReads(discordRest(process.env.DORI_DISCORD_TOKEN)) : undefined;
   let policy: Promise<ReturnType<typeof filterConfig>> | undefined;
   function currentPolicy() {
+    requireCurrentPolicy();
     if (!policy) policy = (async () => {
       if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
       const cfg = filterConfig(process.env, (channel, user) => store.isOpen(channel, user),
@@ -94,12 +106,14 @@ try {
       cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
       const warnings: string[] = [];
       await validateChannelPolicy(cfg, rest, (message) => warnings.push(message));
+      requireCurrentPolicy();
       if (warnings.length) warn(`channel policy warnings=${warnings.length}: ${warnings[0]}`);
       return cfg;
     })();
     return policy;
   }
   async function quietIgnored(item: { readonly id: string; readonly payload: string }): Promise<boolean> {
+    requireCurrentPolicy();
     const ignored = stream === "inbound" ? filterConfig(process.env).ignoredChannels :
       new Set((process.env.DORI_DISCORD_IGNORED_CHANNELS ?? "").split(",").map(value => value.trim()).filter(Boolean));
     const lookup = rest ? async (channel: string) => rest<{ parent_id?: string }>(`/channels/${channel}`) : undefined;
@@ -118,17 +132,20 @@ try {
     return true;
   }
   async function authorized(item: { readonly id: string; readonly payload: string }): Promise<string> {
+    requireCurrentPolicy();
     if (stream === "context") {
       const author = object(JSON.parse(item.payload)).author_id;
       if (typeof author === "string" && queue.moderation.isBlocked(author)) throw new RangeError("Sender is blacklisted; context withheld");
       if (!await contextReplayAllowed(item.payload, process.env, rest)) {
         throw new RangeError("Context withheld by current privacy policy");
       }
+      requireCurrentPolicy();
       return item.payload;
     }
     const cfg = await currentPolicy();
     if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
     const authorizedNow = await reauthorize(item.payload, cfg, rest);
+    requireCurrentPolicy();
     if (!authorizedNow) throw new RangeError(`Delivery ${item.id} is no longer authorized; keep it pending`);
     if (queue.moderation.isBlocked(authorizedNow.author_id)) throw new RangeError("Sender is blacklisted; withheld, record kept");
     const current = redactBlocked(authorizedNow, (id) => queue.moderation.isBlocked(id)) as typeof authorizedNow;
@@ -158,14 +175,22 @@ try {
         const item = queue.pending(stream).find((item) => item.id === messageId);
         if (!item) throw new RangeError("Delivery changed while reading");
         if (await quietIgnored(item)) continue;
-        const message = object(JSON.parse(await authorized(item)));
+        const message = object(redactBlocked(queue.snapshots.hydrate(object(JSON.parse(await authorized(item)))),
+          author => queue.moderation.isBlocked(author)));
         if (messages.length && messages[0]?.channel_id !== message.channel_id) {
           throw new RangeError("Turn messages must share a channel");
         }
         messages.push(message);
       } catch (error) { withheld(messageId, error); }
     }
+    for (const [index, message] of [...messages.entries()].reverse()) {
+      if (typeof message.author_id === "string" && queue.moderation.isBlocked(message.author_id)) {
+        withheld(String(message.message_id), new RangeError("Sender is blacklisted; withheld, record kept"));
+        messages.splice(index, 1);
+      }
+    }
     if (messages.length) {
+      requireCurrentPolicy();
       const last = messages.at(-1);
       if (stream === "inbound" && last && typeof last.channel_id === "string" && typeof last.author_id === "string" && typeof last.message_id === "string") {
         const lastId = last.message_id;
@@ -174,11 +199,15 @@ try {
         if (conversation || store.latest(last.channel_id, last.author_id)) {
           const saved = last.conversation ? object(last.conversation) : {};
           last.conversation = {
-            ...conversation, recent: saved.recent,
+            ...conversation, recent: saved.recent, context_status: saved.context_status, context_read: saved.context_read,
             transcript: (conversation?.transcript ?? [])
               .filter((entry) => BigInt(entry.message_id) < BigInt(lastId)),
           };
         }
+      }
+      requireCurrentPolicy();
+      for (let index = 0; index < messages.length; index++) {
+        messages[index] = object(redactBlocked(messages[index], author => queue.moderation.isBlocked(author)));
       }
       if (stream === "context") console.log(`ACK_CONTEXT ${detailPage(messages[0], `ack show context ${id}`, offset)}`);
       else {

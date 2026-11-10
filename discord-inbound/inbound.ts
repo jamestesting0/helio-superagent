@@ -33,8 +33,10 @@ import { recordAnswer } from "./conversations/question-answer.ts";
 import { DiscordRestError, discordRest } from "./discord/rest.ts";
 import { TurnAssembler, type TurnMessage } from "./intake/turns.ts";
 import { Preceding } from "./intake/preceding.ts";
+import { nearbyContext } from "./intake/nearby-context.ts";
 import { Conversations } from "./conversations/conversations.ts";
 import { conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
+import { isTerminalReply } from "./conversations/reply-once.ts";
 import { sweepConversations } from "./conversations/conversation-upkeep.ts";
 import { newerInputPending } from "./conversations/pending-input.ts";
 import { reactOnArrival, sweepWorking } from "./conversations/working.ts";
@@ -158,6 +160,7 @@ function answerFor(answer: Parameters<typeof recordAnswer>[2]): string | undefin
 for (const item of delivery.pending("inbound")) delivery.recovery.flag(item.id, item.payload);
 const preceding = new Preceding(() => Date.now());
 const turns = new TurnAssembler((turn) => {
+  delivery.snapshots.capture(turn.turn.message_ids);
   if (turn.turn.preceding?.length) {
     const first = delivery.pending("inbound").find((item) => item.id === turn.turn.id);
     if (first) delivery.refresh(first.id, first.payload,
@@ -282,29 +285,16 @@ async function conversationContext(msg: IncomingMessage) {
     msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`));
   const conversation = conversationSnapshot(conversations, msg.channel_id, msg.author.id, Date.now(),
     { reply_to: msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id, pinged });
-  if (!conversation) return undefined;
-  const previous = conversation.transcript
+  const previous = (conversation?.transcript ?? [])
     .filter((entry) => BigInt(entry.message_id) < BigInt(msg.id));
-  let history = [...seenMessages.values()].filter((entry) =>
-    entry.channel_id === msg.channel_id && BigInt(entry.id) < BigInt(msg.id));
-  if (history.length < 3) {
-    const page = await rest<ReplyMessage[]>(`/channels/${msg.channel_id}/messages?before=${msg.id}&limit=10`);
-    const combined = new Map(history.map((entry) => [entry.id, entry]));
-    for (const entry of page) {
-      if (entry.channel_id === msg.channel_id && BigInt(entry.id) < BigInt(msg.id)) combined.set(entry.id, entry);
-    }
-    history = [...combined.values()];
-  }
-  const last = previous.at(-1);
-  const recent = history.filter((entry) => !last || BigInt(entry.id) > BigInt(last.message_id))
-    .sort((a, b) => BigInt(a.id) > BigInt(b.id) ? -1 : 1)
-    .slice(0, 5).reverse().map((entry) => describeMessage(withoutBlocked(entry), 400).entry);
   return {
-    ...conversation, transcript: previous.slice(-6), earlier_entries: Math.max(0, previous.length - 6), recent,
+    ...conversation, transcript: previous.slice(-6), earlier_entries: Math.max(0, previous.length - 6),
+    ...nearbyContext(seenMessages.values(), msg, withoutBlocked),
   };
 }
 
 function recordHelioReply(msg: IncomingMessage): void {
+  if (isTerminalReply(`${stateDir}/reply-sends.sqlite`, msg.channel_id, msg.id, msg.nonce)) return;
   if (conversations.observeNotice(msg.channel_id, msg.nonce, msg.id, Date.now())) return;
   const reference = msg.message_reference;
   if (!reference?.message_id || reference.type === 1 ||
@@ -428,9 +418,6 @@ async function enrich(msg: IncomingMessage, inbound: Inbound, staged: Inbound & 
   if (await delivery.ignored.settle("inbound", msg.id, prepared, cfg.ignoredChannels, channelInfo)) {
     await cleanupIgnored(delivery, stateDir, conversations);
     return;
-  }
-  if (inbound.role !== "BOT_BUG_REPORT") {
-    conversations.observeInput(msg.channel_id, msg.author.id, msg.id, Date.now(), inbound.reply_to);
   }
   const reply_context = inbound.channel_policy === "trusted" ? await replyContext(msg, fetchReply) : repliedTo(msg);
   const conversation = await conversationContext(msg);
@@ -573,9 +560,6 @@ enqueue("catch-up", async () => {
       continue;
     }
     const question_id = answerFor(current);
-    if (current.role !== "BOT_BUG_REPORT") {
-      conversations.observeInput(current.channel_id, current.author_id, current.message_id, Date.now(), current.reply_to);
-    }
     const message = { ...current, backlog: true, recovered: true, ...(question_id ? { question_id } : {}) };
     if (!delivery.refresh(item.id, item.payload, JSON.stringify(message))) continue;
     if (message.pinged && message.role !== "BOT_BUG_REPORT") {
