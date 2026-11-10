@@ -118,33 +118,24 @@ class ExitCodeTests(unittest.TestCase):
 
 
 class LivePageChangeTests(unittest.TestCase):
-    def test_an_unexecuted_refusal_resyncs_and_retries_but_an_executed_failure_never_repeats(self):
+    def test_an_executed_failure_or_script_error_is_never_repeated(self):
         qa = runpy.run_path(str(SCRIPT))
-        Refused, calls = qa['Refused'], []
-
-        def bsk(*argv, timeout=60):
-            calls.append((argv[0], argv[argv.index('--context') + 1] if '--context' in argv else None))
-            if argv[:2] == ('cooperate', 'sync'):
-                return {'state': {'mode': 'ready', 'editing': False}, 'context_id': f'c{len(calls)}'}
-            if len([c for c in calls if c[0] == 'evaluate']) == 1:
-                raise Refused('The media source changed; synchronize and replan', unexecuted=True)
-            return {'result': 'OK'}
-
-        qa['evaluate'].__globals__['_bsk_once'] = bsk
-        qa['CONTEXTS']['s'] = 'c0'
-        self.assertEqual(qa['evaluate']('s', 'c0', '1'), 'OK')
-        self.assertEqual([c[0] for c in calls], ['evaluate', 'cooperate', 'evaluate'])
-        self.assertEqual(calls[2][1], 'c2')
+        calls = []
 
         def executed(*argv, timeout=60):
             calls.append(argv[0])
-            raise Refused('click failed after dispatch')
+            if argv[:2] == ('cooperate', 'sync'):
+                return {'state': {'mode': 'ready', 'editing': False}, 'context_id': 'c', 'observation_id': f'o{len(calls)}'}
+            if argv[0] == 'evaluate':
+                return {'ok': False, 'error': 'TypeError: x is null'}
+            raise qa['Refused']('click failed after dispatch')
 
-        calls.clear()
-        qa['evaluate'].__globals__['_bsk_once'] = executed
-        with self.assertRaises(Refused):
+        qa['bsk'].__globals__['_bsk_once'] = executed
+        with self.assertRaises(qa['Refused']):
             qa['bsk']('click', '--session', 's', '--context', 'c0', '--selector', 'x')
-        self.assertEqual(calls, ['click'])
+        with self.assertRaisesRegex(qa['Refused'], 'page script failed'):
+            qa['evaluate']('s', 'c0', '1')
+        self.assertEqual(calls, ['click', 'cooperate', 'evaluate'])
 
     def test_a_failed_start_stops_the_session_it_created(self):
         with tempfile.TemporaryDirectory() as home:
@@ -171,6 +162,69 @@ class LivePageChangeTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()), mock.patch.dict('os.environ', {'HELIO_TEST_CHANNEL': '100', 'HELIO_TEST_CATEGORY': 'cat'}):
                 code = main(args('start'), home=Path(home))
             self.assertEqual((code, stopped), (2, ['new']))
+
+
+class StrictBrowser:
+    """BrowserSkill's cooperation rules: scripts and navigation need an unused observation from the latest sync,
+    input invalidates observations, and the first script after navigating meets Discord's still-loading media."""
+
+    def __init__(self, qa, account_path):
+        self.qa, self.path, self.issued, self.calls, self.syncs, self.media_loading = qa, account_path, set(), [], 0, False
+
+    def __call__(self, *argv, timeout=60):
+        self.calls.append(argv[0])
+        if argv[:2] == ('cooperate', 'sync'):
+            self.syncs += 1
+            self.issued = {f'o{self.syncs}'}
+            return {'state': {'mode': 'ready', 'editing': False}, 'context_id': f'c{self.syncs}', 'observation_id': f'o{self.syncs}'}
+        if argv[0] in ('evaluate', 'navigate') and '--context' in argv:
+            observation = argv[argv.index('--observation') + 1] if '--observation' in argv else None
+            if observation not in self.issued:
+                raise self.qa['Refused']('This action requires an unused strict observation', unexecuted=True)
+            self.issued.discard(observation)
+            if argv[0] == 'evaluate' and self.media_loading:
+                self.media_loading = False
+                raise self.qa['Refused']('The media source changed; synchronize and replan', unexecuted=True)
+        if argv[0] in ('click', 'press', 'fill', 'navigate'):
+            self.issued.clear()
+            self.media_loading = argv[0] == 'navigate'
+        if argv[:2] == ('session', 'list'):
+            return []
+        if argv[:2] == ('session', 'start'):
+            return {'session_id': 's1'}
+        if argv[0] != 'evaluate':
+            return {}
+        script = argv[-1]
+        if 'location.pathname' in script:
+            return {'ok': True, 'result': json.dumps({'path': self.path, 'account': 'Dominik dominikisop'})}
+        if 'const t="' in script:
+            return {'ok': True, 'result': script.split('const t="', 1)[1].split('"', 1)[0]}
+        if 'const base=new Set' in script:
+            return {'ok': True, 'result': json.dumps({'state': 'done', 'message_id': '9', 'author': 'Elo Beta', 'embeds': []})}
+        return {'ok': True, 'result': '[]'}
+
+
+class BrowserSkillContractTests(unittest.TestCase):
+    def drive(self, home, namespace):
+        qa = runpy.run_path(str(SCRIPT))
+        browser = StrictBrowser(qa, '/channels/1033924790513311756/100')
+        qa['main'].__globals__.update(_bsk_once=browser, bot_name=lambda _home: 'Elo Beta', subprocess=mock.Mock(
+            run=mock.Mock(return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))))
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.dict('os.environ', {'HELIO_TEST_CHANNEL': '100', 'HELIO_TEST_CATEGORY': 'cat'}):
+            code = qa['main'](namespace, home=home)
+        return code, json.loads(out.getvalue().strip().splitlines()[-1]), browser
+
+    def test_start_then_click_follow_the_observation_rules_through_loading_media(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / '.dori/elobot').mkdir(parents=True)
+            (home / '.dori/elobot/qa-accounts.json').write_text(json.dumps({'qa-a': {'account': 'Dominik', 'browser': 'b1'}}))
+            code, out, _ = self.drive(home, args('start'))
+            self.assertEqual((code, out['state']), (0, 'ready'), out)
+            code, out, browser = self.drive(home, args('click', message='9', button='Next'))
+            self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
+            self.assertEqual(browser.calls.count('click'), 1)
 
 
 class PageScriptTests(unittest.TestCase):

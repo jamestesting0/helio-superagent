@@ -39,31 +39,46 @@ def _commands():
     return runpy.run_path(str(Path(__file__).with_name('helio_beta_commands.py')))
 
 
-CONTEXTS = {}
+CONTEXTS, OBSERVATIONS = {}, {}
+STRICT = {'evaluate', 'navigate'}
 
 
 def bsk(*args, timeout=60):
-    """Run one bsk command with --json, always with the session's newest context.
+    """Run one bsk command with --json under BrowserSkill's cooperation rules.
 
-    BrowserSkill refuses before execution (effect_state none) when the page changed since the last sync, as Discord
-    does while media loads. Only such unexecuted refusals are re-synced and retried; anything that may have run never is.
+    Scripts and navigation have no DOM recipient, so BrowserSkill accepts each only with an unused observation from
+    the latest sync; every such call gets its own, and any action invalidates it. A refusal that executed nothing
+    (effect_state none, e.g. Discord's media changing the page) is re-synced and retried; anything that may have run
+    never is.
     """
-    for attempt in range(3):
-        args = _fresh(args)
+    session = args[args.index('--session') + 1] if '--session' in args else None
+    for attempt in range(4):
+        args = _fresh(args, session)
         try:
-            return _bsk_once(*args, timeout=timeout)
+            out = _bsk_once(*args, timeout=timeout)
         except Refused as error:
-            if not error.unexecuted or attempt == 2 or '--session' not in args:
+            if not error.unexecuted or attempt == 3 or session is None:
                 raise
-            sync(args[args.index('--session') + 1])
+            sync(session)
+            continue
+        OBSERVATIONS.pop(session, None)
+        return out
 
 
-def _fresh(args):
+def _fresh(args, session):
     args = list(args)
-    if '--context' in args and '--session' in args:
-        session = args[args.index('--session') + 1]
-        if session in CONTEXTS:
-            args[args.index('--context') + 1] = CONTEXTS[session]
+    if session is None or '--context' not in args:
+        return tuple(args)
+    if args[0] in STRICT:
+        if session not in OBSERVATIONS:
+            sync(session)
+        observation = OBSERVATIONS.pop(session, None)
+        if '--observation' in args:
+            args[args.index('--observation') + 1] = observation
+        elif observation:
+            args[1:1] = ['--observation', observation]
+    if session in CONTEXTS:
+        args[args.index('--context') + 1] = CONTEXTS[session]
     return tuple(args)
 
 
@@ -84,6 +99,8 @@ def _bsk_once(*args, timeout=60):
 
 def evaluate(session, ctx, expression, timeout='60s'):
     out = bsk('evaluate', '--session', session, '--context', ctx, '--timeout', timeout, expression, timeout=120)
+    if isinstance(out, dict) and out.get('ok') is False:
+        raise Refused(f"page script failed: {str(out.get('error') or out.get('message') or out)[:300]}")
     value = out.get('result', out.get('value', out)) if isinstance(out, dict) else out
     return json.loads(value) if isinstance(value, str) and value[:1] in '{[' else value
 
@@ -163,6 +180,8 @@ def sync(session):
     if state.get('editing') or state.get('mode') != 'ready' or not out.get('context_id'):
         raise HumanHold(f"tab is not ready for input (mode={state.get('mode')}, editing={state.get('editing')}); nothing was done")
     CONTEXTS[session] = out['context_id']
+    if out.get('observation_id'):
+        OBSERVATIONS[session] = out['observation_id']
     return out['context_id'], out.get('observation_id')
 
 
