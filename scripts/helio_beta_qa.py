@@ -23,7 +23,14 @@ CHOICE_TYPES = {3, 4, 10}
 ID_TYPES = {6, 7, 8, 9}
 
 
-class Refused(Exception): code = 2
+class Refused(Exception):
+    code = 2
+
+    def __init__(self, message, unexecuted=False):
+        super().__init__(message)
+        self.unexecuted = unexecuted
+
+
 class Uncertain(Exception): code = 3
 class HumanHold(Exception): code = 4
 
@@ -32,8 +39,35 @@ def _commands():
     return runpy.run_path(str(Path(__file__).with_name('helio_beta_commands.py')))
 
 
+CONTEXTS = {}
+
+
 def bsk(*args, timeout=60):
-    """Run one bsk command with --json; a refusal is raised with its BrowserSkill code."""
+    """Run one bsk command with --json, always with the session's newest context.
+
+    BrowserSkill refuses before execution (effect_state none) when the page changed since the last sync, as Discord
+    does while media loads. Only such unexecuted refusals are re-synced and retried; anything that may have run never is.
+    """
+    for attempt in range(3):
+        args = _fresh(args)
+        try:
+            return _bsk_once(*args, timeout=timeout)
+        except Refused as error:
+            if not error.unexecuted or attempt == 2 or '--session' not in args:
+                raise
+            sync(args[args.index('--session') + 1])
+
+
+def _fresh(args):
+    args = list(args)
+    if '--context' in args and '--session' in args:
+        session = args[args.index('--session') + 1]
+        if session in CONTEXTS:
+            args[args.index('--context') + 1] = CONTEXTS[session]
+    return tuple(args)
+
+
+def _bsk_once(*args, timeout=60):
     proc = subprocess.run([os.environ.get('BSK_BIN', 'bsk'), *args, '--json'], capture_output=True, text=True, timeout=timeout)
     try:
         out = json.loads(proc.stdout) if proc.stdout.strip() else {}
@@ -41,7 +75,10 @@ def bsk(*args, timeout=60):
         out = {'raw': proc.stdout.strip()}
     if proc.returncode:
         detail = out.get('message') if isinstance(out, dict) else None
-        raise Refused(f"bsk {args[0]} failed: {out.get('code', '') if isinstance(out, dict) else ''} {detail or proc.stderr.strip()[:300]}")
+        data = out.get('data') if isinstance(out, dict) and isinstance(out.get('data'), dict) else {}
+        unexecuted = out.get('code') == 'permission_denied' and data.get('effect_state') == 'none' if isinstance(out, dict) else False
+        raise Refused(f"bsk {args[0]} failed: {out.get('code', '') if isinstance(out, dict) else ''} {detail or proc.stderr.strip()[:300]}",
+                      unexecuted=unexecuted)
     return out
 
 
@@ -121,10 +158,11 @@ def session_for(home, profile):
 
 def sync(session):
     """One small sync per call: a context for DOM-targeted actions, and the human-hold check."""
-    out = bsk('cooperate', 'sync', '--session', session, '--max-tokens', '400')
+    out = _bsk_once('cooperate', 'sync', '--session', session, '--max-tokens', '400', '--settle')
     state = out.get('state') or {}
     if state.get('editing') or state.get('mode') != 'ready' or not out.get('context_id'):
         raise HumanHold(f"tab is not ready for input (mode={state.get('mode')}, editing={state.get('editing')}); nothing was done")
+    CONTEXTS[session] = out['context_id']
     return out['context_id'], out.get('observation_id')
 
 
@@ -259,13 +297,27 @@ def start(home, profile, channel):
     for s in live:
         if s.get('browser_instance_id') == entry['browser'] and s.get('session_id') != mine:
             raise Refused(f"{profile} is held by another BrowserSkill session ({s.get('session_id')}); not shared")
-    opened = False
+    created = []
+    try:
+        return _start(home, profile, channel, entry, sessions, live, mine, False, created)
+    except BaseException:
+        # A session this call started is stopped, so a failed start never leaves an orphan that blocks the retry.
+        for session in created:
+            try:
+                _bsk_once('session', 'stop', session)
+            except Refused:
+                pass
+        raise
+
+
+def _start(home, profile, channel, entry, sessions, live, mine, opened, created):
     if not mine or not any(s.get('session_id') == mine for s in live):
         ready = subprocess.run(['helio', 'browser', 'ready', '--profile', profile], capture_output=True, text=True, timeout=180)
         if ready.returncode:
             raise Refused(f'helio browser ready failed: {(ready.stdout + ready.stderr).strip()[-300:]}')
         opened = 'already' not in ready.stdout.lower()
         mine = bsk('session', 'start', '--browser', entry['browser'])['session_id']
+        created.append(mine)
         bsk('navigate', '--session', mine, f'https://discord.com/channels/{GUILD}/{channel}')
     else:
         ctx, observation = sync(mine)

@@ -87,7 +87,7 @@ class ExitCodeTests(unittest.TestCase):
                 calls.append(argv[:2])
                 return {'state': {'mode': 'ready', 'editing': True}, 'context_id': 'c'}
 
-            code, out = self.run_main(args('click', message='9', button='Next'), Path(home), bsk=bsk)
+            code, out = self.run_main(args('click', message='9', button='Next'), Path(home), _bsk_once=bsk)
             self.assertEqual((code, out['state']), (4, 'humanhold'))
             self.assertEqual(calls, [('cooperate', 'sync')])
 
@@ -110,11 +110,67 @@ class ExitCodeTests(unittest.TestCase):
                     return expression.split('const t="', 1)[1].split('"', 1)[0]
                 return []
 
-            code, out = self.run_main(args('click', message='9', button='Next'), Path(home), bsk=bsk, evaluate=evaluate,
+            code, out = self.run_main(args('click', message='9', button='Next'), Path(home), _bsk_once=bsk, evaluate=evaluate,
                                       bot_name=lambda _home: 'Elo Beta')
             self.assertEqual(code, 3)
             self.assertEqual(out['state'], 'uncertain')
             self.assertEqual(len(clicks), 1)
+
+
+class LivePageChangeTests(unittest.TestCase):
+    def test_an_unexecuted_refusal_resyncs_and_retries_but_an_executed_failure_never_repeats(self):
+        qa = runpy.run_path(str(SCRIPT))
+        Refused, calls = qa['Refused'], []
+
+        def bsk(*argv, timeout=60):
+            calls.append((argv[0], argv[argv.index('--context') + 1] if '--context' in argv else None))
+            if argv[:2] == ('cooperate', 'sync'):
+                return {'state': {'mode': 'ready', 'editing': False}, 'context_id': f'c{len(calls)}'}
+            if len([c for c in calls if c[0] == 'evaluate']) == 1:
+                raise Refused('The media source changed; synchronize and replan', unexecuted=True)
+            return {'result': 'OK'}
+
+        qa['evaluate'].__globals__['_bsk_once'] = bsk
+        qa['CONTEXTS']['s'] = 'c0'
+        self.assertEqual(qa['evaluate']('s', 'c0', '1'), 'OK')
+        self.assertEqual([c[0] for c in calls], ['evaluate', 'cooperate', 'evaluate'])
+        self.assertEqual(calls[2][1], 'c2')
+
+        def executed(*argv, timeout=60):
+            calls.append(argv[0])
+            raise Refused('click failed after dispatch')
+
+        calls.clear()
+        qa['evaluate'].__globals__['_bsk_once'] = executed
+        with self.assertRaises(Refused):
+            qa['bsk']('click', '--session', 's', '--context', 'c0', '--selector', 'x')
+        self.assertEqual(calls, ['click'])
+
+    def test_a_failed_start_stops_the_session_it_created(self):
+        with tempfile.TemporaryDirectory() as home:
+            elobot = Path(home) / '.dori/elobot'
+            elobot.mkdir(parents=True)
+            (elobot / 'qa-accounts.json').write_text(json.dumps({'qa-a': {'account': 'Dominik', 'browser': 'b1'}}))
+            stopped = []
+
+            def bsk(*argv, timeout=60):
+                if argv[:2] == ('session', 'list'):
+                    return []
+                if argv[:2] == ('session', 'start'):
+                    return {'session_id': 'new'}
+                if argv[:2] == ('session', 'stop'):
+                    stopped.append(argv[2])
+                    return {}
+                raise qa_refused('navigation failed')
+
+            qa = runpy.run_path(str(SCRIPT))
+            qa_refused = qa['Refused']
+            main = qa['main']
+            main.__globals__.update(_bsk_once=bsk, subprocess=mock.Mock(run=mock.Mock(
+                return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))))
+            with redirect_stdout(io.StringIO()), mock.patch.dict('os.environ', {'HELIO_TEST_CHANNEL': '100', 'HELIO_TEST_CATEGORY': 'cat'}):
+                code = main(args('start'), home=Path(home))
+            self.assertEqual((code, stopped), (2, ['new']))
 
 
 class PageScriptTests(unittest.TestCase):
