@@ -211,6 +211,8 @@ class StrictBrowser:
             return {'ok': True, 'result': script.split('const t="', 1)[1].split('"', 1)[0]}
         if 'const base=new Set' in script:
             return {'ok': True, 'result': json.dumps({'state': 'done', 'message_id': '9', 'author': 'Elo Beta', 'embeds': []})}
+        if 'map(fieldName)' in script:
+            return {'ok': True, 'result': json.dumps(['Page number'])}
         if 'DataTransfer' in script:
             return {'ok': True, 'result': 'PASTED'}
         if 'if(o)return o.innerText.trim()' in script:
@@ -278,6 +280,11 @@ class BrowserSkillContractTests(unittest.TestCase):
             code, out, browser = drive(args('click', message='9', button='Next'))
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
             self.assertEqual(browser.calls.count('click'), 1)
+            code, out, browser = drive(args('form', field=['Page=5']))
+            self.assertEqual((code, out['state'], browser.calls.count('fill')), (0, 'done', 1), out)
+            code, out, browser = drive(args('form', field=['Season=13']))
+            self.assertEqual((code, browser.calls.count('fill')), (2, 0), out)
+            self.assertIn('Page number', out['error'])
             parsed = subprocess.run(['bun', '-e', 'const t=new Bun.Transpiler({loader:"js"});for(const s of JSON.parse(await Bun.stdin.text()))t.transformSync(s)'],
                                     input=json.dumps(scripts), capture_output=True, text=True, timeout=60)
             self.assertEqual(parsed.returncode, 0, parsed.stderr)

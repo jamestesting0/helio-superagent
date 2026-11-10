@@ -13,7 +13,7 @@
 Every call prints one JSON line. Exit 0: done (state done, failed or modal). Exit 2: refused before any input.
 Exit 3: input was sent but no answer was observed; never resend, follow up with `read`. Exit 4: a person holds the tab.
 """
-import contextlib, io, json, os, runpy, secrets, subprocess, time, traceback
+import contextlib, io, json, os, re, runpy, secrets, subprocess, time, traceback
 from pathlib import Path
 
 GUILD = '1033924790513311756'
@@ -114,6 +114,11 @@ const header=l=>{for(let x=l;x;x=x.previousElementSibling){const n=x.querySelect
 const author=l=>{const n=header(l);return n?n.innerText.trim():'';};
 const authorId=l=>{const h=header(l),h3=h&&h.closest('h3'),i=h3&&h3.parentElement&&h3.parentElement.querySelector(':scope > img[src*="/avatars/"]');const m=i&&i.src.match(/avatars\/(\d+)\//);return m?m[1]:'';};
 const norm=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const fieldName=i=>{const own=i.getAttribute('aria-label');if(own)return own.trim();
+ const by=(i.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>id&&document.getElementById(id)).filter(Boolean).map(e=>e.innerText.trim()).join(' ');if(by)return by;
+ const f=i.id&&document.querySelector('label[for="'+CSS.escape(i.id)+'"]');if(f)return f.innerText.trim();
+ const d=i.closest('[role=dialog]');for(let x=i.parentElement;x&&x!==d;x=x.parentElement){const s=(x.innerText||'').split('\n').map(v=>v.trim()).filter(Boolean)[0];if(s)return s;}return '';};
+const fields=d=>[...d.querySelectorAll('input,textarea')].filter(i=>i.type!=='hidden');
 const isBot=(l,b)=>authorId(l)===b.id||(!!norm(b.name)&&norm(author(l)).startsWith(norm(b.name)));
 const view=l=>{const acc=l.querySelector('[id^="message-accessories-"]')||l;
  return {message_id:mid(l),author:author(l),ephemeral:/Only you can see this/.test(l.innerText),thinking:/is thinking/i.test(l.innerText),
@@ -135,7 +140,7 @@ def wait_script(baseline, target, bot, timeout_ms):
 const before=target&&li(target)?li(target).innerText:null;const end=Date.now()+{int(timeout_ms)};
 while(Date.now()<end){{const d=document.querySelector('[role=dialog]');
  if(d&&d.querySelector('input,textarea'))return JSON.stringify({{state:'modal',title:(d.querySelector('h1,h2,[id*=title]')||{{}}).innerText||'',
-  fields:[...d.querySelectorAll('label')].map(l=>l.innerText.trim()).filter(Boolean)}});
+  fields:fields(d).map(fieldName)}});
  const fresh=lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view);
  const edited=target&&li(target)&&li(target).innerText!==before?[view(li(target))]:[];
  const done=[...edited,...fresh].filter(v=>!v.thinking);
@@ -463,12 +468,24 @@ if(o)return mark(o,t);await new Promise(r=>setTimeout(r,150));}}return null;""",
     return finish(home, answer(home, session, ctx, baseline, message, timeout), session, ctx, screenshot)
 
 
+def _norm(text):
+    return re.sub(r'[^a-z0-9]', '', (text or '').lower())
+
+
 def form(home, profile, fields, submit, timeout, screenshot):
     session = session_for(home, profile)['session']
     ctx, _ = sync(session)
+    names = evaluate(session, ctx, page("const d=document.querySelector('[role=dialog]');return JSON.stringify(d?fields(d).map(fieldName):[]);"))
+    plan = []
     for label, value in fields:
-        tok = find(session, ctx, f"""const d=document.querySelector('[role=dialog]');const l=d&&[...d.querySelectorAll('label')].find(x=>x.innerText.trim().startsWith({json.dumps(label)}));
-const i=l&&(l.htmlFor&&document.getElementById(l.htmlFor)||l.parentElement.querySelector('input,textarea'));return mark(i,t);""", f'form field {label!r}')
+        index = next((n for n, name in enumerate(names) if _norm(name) and _norm(name).startswith(_norm(label))), None)
+        if index is None and len(names) == 1 and len(fields) == 1 and not _norm(names[0]):
+            index = 0  # the form's only field has no name; it is the one being asked for
+        if index is None:
+            raise Refused(f'form field {label!r} not found; the open form has fields {names}; nothing was typed')
+        plan.append((index, value))
+    for index, value in plan:
+        tok = find(session, ctx, f"const d=document.querySelector('[role=dialog]');return mark(d&&fields(d)[{index}],t);", f'form field {names[index]!r}')
         act('fill', session, ctx, tok, '--value', value)
     baseline = evaluate(session, ctx, baseline_script())
     tok = find(session, ctx, f"""const d=document.querySelector('[role=dialog]');return mark(d&&[...d.querySelectorAll('button')].find(b=>b.innerText.trim()==={json.dumps(submit)}),t);""",

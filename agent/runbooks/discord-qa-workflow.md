@@ -145,7 +145,7 @@ helio beta qa start --profile qa-a                    # opens the profile if nee
 helio beta qa run "leaderboard" --opt lb_type=Hitrate --screenshot "$EVIDENCE/lb.png"
 helio beta qa select --message <id> --menu "Overall" --option "Good"
 helio beta qa click --message <id> --button "▶"
-helio beta qa form --field "Page=5"                   # a modal the last step opened
+helio beta qa form --field "<field>=5"                # a field name from the modal result's "fields"
 helio beta qa read [--message <id>]                   # look again, no input
 helio beta qa where <channel id>...                   # routing check over REST instead of browsing
 helio beta qa stop --all                              # in your cleanup path
