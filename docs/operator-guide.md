@@ -131,22 +131,25 @@ The working receipt is a persistent claim, separate from its reaction. An explic
 
 ## Conversations
 
-Open a conversation when asking a requester a question. In normal chats only answers to Helio's delivered question, in that channel, are admitted without a ping or a reply. Only messages Helio claims and Helio's linked replies join the transcript or extend activity. New requester messages need Helio; otherwise structured `waiting_on` identifies the next participant, with last author as a legacy fallback; `on_hold` carries its reason and suspends timers. Open and held conversations share the two-per-person limit.
+A topic is one subject, named by the message it started from (its topic ID), and can involve several people in several channels. Open one when asking someone a question. People join only when Helio's topic reply answers or covers them, or through `join`; a passing message joins nothing. In normal chats, answers to Helio's delivered question in that channel and replies into a topic's messages are admitted without a ping. New participant messages need Helio; otherwise structured `waiting_on` identifies who owes the next reply, and `on_hold` carries its reason and suspends timers. Each person may have two open topics they opened. A topic shows each place only what its audience may see.
 
 ```bash
-helio conversation open CHANNEL USER ANCHOR short topic
-helio conversation list [--offset N]
-helio conversation show CHANNEL USER [--topic ANCHOR] [--offset N]
-helio conversation set CHANNEL USER --request TEXT --decided TEXT --waiting-on TEXT --result TEXT [--topic ANCHOR]
-helio conversation note CHANNEL USER --text-file PATH
-helio conversation hold CHANNEL USER reason
-helio conversation resume CHANNEL USER
-helio conversation close CHANNEL USER answered
-helio conversation close CHANNEL USER issue --issue https://github.com/OWNER/REPO/issues/N
-helio conversation reopen CHANNEL USER
+helio conversation open ANCHOR_MESSAGE short title
+helio conversation list [--channel C] [--user U] [--offset N]
+helio conversation show TOPIC [--offset N]
+helio conversation set TOPIC --request TEXT --decided TEXT --waiting-on TEXT --result TEXT [--issue URL]
+helio conversation note TOPIC --text-file PATH
+helio conversation join TOPIC USER [--message ID]
+helio conversation leave TOPIC USER
+helio conversation merge FROM_TOPIC INTO_TOPIC
+helio conversation hold TOPIC reason
+helio conversation resume TOPIC
+helio conversation close TOPIC answered
+helio conversation close TOPIC issue --issue https://github.com/OWNER/REPO/issues/N
+helio conversation reopen TOPIC
 ```
 
-`list` includes state, age, idle time, summary and hold reason, with at most 25 rows per page and a byte budget. `show` pages the complete active transcript. `note` saves at most 600 characters from the existing playback. A claim ends a hold; resume preserves the last real activity and existing nudge record.
+`list` includes state, participants, age, idle time and summary, with at most 25 rows per page and a byte budget. `show` pages the complete transcript, participants and issue deliveries. `join --message` adds a useful message that needs no answer; `leave` stops a person's closing and issue pings. Linking an issue another active topic already tracks merges the newer topic into the older one. `note` saves at most 600 characters from the existing playback. A claim ends a hold; resume preserves the last real activity and existing nudge record.
 
 While waiting on the requester, upkeep sends one native nudge after 24 hours and a close notice after 72 hours, then resolves with `timed_out`. `INBOUND_CONVERSATION_NUDGE` and `INBOUND_CONVERSATION_TIMEOUT` report notices already sent; do not reply again. Waiting-on-Helio and held conversations never time out. `INBOUND_CONVERSATION_WAITING` lists requests waiting on Helio for at least 24 hours once per UTC day. A deleted anchor, a deleted notice target or a departed server member resolves silently with `other`.
 

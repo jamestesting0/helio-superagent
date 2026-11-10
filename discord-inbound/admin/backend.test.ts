@@ -211,6 +211,27 @@ test("private conversation inspection returns only the acting user's DM topics",
   expect(JSON.stringify(response)).not.toContain("Other private request");
 });
 
+test("topic detail shows each message only where the viewer can read it", async () => {
+  const f = fixture();
+  const conversations = new Conversations(join(f.state, "discord-conversations.sqlite"));
+  const said = (id: string, author: string, content: string) => ({ message_id: id, author_id: author, author: author === "11111" ? "Requester" : "Other",
+    bot: false, content, attachment_count: 0, sent_at: new Date().toISOString() });
+  const row = conversations.open("44444", "11111", "66666", "Own request", Date.now());
+  conversations.claim("44444", "11111", said("66667", "11111", "public report"), Date.now(), { channel: "44444", audience: "dm" });
+  conversations.recordAnswered(row, said("77778", "33333", "PRIVATE DM SECRET"), { channel: "55555", audience: "dm" }, "answered", Date.now());
+  conversations.dispose();
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+    const url = String(input);
+    if (/\/users\/\d+$/.test(url)) return Response.json({ id: url.split("/").at(-1), username: "Requester" });
+    if (!/^https:\/\/discord.com\/api\/v10\/channels\/(44444|55555)$/.test(url)) throw new Error(`Unexpected offline request: ${url}`);
+    return Response.json({ id: url.split("/").at(-1), type: 1 });
+  }, { preconnect: realFetch.preconnect }));
+  const listed = await executeProof(f.proof({ kind: "read", section: "conversations", filters: {} }));
+  const detail = await executeProof(f.proof({ kind: "read", section: "conversations", target: listed.records[0]!.id, filters: {} }, "detail"));
+  expect(detail.records[0]?.activity?.map(item => item.text)).toEqual(["public report"]);
+  expect(JSON.stringify(detail)).not.toContain("PRIVATE DM SECRET");
+});
+
 test("a trusted moderator's block is durable and replay cannot repeat the operation", async () => {
   const f = fixture();
   const query: RuntimeQuery = { kind: "mutate", action: "blocks.add", target: "33333", expected: "",

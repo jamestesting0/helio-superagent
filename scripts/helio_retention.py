@@ -95,6 +95,7 @@ RULES: tuple[Rule, ...] = (
     Rule("discord-conversations.sqlite", "followups_legacy", "derived", "Delivered person-keyed history is kept 180 days.",
          (f"DELETE FROM followups_legacy WHERE status='done' AND created_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
     Rule("discord-conversations.sqlite", "topic_participants", "owned", "Removed with their topic."),
+    Rule("discord-conversations.sqlite", "closure_notes", "owned", "Closing-note targets are removed with their topic."),
     Rule("discord-prompts.sqlite", "prompts", "raw_chat", "Settled prompts are deleted after 30 days; open, pending and unused confirmations stay.",
          ("DELETE FROM prompts WHERE status NOT IN ('sending','delivery_unknown','open','pending') "
           f"AND NOT (status='confirmed' AND used_at IS NULL) AND created_at < :now_ms - {RAW_DAYS * DAY_MS}",)),

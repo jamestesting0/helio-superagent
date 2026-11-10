@@ -186,6 +186,7 @@ class MonitorReloadTests(unittest.TestCase):
                 self.stop(process)
 
     def test_wrappers_kill_children_that_ignore_term_after_grace_period(self) -> None:
+        self.env["HELIO_STOP_GRACE_SECONDS"] = "1"
         for name in ("inbound", "context"):
             with self.subTest(wrapper=name):
                 argv, script = self.wrapper(name, "stubborn")
@@ -197,7 +198,7 @@ class MonitorReloadTests(unittest.TestCase):
                 self.assertEqual(self.line(process),
                                  f"{name.upper()}_WARN updated to next; restarting to load it")
                 # Bash may report its killed background job on stderr.
-                line = self.line(process, timeout=12)
+                line = self.line(process, timeout=4)
                 if not line.startswith("START "):
                     self.assertIn("Killed", line)
                     line = self.line(process)

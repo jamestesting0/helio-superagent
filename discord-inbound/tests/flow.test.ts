@@ -269,8 +269,7 @@ test("reviewed shared chat retires without an answer while direct requests and o
 
     const protectedResult = await invoke(dir, "ack.ts", ["irrelevant", "inbound", "10", "Must not discard a direct request"], { trustedChannels: "100" });
     expect(protectedResult.exitCode).toBe(1);
-    expect(protectedResult.stdout).toBe("");
-    expect(protectedResult.stderr).toContain("keep it pending");
+    expect(protectedResult.stdout).toBe("ACK_WITHHELD 10: Delivery 10 is protected or lacks relevance metadata; keep it pending\n");
     expect(await Bun.file(photo).exists()).toBe(true);
 
     const reason = "Reviewed as unrelated shared chat; no response requested";

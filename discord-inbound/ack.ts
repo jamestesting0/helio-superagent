@@ -192,7 +192,8 @@ try {
       const last = messages.at(-1);
       if (stream === "inbound" && last && typeof last.channel_id === "string" && typeof last.author_id === "string" && typeof last.message_id === "string") {
         const lastId = last.message_id;
-        const routing = { ...(typeof last.reply_to === "string" ? { reply_to: last.reply_to } : {}), pinged: last.pinged === true };
+        const routing = { ...(typeof last.reply_to === "string" ? { reply_to: last.reply_to } : {}), pinged: last.pinged === true,
+          ...(typeof last.content === "string" ? { content: last.content } : {}) };
         const conversation = conversationSnapshot(store, last.channel_id, last.author_id, Date.now(), routing,
           { channel: last.channel_id, audience: audienceOf(last) });
         if (conversation) {

@@ -138,6 +138,9 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
     sharedTopics(db, now);
     db.exec("PRAGMA user_version=7");
   }).immediate();
+  // Closing notes are recorded per topic and channel before sending, so a retry reuses its target and recipients.
+  db.exec(`CREATE TABLE IF NOT EXISTS closure_notes (anchor_message_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+    target TEXT NOT NULL, users TEXT NOT NULL, PRIMARY KEY(anchor_message_id,channel_id))`);
   return db;
 }
 
@@ -146,8 +149,25 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
  * participants, message channels and audiences are recorded separately. Follow-ups subscribe a topic, not a person.
  */
 function sharedTopics(db: Database, now: number): void {
-  const normal = new Set((policyValues().DORI_DISCORD_NORMAL_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
-  // Rows sharing an anchor were one subject; keep the newest and move the others' transcript into it.
+  const policy = policyValues();
+  const list = (name: string) => new Set((policy[name] ?? "").split(",").map(id => id.trim()).filter(Boolean));
+  const normal = list("DORI_DISCORD_NORMAL_CHANNELS"), trusted = list("DORI_DISCORD_TRUSTED_CHANNELS");
+  // Each message keeps the channel it was said in. Anything not known to be public or the trusted chat stays
+  // visible only in its own channel, so a DM or an unlisted thread never widens its audience.
+  db.exec(`CREATE TABLE transcript_next (
+      message_id TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL, opened_at INTEGER NOT NULL,
+      author_id TEXT NOT NULL, sent_at TEXT, entry TEXT, message_channel_id TEXT NOT NULL,
+      audience TEXT NOT NULL CHECK(audience IN ('public','staff','dm')), is_helio INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(message_id,channel_id,user_id,opened_at));`);
+  for (const row of db.query<{ rowid: number; channel_id: string; entry: string }, []>("SELECT rowid,channel_id,entry FROM transcript ORDER BY rowid").all()) {
+    const helio = (() => { try { return JSON.parse(row.entry)?.bot === true; } catch { return false; } })();
+    const audience = normal.has(row.channel_id) ? "public" : trusted.has(row.channel_id) ? "staff" : "dm";
+    db.run(`INSERT OR IGNORE INTO transcript_next SELECT message_id,channel_id,user_id,opened_at,author_id,sent_at,entry,channel_id,?,?
+      FROM transcript WHERE rowid=?`, [audience, helio ? 1 : 0, row.rowid]);
+  }
+  db.exec("DROP TABLE transcript; ALTER TABLE transcript_next RENAME TO transcript;");
+  db.exec("CREATE TABLE topic_participants_seed (anchor TEXT, user_id TEXT, opened_at INTEGER, channel_id TEXT)");
+  // Rows sharing an anchor were one subject; keep the newest and move the others' transcript into it, placement intact.
   for (const dup of db.query<{ channel_id: string; user_id: string; opened_at: number; anchor_message_id: string }, []>(
     `SELECT c.channel_id,c.user_id,c.opened_at,c.anchor_message_id FROM conversations c WHERE EXISTS (
       SELECT 1 FROM conversations n WHERE n.anchor_message_id=c.anchor_message_id AND n.rowid>c.rowid)`).all()) {
@@ -156,11 +176,12 @@ function sharedTopics(db: Database, now: number): void {
     db.run(`UPDATE OR IGNORE transcript SET channel_id=?,user_id=?,opened_at=? WHERE channel_id=? AND user_id=? AND opened_at=?`,
       [keep.channel_id, keep.user_id, keep.opened_at, dup.channel_id, dup.user_id, dup.opened_at]);
     db.run("DELETE FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?", [dup.channel_id, dup.user_id, dup.opened_at]);
-    db.run(`CREATE TABLE IF NOT EXISTS topic_participants_seed (anchor TEXT, user_id TEXT, opened_at INTEGER, channel_id TEXT)`);
     db.run("INSERT INTO topic_participants_seed VALUES (?,?,?,?)", [dup.anchor_message_id, dup.user_id, dup.opened_at, dup.channel_id]);
     db.run("DELETE FROM conversations WHERE channel_id=? AND user_id=? AND opened_at=?", [dup.channel_id, dup.user_id, dup.opened_at]);
   }
-  db.exec(`CREATE UNIQUE INDEX conversations_anchor ON conversations(anchor_message_id);
+  // A person's message belongs to one topic; earlier duplicates keep the newest topic's copy.
+  db.exec(`DELETE FROM transcript WHERE is_helio=0 AND rowid NOT IN (SELECT max(rowid) FROM transcript WHERE is_helio=0 GROUP BY message_id);
+    CREATE UNIQUE INDEX conversations_anchor ON conversations(anchor_message_id);
     ALTER TABLE conversations ADD COLUMN waiting_on_user TEXT;
     ALTER TABLE conversations ADD COLUMN question_channel_id TEXT;
     ALTER TABLE conversations ADD COLUMN question_message_id TEXT;
@@ -175,22 +196,8 @@ function sharedTopics(db: Database, now: number): void {
       PRIMARY KEY(anchor_message_id,user_id));
     INSERT INTO topic_participants
       SELECT anchor_message_id,user_id,opened_at,'opened',channel_id,coalesce(latest_input_id,anchor_message_id),1 FROM conversations;
-    CREATE TABLE IF NOT EXISTS topic_participants_seed (anchor TEXT, user_id TEXT, opened_at INTEGER, channel_id TEXT);
     INSERT OR IGNORE INTO topic_participants SELECT anchor,user_id,opened_at,'merge',channel_id,anchor,1 FROM topic_participants_seed;
     DROP TABLE topic_participants_seed;
-    CREATE TABLE transcript_next (
-      message_id TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL, opened_at INTEGER NOT NULL,
-      author_id TEXT NOT NULL, sent_at TEXT, entry TEXT, message_channel_id TEXT NOT NULL,
-      audience TEXT NOT NULL CHECK(audience IN ('public','staff','dm')), is_helio INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(message_id,channel_id,user_id,opened_at));`);
-  const rows = db.query<{ rowid: number; channel_id: string; entry: string }, []>("SELECT rowid,channel_id,entry FROM transcript ORDER BY rowid").all();
-  for (const row of rows) {
-    const helio = (() => { try { return JSON.parse(row.entry)?.bot === true; } catch { return false; } })();
-    db.run(`INSERT INTO transcript_next SELECT message_id,channel_id,user_id,opened_at,author_id,sent_at,entry,channel_id,?,?
-      FROM transcript WHERE rowid=?`, [normal.has(row.channel_id) ? "public" : "staff", helio ? 1 : 0, row.rowid]);
-  }
-  db.exec(`DROP TABLE transcript;
-    ALTER TABLE transcript_next RENAME TO transcript;
     CREATE INDEX transcript_message ON transcript(message_id);
     CREATE UNIQUE INDEX transcript_person ON transcript(message_id) WHERE is_helio=0;
     CREATE INDEX participants_user ON topic_participants(user_id);`);

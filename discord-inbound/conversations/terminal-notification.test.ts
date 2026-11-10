@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { dirname, join } from "node:path";
 import { filterConfig } from "../intake/authorization.ts";
-import type { Rest } from "../discord/rest.ts";
+import { DiscordRestError, type Rest } from "../discord/rest.ts";
 import { idAt, normal, stage, T0, withStores } from "../fixtures/working.ts";
 import { terminalNotification } from "./terminal-notification.ts";
 import { followupStatus } from "./followup-status.ts";
@@ -138,6 +138,37 @@ test("participants hear the outcome once per channel, with the rest mentioned, a
       await notify();
       expect(posts).toHaveLength(2);
       expect(followupStatus(path, anchor, T0 + 120_000)[0]?.deliveries.map(group => group.disposition)).toEqual(["sent", "sent"]);
+    } finally { db.close(); }
+  });
+});
+
+test("a deleted newest message falls back to the group's earlier one, and a muted person is not pinged", async () => {
+  await withStores(async (_delivery, store, path) => {
+    const anchor = idAt(T0), gone = idAt(T0 + 1000), muted = idAt(T0 + 500);
+    store.open(normal, "66", anchor, "Queue stuck", T0);
+    store.join(anchor, "77", "answered", normal, gone, T0 + 1000);
+    store.join(anchor, "78", "answered", normal, muted, T0 + 500);
+    store.leave(anchor, "78");
+    const db = new Database(path);
+    db.run(`INSERT INTO followups(repo,issue,anchor_message_id,kind,created_at,status,announcement)
+      VALUES('o/r',2,?,'bug',0,'announced',?)`, [anchor, JSON.stringify({ event: "FOLLOWUP_DONE", issue: 2 })]);
+    const posts: { message_reference: { message_id: string }; allowed_mentions: { users: string[]; replied_user: boolean } }[] = [];
+    const rest: Rest = async <T>(route: string, init?: Parameters<Rest>[1]) => {
+      if (route === `/channels/${normal}`) return { id: normal, type: 0, guild_id: "300" } as T;
+      if (route.endsWith(`/messages/${gone}`)) throw new DiscordRestError(404, "GET", route, '{"code":10008}');
+      if (route.endsWith(`/messages/${anchor}`)) return { id: anchor, channel_id: normal, author: { id: "66" } } as T;
+      if (route.endsWith(`/messages/${muted}`)) return { id: muted, channel_id: normal, author: { id: "78" } } as T;
+      if (init?.method === "POST") { posts.push(init.body as never); return { id: "9902" } as T; }
+      throw new Error(`Unexpected ${route}`);
+    };
+    try {
+      const outcomes = await terminalNotification({ state: dirname(path), repo: "o/r", issue: 2, topic: anchor, text: "Issue #2 was resolved.",
+        rest, config: () => filterConfig({ DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: normal, DORI_DISCORD_NORMAL_CHANNELS: normal }),
+        now: () => T0 + 120_000 });
+      expect(outcomes).toEqual([{ channel_id: normal, disposition: "sent", reply_id: "9902" }]);
+      // 78's message is newer than the anchor but 78 left, so the reply goes to the anchor and pings 77, never 78.
+      expect(posts.map(post => [post.message_reference.message_id, post.allowed_mentions.users, post.allowed_mentions.replied_user]))
+        .toEqual([[anchor, ["77"], true]]);
     } finally { db.close(); }
   });
 });

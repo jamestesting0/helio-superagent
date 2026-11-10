@@ -45,8 +45,10 @@ export class ReplySettlements {
     if (issueJob && meaning.issue && !meaning.issue.endsWith(`/issues/${issueJob}`)) {
       throw new TypeError("Reply issue and stable job disagree");
     }
-    const refs = topics.map(({ channel_id, user_id, opened_at, anchor_message_id, revision, last_activity, covered }) =>
-      ({ channel_id, user_id, opened_at, anchor_message_id, revision, last_activity, ...(covered ? { covered } : {}) }));
+    // The reply's own channel and the person it answered decide where a question waits and which input is newer.
+    const refs = topics.map(({ channel_id, user_id, opened_at, anchor_message_id, revision, last_activity, covered, reply_channel, asked_user, asked_message }) =>
+      ({ channel_id, user_id, opened_at, anchor_message_id, revision, last_activity, ...(covered ? { covered } : {}),
+        ...(reply_channel ? { reply_channel } : {}), ...(asked_user ? { asked_user } : {}), ...(asked_message ? { asked_message } : {}) }));
     this.db.run("INSERT OR IGNORE INTO reply_settlements(key,topics,meaning,required_sends) VALUES(?,?,?,?)",
       [key, JSON.stringify(refs), JSON.stringify(meaning), JSON.stringify(required)]);
     const receipt = this.db.query<Receipt, [string]>("SELECT * FROM reply_settlements WHERE key=?").get(key)!;

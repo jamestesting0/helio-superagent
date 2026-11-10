@@ -278,7 +278,7 @@ function repliedTo(msg: IncomingMessage) {
 
 async function conversationContext(msg: IncomingMessage, inbound: Inbound) {
   const conversation = conversationSnapshot(conversations, msg.channel_id, msg.author.id, Date.now(),
-    { reply_to: msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id, pinged: inbound.pinged === true },
+    { reply_to: msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id, pinged: inbound.pinged === true, content: msg.content },
     { channel: msg.channel_id, audience: audienceOf({ ...inbound, guild_id: msg.guild_id ?? null }) });
   const previous = (conversation?.transcript ?? [])
     .filter((entry) => BigInt(entry.message_id) < BigInt(msg.id));

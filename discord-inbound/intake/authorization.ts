@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { classify, guildChannelAllowed, insideAllowed, insideCategory, type FilterConfig, type IncomingMessage } from "./filter.ts";
+import { addressingFacts, classify, guildChannelAllowed, insideAllowed, insideCategory, type AddressingFacts, type FilterConfig, type IncomingMessage } from "./filter.ts";
 import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "../discord/rest.ts";
 import { policyValues } from "./runtime-policy.ts";
 
@@ -155,6 +155,7 @@ export function authorizationMetadata(msg: IncomingMessage) {
     ])],
     reply_to: msg.message_reference?.type === 1 ? null : msg.message_reference?.message_id ?? null,
     reply_author_id: msg.referenced_message?.author.id ?? null,
+    addressing: addressingFacts(msg),
     // The payload's text has links rewritten; release checks compare this against the live message instead.
     content_sha256: createHash("sha256").update(msg.content).digest("hex"),
   };
@@ -176,6 +177,14 @@ function withoutLinkedFiles(record: Record<string, unknown>): void {
       return copy;
     });
   }
+}
+
+function validFacts(value: unknown): value is AddressingFacts {
+  if (typeof value !== "object" || value === null) return false;
+  const facts = value as Record<string, unknown>;
+  const ids = (list: unknown) => Array.isArray(list) && list.every(id => typeof id === "string" && /^\d+$/.test(id));
+  return ids(facts.text_mention_ids) && ids(facts.parent_mention_ids) && typeof facts.names_helio === "boolean" &&
+    (facts.leading_mention_id === null || (typeof facts.leading_mention_id === "string" && /^\d+$/.test(facts.leading_mention_id)));
 }
 
 export interface OriginalMetadata {
@@ -235,6 +244,9 @@ export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest
     mentions: origin.mention_ids.map((id) => ({ id })),
     message_reference: origin.reply_to === null ? undefined : { message_id: origin.reply_to },
     referenced_message: origin.reply_author_id === null ? null : { author: { id: origin.reply_author_id } },
+    // Records staged before addressing facts existed fall back to their stored text.
+    addressing: "addressing" in origin && validFacts(origin.addressing) ? origin.addressing :
+      addressingFacts({ content: saved.content, message_reference: origin.reply_to === null ? undefined : { message_id: origin.reply_to } }),
   }, cfg, lookup);
   if (!current) return null;
   const result = {

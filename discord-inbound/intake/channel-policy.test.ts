@@ -128,6 +128,11 @@ test("a normal-chat reply to Helio without a mention is reviewed, never pinged",
   }
 });
 
+test("a mention Discord adds for a replied-to Helio whose message is gone is not a ping", async () => {
+  expect(await classify({ ...message, content: "lol", mentions: [{ id: "88" }], message_reference: { message_id: "5" },
+    referenced_message: null }, cfg, parentOf)).toBeNull();
+});
+
 test.each([
   { content: "<@88> help", mentions: [] },
   { content: "<@!88> help", mentions: [] },
@@ -210,4 +215,22 @@ test("configured channels outside the scope category are ignored with one warnin
   expect([...scoped.blockedChannels ?? []]).toEqual([normal]);
   expect(warnings).toEqual([`channel ${normal} is outside DORI_DISCORD_SCOPE_CATEGORY 500; ignored`]);
   expect(() => filterConfig({ DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: helper, DORI_DISCORD_SCOPE_CATEGORY: "abc" })).toThrow("Invalid DORI_DISCORD_SCOPE_CATEGORY");
+});
+
+test.each([
+  { name: "an explicit trusted ping replying to Helio", over: { content: "<@88> still broken", message_reference: { message_id: "5" },
+    referenced_message: { author: { id: "88" } } }, attention: "direct", addressee: "helio" },
+  { name: "naming Helio while replying to a colleague", over: { content: "Helio, the queue is stuck", message_reference: { message_id: "5" },
+    referenced_message: { author: { id: "77" } } }, attention: "review", addressee: "helio" },
+  { name: "a reply below a colleague's Helio ping", over: { content: "same here", message_reference: { message_id: "5" },
+    referenced_message: { author: { id: "77" }, content: "<@88> queue stuck" } }, attention: "review", addressee: "helio" },
+])("replay keeps how $name was addressed", async ({ over, attention, addressee }) => {
+  const original: IncomingMessage = { ...message, channel_id: helper, mentions: [], ...over };
+  const inbound = await classify(original, cfg, parentOf);
+  expect([inbound?.attention, inbound?.addressee]).toEqual([attention, addressee]);
+  // The stored text has links rewritten, so replay must rely on the facts verified at intake.
+  const payload = JSON.stringify({ ...inbound, content: "rewritten", preparation_complete: true, discord_origin: authorizationMetadata(original) });
+  const rest = async <T>(): Promise<T> => ({ id: helper, guild_id: "300", type: 0 } as T);
+  const replayed = await reauthorize(payload, cfg, rest);
+  expect([replayed?.attention, replayed?.addressee]).toEqual([attention, addressee]);
 });

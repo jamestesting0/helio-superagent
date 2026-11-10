@@ -41,6 +41,8 @@ export async function closureNotes(o: {
     const sent = await sendOnce({
       path: join(o.state, "reply-sends.sqlite"), target: group.target, text: content, event, now: o.now,
       sleep: (ms) => Bun.sleep(ms), retryUncertain: false,
+      // A definitive refusal (missing permission, deleted target) releases the claim so a later rerun can post.
+      definitiveFailure: error => error instanceof DiscordRestError && [400, 403, 404, 429].includes(error.status),
       findSent: (original, otherReplyIds) => findSentReply(o.rest, { channel_id: group.channel, message_id: group.target, otherReplyIds }, original),
       send: async () => (await o.rest<{ id: string }>(`/channels/${group.channel}/messages`, {
         method: "POST", body: {

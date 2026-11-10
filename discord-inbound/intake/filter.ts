@@ -52,6 +52,27 @@ export interface IncomingMessage extends MessageBody {
   readonly mentions?: readonly { readonly id: string }[];
   readonly referenced_message?: { readonly author: { readonly id: string }; readonly content?: string } | null;
   readonly webhook_id?: string;
+  /** Addressing facts verified when the message was first received; replay uses them instead of its rewritten text. */
+  readonly addressing?: AddressingFacts;
+}
+
+/** Who a message structurally addresses, read from its raw text and the message it replies to. */
+export interface AddressingFacts {
+  readonly text_mention_ids: readonly string[];
+  readonly leading_mention_id: string | null;
+  readonly names_helio: boolean;
+  readonly parent_mention_ids: readonly string[];
+}
+
+const mentionIds = (text: string | undefined) => [...(text ?? "").matchAll(/<@!?(\d+)>/g)].flatMap(match => match[1] ? [match[1]] : []);
+
+export function addressingFacts(msg: Pick<IncomingMessage, "content" | "message_reference" | "referenced_message">): AddressingFacts {
+  return {
+    text_mention_ids: [...new Set(mentionIds(msg.content))],
+    leading_mention_id: /^\s*<@!?(\d+)>/.exec(msg.content)?.[1] ?? null,
+    names_helio: /\bhelio\b/i.test(msg.content),
+    parent_mention_ids: msg.message_reference?.type === 1 ? [] : [...new Set(mentionIds(msg.referenced_message?.content))],
+  };
 }
 
 export type ParentLookup = (channelId: string) => Promise<string | undefined>;
@@ -176,10 +197,12 @@ const bugReport = (msg: IncomingMessage, cfg: FilterConfig): boolean => msg.auth
  * working window, or an answer Helio's open question is waiting for.
  */
 function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy, isBugReport: boolean) {
+  const facts = msg.addressing ?? addressingFacts(msg);
   const repliesToHelio = cfg.botId !== undefined && msg.message_reference?.type !== 1 && msg.referenced_message?.author.id === cfg.botId;
-  const mentioned = cfg.botId !== undefined &&
-    (msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`) ||
-      (!repliesToHelio && msg.mentions?.some((user) => user.id === cfg.botId) === true));
+  // A ping is a mention written in the text. Discord also lists a replied-to author in `mentions`, so that list
+  // counts only for a message that replies to nothing.
+  const mentioned = cfg.botId !== undefined && (facts.text_mention_ids.includes(cfg.botId) ||
+    (msg.message_reference === undefined && msg.mentions?.some((user) => user.id === cfg.botId) === true));
   const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
   const repliedTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
   const followUp = channelPolicy === "normal" && !isBugReport && !mentioned &&
@@ -187,12 +210,11 @@ function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: Chan
       (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true));
   const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned);
   const parent = repliedTo !== undefined ? msg.referenced_message : undefined;
-  const parentPingedHelio = cfg.botId !== undefined && typeof parent?.content === "string" &&
-    (parent.content.includes(`<@${cfg.botId}>`) || parent.content.includes(`<@!${cfg.botId}>`));
-  const toHelio = mentioned || repliesToHelio || parentPingedHelio || additionTo !== undefined || /\bhelio\b/i.test(msg.content) ||
+  const parentPingedHelio = cfg.botId !== undefined && facts.parent_mention_ids.includes(cfg.botId);
+  const toHelio = mentioned || repliesToHelio || parentPingedHelio || additionTo !== undefined || facts.names_helio ||
     cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true || (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true);
-  const opener = /^\s*<@!?(\d+)>/.exec(msg.content)?.[1];
-  const toPerson = (parent != null && parent.author.id !== cfg.botId) || (opener !== undefined && opener !== cfg.botId);
+  const opener = facts.leading_mention_id;
+  const toPerson = (parent != null && parent.author.id !== cfg.botId) || (opener !== null && opener !== cfg.botId);
   const addressee: Addressee = toHelio ? "helio" : toPerson ? "other" : "none";
   return { mentioned, additionTo, repliesToHelio, followUp, forOwner, addressee };
 }

@@ -32,7 +32,7 @@ stop_child() {
   [ -n "$child" ] || return 0
   kill -TERM "$child" 2>/dev/null || true
   if kill -0 "$child" 2>/dev/null; then
-    sleep 10 & killer=$!
+    sleep "${HELIO_STOP_GRACE_SECONDS:-10}" & killer=$!
     wait -n -p stopped "$child" "$killer" 2>/dev/null || true
     if [ "${stopped:-}" = "$killer" ]; then kill -KILL "$child" 2>/dev/null || true; fi
   fi

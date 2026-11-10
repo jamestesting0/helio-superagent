@@ -56,6 +56,14 @@ try {
   if (positional.length && !snowflake(topicId)) throw new TypeError("Topics are named by their anchor message ID");
   store = new Conversations(`${state}/discord-conversations.sqlite`);
   const now = Date.now();
+  const inbound = (id: string): Record<string, unknown> | undefined => {
+    if (!existsSync(`${state}/discord-delivery.sqlite`)) return undefined;
+    const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
+    try {
+      const item = delivery.pending("inbound").find(entry => entry.id === id);
+      return item ? { ...object(JSON.parse(item.payload)), message_id: id } : undefined;
+    } finally { delivery.close(); }
+  };
   const active = (id: string): Conversation => {
     const row = store!.get("", "", id);
     if (!row) throw new RangeError(`No active topic ${id}`);
@@ -102,14 +110,7 @@ try {
       const anchor = topicId!, title = [second, ...rest].join(" ");
       if (!title.trim() || title.length > 200) throw new TypeError("Open requires a title of 1-200 characters");
       const claim = store.working(anchor);
-      let payload: Record<string, unknown> | undefined;
-      if (existsSync(`${state}/discord-delivery.sqlite`)) {
-        const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
-        try {
-          const item = delivery.pending("inbound").find(entry => entry.id === anchor);
-          if (item) payload = object(JSON.parse(item.payload));
-        } finally { delivery.close(); }
-      }
+      const payload = inbound(anchor);
       const channel = typeof payload?.channel_id === "string" ? payload.channel_id : claim?.channel_id;
       const user = typeof payload?.author_id === "string" ? payload.author_id : claim?.user_id;
       if (!channel || !user) throw new RangeError("The anchor must be an inbound message Helio received");
@@ -142,14 +143,16 @@ try {
     case "join": {
       const row = active(topicId!), user = second!, message = options.get("--message");
       if (!snowflake(user)) throw new TypeError("join takes a Discord user ID");
-      let channel = row.channel_id, at = row.anchor_message_id;
       if (message) {
-        const claim = store.working(message);
-        if (!claim || claim.user_id !== user) throw new RangeError("--message must be that person's inbound message");
-        channel = claim.channel_id;
-        at = message;
+        // A useful message that needs no answer: the person joins and the message becomes part of the topic.
+        const payload = inbound(message);
+        if (payload?.author_id !== user || typeof payload.channel_id !== "string") {
+          throw new RangeError("--message must be that person's inbound message");
+        }
+        store.recordAnswered(row, conversationEntry(payload), { channel: payload.channel_id, audience: audienceOf(payload) }, "lead", now);
+      } else {
+        store.join(row.anchor_message_id, user, "lead", row.channel_id, row.anchor_message_id, now);
       }
-      store.join(row.anchor_message_id, user, "lead", channel, at, now);
       console.log(`CONVERSATION_JOINED topic=${row.anchor_message_id} user=${user}`);
       break;
     }

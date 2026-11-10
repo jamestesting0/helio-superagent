@@ -103,6 +103,26 @@ test("show, note, hold, resume and explicit reopen preserve a request through th
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a useful unpinged message joins its topic silently and later replies to it find the topic", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conversation-join-"));
+  try {
+    received(dir, "10");
+    expect((await invoke(dir, "open", "10", "Queue stuck")).code).toBe(0);
+    const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+    try {
+      queue.stage("inbound", "11", JSON.stringify({ channel_id: "100", author_id: "77", author: "other", content: "same on mobile",
+        sent_at: "2026-11-02T12:00:00Z", reply_to: "10", channel_policy: "normal" }));
+    } finally { queue.close(); }
+    expect((await invoke(dir, "join", "10", "77", "--message", "11")).code).toBe(0);
+    expect((await invoke(dir, "join", "10", "78", "--message", "11")).code).toBe(2);
+    const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+    try {
+      expect(store.participants("10").map((person) => [person.user_id, person.via])).toEqual([["77", "lead"], ["99", "opened"]]);
+      expect(store.topicOfMessage("11")?.anchor_message_id).toBe("10");
+    } finally { store.dispose(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test("conversation listing pages long multibyte summaries within the tool budget", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-pages-"));
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));

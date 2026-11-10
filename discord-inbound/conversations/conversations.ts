@@ -74,9 +74,9 @@ export interface Participant {
   readonly notify: number;
 }
 const VISIBLE: Record<Audience, readonly Audience[]> = { public: ["public"], staff: ["public", "staff"], dm: ["public", "staff", "dm"] };
-/** A DM sees only its own DM entries; other audiences never see DM text. */
+/** Everyone in a channel saw what was said there; elsewhere a DM entry is never shown and the audience matrix applies. */
 export function visibleTo(entry: { readonly audience: Audience; readonly message_channel_id: string }, viewer: Placement): boolean {
-  return VISIBLE[viewer.audience].includes(entry.audience) && (entry.audience !== "dm" || entry.message_channel_id === viewer.channel);
+  return entry.message_channel_id === viewer.channel || (entry.audience !== "dm" && VISIBLE[viewer.audience].includes(entry.audience));
 }
 
 export const UNDERSTANDING_FIELDS = ["request", "decided", "waiting_on", "result"] as const;
@@ -235,6 +235,24 @@ export class Conversations extends WorkingStore {
           THEN excluded.last_message_id ELSE last_message_id END`).run(anchor, user, now, via, channel, messageId);
   }
 
+  /** The closing-note groups of a topic: the first computation is kept, so retries post to the same place. */
+  closureGroups(anchor: string, channel: string): { readonly channel: string; readonly target: string; readonly users: readonly string[] }[] {
+    return this.db.transaction(() => {
+      if (!this.db.query("SELECT 1 FROM closure_notes WHERE anchor_message_id=?").get(anchor)) {
+        const elsewhere = Map.groupBy(this.participants(anchor).filter(person => person.notify && person.last_channel_id !== channel),
+          person => person.last_channel_id);
+        for (const [where, people] of elsewhere) {
+          const target = people.map(person => person.last_message_id).reduce((a, b) => BigInt(a) > BigInt(b) ? a : b);
+          this.db.run("INSERT INTO closure_notes VALUES (?,?,?,?)", [anchor, where, target, JSON.stringify(people.map(person => person.user_id))]);
+        }
+      }
+      const muted = new Set(this.participants(anchor).filter(person => !person.notify).map(person => person.user_id));
+      return this.db.query<{ channel_id: string; target: string; users: string }, [string]>(
+        "SELECT channel_id,target,users FROM closure_notes WHERE anchor_message_id=? ORDER BY channel_id").all(anchor)
+        .map(row => ({ channel: row.channel_id, target: row.target, users: (JSON.parse(row.users) as string[]).filter(user => !muted.has(user)) }));
+    }).immediate();
+  }
+
   /** Stops closure pings for a person while keeping their history. */
   leave(anchor: string, user: string): void {
     if (!this.db.query("UPDATE topic_participants SET notify=0 WHERE anchor_message_id=? AND user_id=?").run(anchor, user).changes) {
@@ -380,11 +398,21 @@ export class Conversations extends WorkingStore {
     }).immediate();
   }
 
-  /** A topic reply answers or covers this message: its author joins, and the message is recorded in the topic. */
-  recordAnswered(row: Conversation, entry: ConversationEntry, placement: Placement, via: "answered" | "covered", now: number): void {
+  /**
+   * A delivered topic reply answered or covered this message: its author joins and the message is recorded. The reply
+   * already covers it, so this neither reopens questions nor invalidates that reply's revision.
+   */
+  recordAnswered(row: Conversation, entry: ConversationEntry, placement: Placement, via: "answered" | "covered" | "lead", now: number): void {
     this.db.transaction(() => {
       this.join(row.anchor_message_id, entry.author_id, via, placement.channel, entry.message_id, now);
-      this.record(row, entry, placement, now);
+      this.db.run(`INSERT OR IGNORE INTO transcript
+        (message_id,channel_id,user_id,opened_at,author_id,sent_at,entry,message_channel_id,audience,is_helio) VALUES (?,?,?,?,?,?,?,?,?,0)`,
+      [entry.message_id, row.channel_id, row.user_id, row.opened_at, entry.author_id, entry.sent_at ?? null, JSON.stringify(entry),
+        placement.channel, placement.audience]);
+      this.db.run(`UPDATE conversations SET last_activity=max(last_activity,?),
+        latest_input_id=CASE WHEN latest_input_id IS NULL OR length(?)>length(latest_input_id) OR (length(?)=length(latest_input_id) AND ?>latest_input_id)
+          THEN ? ELSE latest_input_id END WHERE channel_id=? AND user_id=? AND opened_at=?`,
+      [now, entry.message_id, entry.message_id, entry.message_id, entry.message_id, row.channel_id, row.user_id, row.opened_at]);
     }).immediate();
   }
 
@@ -439,6 +467,13 @@ export class Conversations extends WorkingStore {
         AND entry IS NOT NULL ORDER BY rowid`,
     ).all(row.channel_id, row.user_id, row.opened_at)
       .filter(entry => !viewer || visibleTo(entry, viewer)).map((entry) => JSON.parse(entry.entry));
+  }
+
+  /** Recorded text with the channel each message was said in, for callers that check access per message. */
+  placedTranscriptOf(row: Conversation): { readonly entry: ConversationEntry; readonly channel: string }[] {
+    return this.db.query<{ entry: string; message_channel_id: string }, [string, string, number]>(
+      `SELECT entry,message_channel_id FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=? AND entry IS NOT NULL ORDER BY rowid`,
+    ).all(row.channel_id, row.user_id, row.opened_at).map(item => ({ entry: JSON.parse(item.entry), channel: item.message_channel_id }));
   }
 
   /** Every active topic's entries that this person opened in this channel. */
@@ -586,10 +621,15 @@ export class Conversations extends WorkingStore {
   /** Compare the covered human revision; a retry recognizes its own already-applied receipt. */
   applyReply(row: TopicRevision, meaning: ReplyMeaning, now: number, key?: string): "applied" | "newer-input" {
     return this.db.transaction(() => {
-      const current = this.byAnchor(row.channel_id, row.user_id, row.anchor_message_id);
+      let current = this.byAnchor(row.channel_id, row.user_id, row.anchor_message_id);
       if (key && current?.last_reply_key === key) return "applied";
-      if (!current || current.opened_at !== row.opened_at || current.revision !== row.revision ||
-          current.status !== "open") return "newer-input";
+      if (!current || current.opened_at !== row.opened_at || current.revision !== row.revision) return "newer-input";
+      // A delivered question or progress note on a recently resolved topic picks it up again.
+      if (current.status === "resolved" && meaning.disposition !== "final" && (current.resolved_at ?? 0) > now - 7 * DAY_MS &&
+          !current.merged_into) {
+        current = this.reopen(current.channel_id, current.user_id, now, current.anchor_message_id);
+      }
+      if (current.status !== "open") return "newer-input";
       const lastHuman = this.transcriptOf(current).findLast(entry => !entry.bot);
       if (row.covered && lastHuman && !row.covered.includes(lastHuman.message_id)) return "newer-input";
       if (row.covered && current.latest_input_id && !row.covered.includes(current.latest_input_id)) return "newer-input";
@@ -605,7 +645,11 @@ export class Conversations extends WorkingStore {
         asking ? row.asked_user ?? row.user_id : null, asking ? row.reply_channel ?? row.channel_id : null,
         asking ? row.asked_message ?? row.anchor_message_id : null, meaning.disposition === "final" ? 0 : 1,
         row.channel_id, row.user_id, row.opened_at]);
-      if (meaning.issue && !current.issue) this.subscribe(current, meaning.issue, now);
+      // Linking an issue through a reply is the same as `conversation set --issue`: an older topic with it absorbs this one.
+      if (meaning.issue && !current.issue) {
+        const linked = this.linkTopicIssue(this.topic(row.anchor_message_id)!, meaning.issue, now);
+        if (linked.anchor_message_id !== row.anchor_message_id) return "applied";
+      }
       if (meaning.disposition === "final") {
         const tracked = this.db.query(`SELECT 1 FROM followups WHERE anchor_message_id=? AND status<>'done'`).get(row.anchor_message_id);
         this.close(row.channel_id, row.user_id, tracked ? "issue" : "answered", now, undefined, row.anchor_message_id);
@@ -635,6 +679,8 @@ export class Conversations extends WorkingStore {
       // A topic whose issue subscription is still undelivered keeps its participants and summary until delivery.
       this.db.query(`DELETE FROM conversations WHERE status='archived' AND resolved_at<=? AND NOT EXISTS (
         SELECT 1 FROM followups f WHERE f.anchor_message_id=conversations.anchor_message_id AND f.status<>'done')`).run(now - 30 * DAY_MS);
+      this.db.exec(`DELETE FROM closure_notes WHERE NOT EXISTS (
+        SELECT 1 FROM conversations c WHERE c.anchor_message_id=closure_notes.anchor_message_id)`);
       this.db.exec(`DELETE FROM topic_participants WHERE NOT EXISTS (
         SELECT 1 FROM conversations c WHERE c.anchor_message_id=topic_participants.anchor_message_id)`);
       this.db.query("DELETE FROM conversation_notices WHERE created_at<=?").run(now - 37 * DAY_MS);

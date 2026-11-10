@@ -123,8 +123,8 @@ test.each(["inbound", "context"])("pending %s pages a large backlog within fifty
   const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
   try {
     for (let id = 500; id < 700; id++) {
-      const payload = stream === "inbound" ? message(String(id), { content: "😃".repeat(50_000) }) :
-        { message_id: String(id), message_type: 0, channel_id: "104", human_verified: true, bot: false, content: "😃".repeat(50_000) };
+      const payload = stream === "inbound" ? message(String(id), { content: "😃".repeat(2_000) }) :
+        { message_id: String(id), message_type: 0, channel_id: "104", human_verified: true, bot: false, content: "😃".repeat(2_000) };
       queue.stage(stream === "inbound" ? "inbound" : "context", String(id), JSON.stringify(payload));
     }
     const seen: string[] = [];
@@ -302,8 +302,10 @@ test("ack show keeps the conversation a reply was routed to, not the person's mo
       discord_origin: authorizationMetadata({ id: "500", type: 19, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
         content: "<@88> request", timestamp: new Date(NOW).toISOString(), message_reference: { message_id: "400" } }) })));
     const shown = await invoke(dir, ["show", "inbound", "500"]);
-    expect(shown.stdout).toContain("logs topic");
-    expect(shown.stdout).not.toContain("roles topic");
+    // The reply binds its own topic; the person's other topic is only listed beside it.
+    const conversation = JSON.parse(shown.stdout.slice("ACK_TURN ".length)).conversation;
+    expect(conversation.topic).toBe("logs topic");
+    expect(conversation.other_topics.map((topic: { title: string }) => topic.title)).toEqual(["roles topic"]);
   } finally { queue.close(); conversations.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
 

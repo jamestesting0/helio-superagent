@@ -142,6 +142,11 @@ export async function guardedReply(o: {
   if (settlements && settlementKey) {
     const recovered = settlements.recover(settlementKey, o.store, o.now());
     if (recovered) {
+      // A crash after the send left its participation unrecorded; recording is idempotent.
+      const pendingNow = new Map(o.delivery.pending("inbound").map((item) => [item.id, JSON.parse(item.payload) as Payload]));
+      for (const item of answered(o, pendingNow, [o.target, ...o.covers].filter(id => pendingNow.get(id)?.channel_id === o.channel))) {
+        o.store.recordAnswered(item.row, item.entry, item.placement, item.via, o.now());
+      }
       const resolved = o.settlement?.meaning.disposition === "final" ? o.store.topicOfMessage(o.target, o.now()) : null;
       return { code: 0, lines: [`REPLY_SETTLED ${recovered.join(",")}; existing delivery retained`,
         ...await closeElsewhere(o, resolved ? [resolved.anchor_message_id] : [])] };
@@ -173,25 +178,15 @@ export async function guardedReply(o: {
   const authorOf = (id: string) => pending.get(id)?.author_id ?? o.store.working(id)?.user_id ?? (id === o.target ? targetAuthor : undefined);
   const claimed = [o.target, ...covered].some((id) => o.store.working(id)?.claimed_at != null);
   const now = o.now();
-  const named = o.topic ? o.store.topic(o.topic) : null;
-  if (o.topic && !named) return { code: 3, lines: [`REPLY_WITHHELD message_id=${o.target}: unknown topic ${o.topic}; nothing was sent.`] };
-  // A topic reply that asks or reports progress on a recently resolved topic reopens it.
-  const reopened = named && named.status === "resolved" && o.settlement && o.settlement.meaning.disposition !== "final" ?
-    o.store.reopen(named.channel_id, named.user_id, now, named.anchor_message_id) : named;
+  if (o.topic && !o.store.topic(o.topic)) {
+    return { code: 3, lines: [`REPLY_WITHHELD message_id=${o.target}: unknown topic ${o.topic}; nothing was sent.`] };
+  }
+  const joining = answered(o, pending, [o.target, ...covered]);
   const found = new Map<string, Conversation>();
   for (const id of [o.target, ...covered]) {
     const author = authorOf(id);
-    if (!author) continue;
-    const payload = pending.get(id);
-    const row = reopened && (reopened.status === "open" || reopened.status === "on_hold") ? reopened :
-      o.store.forReply(o.channel, author, typeof payload?.reply_to === "string" ? payload.reply_to : undefined);
-    if (!row) continue;
-    // Only a topic reply that answers or covers someone adds them; a plain reply never changes membership.
-    if (o.settlement && payload && typeof payload.content === "string") {
-      o.store.recordAnswered(row, conversationEntry({ ...payload, message_id: id }),
-        { channel: o.channel, audience: audienceOf(payload as Record<string, unknown>) }, id === o.target ? "answered" : "covered", now);
-    }
-    found.set(row.anchor_message_id, o.store.topic(row.anchor_message_id)!);
+    const row = topicFor(o, author, pending.get(id));
+    if (row) found.set(row.anchor_message_id, row);
   }
   const topics = [...found.values()];
   const final = o.settlement?.meaning.disposition === "final";
@@ -207,6 +202,8 @@ export async function guardedReply(o: {
   }
   const replyId = await o.send(mentions, lead);
   const lines = [`SENT ${replyId}`];
+  // Only a delivered topic reply adds the people it answered or covered.
+  for (const item of joining) o.store.recordAnswered(item.row, item.entry, item.placement, item.via, o.now());
   if (o.replyEntry) {
     for (const conversation of topics) {
       o.store.append(conversation.channel_id, conversation.user_id, {
@@ -249,6 +246,28 @@ export async function guardedReply(o: {
   } finally { settlements?.close(); }
 }
 
+type GuardOptions = Parameters<typeof guardedReply>[0];
+
+/** The topic a message belongs to: the named topic (any retained state), else its reply edge or continuation. */
+function topicFor(o: Pick<GuardOptions, "store" | "channel" | "topic">, author: string | undefined, payload: Payload | undefined): Conversation | null {
+  if (o.topic) return o.store.topic(o.topic);
+  return author ? o.store.forReply(o.channel, author, typeof payload?.reply_to === "string" ? payload.reply_to : undefined) : null;
+}
+
+/** Messages a topic reply answers or covers, with the entry and placement each will be recorded with. */
+function answered(o: Pick<GuardOptions, "store" | "channel" | "topic" | "target" | "settlement">, pending: ReadonlyMap<string, Payload>,
+  ids: readonly string[]) {
+  if (!o.settlement) return [];
+  return ids.flatMap(id => {
+    const payload = pending.get(id);
+    if (!payload || typeof payload.content !== "string" || typeof payload.author_id !== "string") return [];
+    const row = topicFor(o, payload.author_id, payload);
+    if (!row) return [];
+    return [{ row, entry: conversationEntry({ ...payload, message_id: id }), via: id === o.target ? "answered" as const : "covered" as const,
+      placement: { channel: o.channel, audience: audienceOf(payload as Record<string, unknown>) } }];
+  });
+}
+
 /** Participants who last spoke on a closed topic in another channel get one templated note there. */
 async function closeElsewhere(o: Pick<Parameters<typeof guardedReply>[0], "store" | "channel" | "notifyOthers">,
   anchors: readonly string[]): Promise<string[]> {
@@ -257,10 +276,7 @@ async function closeElsewhere(o: Pick<Parameters<typeof guardedReply>[0], "store
   for (const anchor of anchors) {
     const row = o.store.topic(anchor);
     if (!row) continue;
-    const elsewhere = Map.groupBy(o.store.participants(row.anchor_message_id)
-      .filter(person => person.notify && person.last_channel_id !== o.channel), person => person.last_channel_id);
-    const groups = [...elsewhere].map(([channel, people]) => ({ channel, users: people.map(person => person.user_id),
-      target: people.map(person => person.last_message_id).reduce((a, b) => BigInt(a) > BigInt(b) ? a : b) }));
+    const groups = o.store.closureGroups(anchor, o.channel).filter(group => group.users.length);
     if (!groups.length) continue;
     try { lines.push(...await o.notifyOthers(row, groups)); }
     catch (error) {

@@ -92,7 +92,9 @@ export function contextSections(messages: readonly Record<string, unknown>[]) {
     conversation: [{
       request: conversation.request, decided: conversation.decided, waiting_on: conversation.waiting_on, result: conversation.result,
       relation: conversation.relation,
-      topic_binding: conversation.topic_binding,
+      topic_id: conversation.topic_id, topic_binding: conversation.topic_binding, binding_via: conversation.binding_via,
+      joins_on_reply: conversation.joins_on_reply, participants: conversation.participants, places: conversation.places,
+      other_topics: conversation.other_topics,
       context_status: conversation.context_status, context_read: conversation.context_read,
       topic: conversation.topic, summary: conversation.summary ?? conversation.topic, state: conversation.state,
       hold_reason: conversation.hold_reason, recently_resolved: conversation.recently_resolved,
@@ -116,10 +118,11 @@ export function renderTurn(messages: readonly Record<string, unknown>[]): string
   const read = (name: SectionName) => `${command} --section ${name} --offset 0`;
   const conversation = sections.conversation[0];
   const transcript = entries(conversation?.transcript);
-  const conversationSection = section(transcript, { budget: 2400, limit: 6, read: read("conversation") });
+  // Text first: an answer's words survive the budget before its metadata does.
+  const conversationSection = section(transcript, { budget: 2400, limit: 6, compact: true, read: read("conversation") });
   const conversationData = boundedEntry({ ...conversation, transcript: conversationSection.messages,
     truncated: conversationSection.truncated || Number(conversation?.earlier_entries) > 0,
-    read_more: read("conversation"), show: conversation?.read_more }, 4000);
+    read_more: read("conversation"), show: conversation?.read_more }, 5000);
   const statuses = messages.flatMap((message) => {
     const context = message.reply_context ? object(message.reply_context) : {};
     return typeof context.status === "string" ? [{ message_id: message.message_id, status: context.status.slice(0, 100) }] : [];

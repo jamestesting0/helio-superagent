@@ -80,7 +80,7 @@ Historical workflow-extraction measurements (not the current prompt-budget asser
 | owner | 26,545 | 29,414 | 55,959 | 16,487 | 14,766 | 31,253 |
 | isolated | 26,677 | 30,645 | 57,322 | 16,533 | 15,388 | 31,921 |
 
-Deleted originals: reply-guard.ts finishes the claim and explicitly prints REPLY_SKIPPED with an ack done instruction, while ack.ts records the terminal delivery outcome. Only that explicit skip retires that original; failed sends/permissions/other unresolved references remain pending. REPLY_FOLLOWUP_CLOSED already closes a missing-anchor follow-up: notify the owner once and record nothing else.
+Deleted originals: reply-guard.ts finishes the claim and explicitly prints REPLY_SKIPPED with an ack done instruction, while ack.ts records the terminal delivery outcome. Only that explicit skip retires that original; failed sends/permissions/other unresolved references remain pending. After a final reply, REPLY_CLOSURE_SENT lists closing notes posted where other participants last spoke; REPLY_CLOSURE_PENDING means rerun the same reply command; REPLY_CLOSURE_UNDELIVERABLE needs one owner notice and nothing else.
 
 Beta state: shared policy preserves unrelated state subject to the profile exception. The isolated policy alone grants unrestricted elo_beta record changes for authorized work; owner remains read-only and delegates tests to isolated. Unrelated Discord drafts, sessions, messages and permissions remain protected.
 

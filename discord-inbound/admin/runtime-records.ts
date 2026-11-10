@@ -18,7 +18,15 @@ export class RuntimeRecords {
 
   private async topic(row: Conversation, detail: boolean, suggest: boolean): Promise<AdminRecord> {
     const { conversations, published, access } = this.runtime;
-    const transcript = detail ? conversations.transcriptOf(row) : [];
+    // Each message is shown only to someone who can read the channel it was said in; a DM is checked against its person.
+    const placed = detail ? conversations.placedTranscriptOf(row) : [];
+    const dmPerson = new Map(placed.filter(item => !item.entry.bot).map(item => [item.channel, item.entry.author_id]));
+    const visible = detail ? (await Promise.all(placed.map(async item =>
+      await access.canRead(item.channel, item.entry.bot ? dmPerson.get(item.channel) ?? row.user_id : item.entry.author_id) ? item : undefined)))
+      .filter((item): item is typeof placed[number] => item !== undefined) : [];
+    const transcript = visible.map(item => item.entry);
+    const guilds = new Map(await Promise.all([...new Set(visible.map(item => item.channel))]
+      .map(async id => [id, (await access.channel(id)).guild_id || "@me"] as const)));
     const knownName = detail ? transcript.findLast(entry => entry.author_id === row.user_id)?.author :
       suggest ? undefined : this.runtime.conversationDb.query<{ author: string | null }, [string, string, number, string]>(
         "SELECT json_extract(entry,'$.author') AS author FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=? AND author_id=? ORDER BY rowid DESC LIMIT 1")
@@ -48,10 +56,10 @@ export class RuntimeRecords {
     return { id: topicId(row), title: row.topic, state, user: row.user_id, channel: row.channel_id,
       revision: String(row.revision), summary: `${referenceLink(user)} | <#${row.channel_id}>\n${stateName(state)}${state === "waiting_on_requester" && due ? ` | Due <t:${Math.floor(due / 1000)}:R>` : ""}`,
       url: messageUrl(source.guild, row.channel_id, row.anchor_message_id),
-      ...(detail ? { fields, activity: transcript.map(entry => ({
+      ...(detail ? { fields, activity: visible.map(({ entry, channel: where }) => ({
         title: entry.author || (entry.bot ? "Helio" : "Requester"), text: entry.content ?? "",
         fields: [{ name: "Author", value: { kind: "user", id: entry.author_id, label: entry.author || "Unavailable user" } },
-          { name: "Message", value: { ...source, id: entry.message_id, label: "View message" } }],
+          { name: "Message", value: { kind: "message", id: entry.message_id, channel: where, guild: guilds.get(where) ?? "@me", label: "View message" } }],
       })) } : {}),
     };
   }

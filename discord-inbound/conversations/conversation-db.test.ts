@@ -49,3 +49,43 @@ test("user_version guards a table rebuild that preserves followups and terminal 
     expect(db.query("SELECT count(*) AS n FROM followups").get()).toEqual({ n: 0 });
   } finally { store.dispose(); db.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test("migration keeps every message's own channel and audience when duplicate anchors merge", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "conversation-audience-"));
+  const path = join(dir, "discord-conversations.sqlite");
+  const saved = { normal: process.env.DORI_DISCORD_NORMAL_CHANNELS, trusted: process.env.DORI_DISCORD_TRUSTED_CHANNELS };
+  Object.assign(process.env, { DORI_DISCORD_NORMAL_CHANNELS: "200", DORI_DISCORD_TRUSTED_CHANNELS: "100" });
+  const db = new Database(path);
+  const entry = (id: string, content: string) => JSON.stringify({ message_id: id, author_id: "66", content, bot: false });
+  db.exec(`CREATE TABLE conversations (
+    channel_id TEXT,user_id TEXT,opened_at INTEGER,last_activity INTEGER,anchor_message_id TEXT,topic TEXT,
+    status TEXT CHECK(status IN ('open','closed','timed_out')),outcome TEXT,closed_at INTEGER,
+    PRIMARY KEY(channel_id,user_id,opened_at));
+    CREATE TABLE transcript (message_id TEXT PRIMARY KEY,channel_id TEXT,user_id TEXT,opened_at INTEGER,author_id TEXT,sent_at TEXT,entry TEXT);
+    INSERT INTO conversations VALUES ('100','66',1,1,'10','staff side','open',NULL,NULL),('200','66',2,2,'10','public side','open',NULL,NULL),
+      ('700','66',3,3,'30','owner dm','open',NULL,NULL);`);
+  db.run("INSERT INTO transcript VALUES ('11','100','66',1,'66',NULL,?),('21','200','66',2,'66',NULL,?),('31','700','66',3,'66',NULL,?)",
+    [entry("11", "STAFF ONLY"), entry("21", "public detail"), entry("31", "PRIVATE DM")]);
+  const store = new Conversations(path, NOW);
+  try {
+    expect(db.query("SELECT message_id,channel_id,message_channel_id,audience FROM transcript ORDER BY message_id").all()).toEqual([
+      { message_id: "11", channel_id: "200", message_channel_id: "100", audience: "staff" },
+      { message_id: "21", channel_id: "200", message_channel_id: "200", audience: "public" },
+      { message_id: "31", channel_id: "700", message_channel_id: "700", audience: "dm" },
+    ]);
+    const merged = store.topic("10")!, dm = store.topic("30")!;
+    const seen = (row: typeof merged, channel: string, audience: "public" | "staff" | "dm") =>
+      store.transcriptOf(row, { channel, audience }).map(item => item.content);
+    expect(seen(merged, "200", "public")).toEqual(["public detail"]);
+    expect(seen(merged, "100", "staff")).toEqual(["STAFF ONLY", "public detail"]);
+    expect(seen(dm, "100", "staff")).toEqual([]);
+    expect(seen(dm, "700", "dm")).toEqual(["PRIVATE DM"]);
+  } finally {
+    store.dispose(); db.close();
+    Object.assign(process.env, { DORI_DISCORD_NORMAL_CHANNELS: saved.normal, DORI_DISCORD_TRUSTED_CHANNELS: saved.trusted });
+    for (const [key, value] of [["DORI_DISCORD_NORMAL_CHANNELS", saved.normal], ["DORI_DISCORD_TRUSTED_CHANNELS", saved.trusted]] as const) {
+      if (value === undefined) delete process.env[key];
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});

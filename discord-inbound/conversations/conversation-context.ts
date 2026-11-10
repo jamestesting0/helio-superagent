@@ -32,6 +32,24 @@ function relation(store: Conversations, row: Conversation, message: { readonly r
   return message.pinged ? "new_ping" : "follow_up";
 }
 
+/**
+ * A topic named by the message itself: a reply into a recently resolved topic or a Discord link to a recorded message
+ * (explicit, readable without reopening), or a GitHub link to an issue an active topic tracks (a candidate).
+ */
+function linkedTopic(store: Conversations, message: { readonly reply_to?: string; readonly content?: string }, now: number) {
+  const resolved = message.reply_to ? store.topicOfMessage(message.reply_to, now) : null;
+  if (resolved) return { row: resolved, via: "reply" as const };
+  for (const match of (message.content ?? "").matchAll(/discord(?:app)?\.com\/channels\/(?:@me|\d+)\/\d+\/(\d+)/g)) {
+    const row = store.topicOfMessage(match[1]!, now);
+    if (row) return { row, via: "message_link" as const };
+  }
+  for (const match of (message.content ?? "").matchAll(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*/g)) {
+    const row = store.list().find(topic => topic.issue === match[0]);
+    if (row) return { row, via: "issue_link" as const };
+  }
+  return undefined;
+}
+
 /** A short view of another topic: never its transcript, only what every participant may see. */
 function summary(store: Conversations, row: Conversation) {
   const people = store.participants(row.anchor_message_id);
@@ -47,20 +65,22 @@ function summary(store: Conversations, row: Conversation) {
  * answers or covers them. Transcript text is limited to what this place's audience may see.
  */
 export function conversationSnapshot(store: Conversations, channel: string, user: string, now: number,
-  message?: { readonly reply_to?: string; readonly pinged?: boolean }, viewer: Placement = { channel, audience: "public" }) {
-  const row = message ? store.forReply(channel, user, message.reply_to) : store.get(channel, user);
+  message?: { readonly reply_to?: string; readonly pinged?: boolean; readonly content?: string }, viewer: Placement = { channel, audience: "public" }) {
+  const continued = message ? store.forReply(channel, user, message.reply_to) : store.get(channel, user);
+  const linked = continued ? undefined : message && linkedTopic(store, message, now);
+  const row = continued ?? linked?.row ?? null;
   const recent = store.recentlyResolved(channel, user, now);
   const others = store.topicsFor(user).filter(other => other.anchor_message_id !== row?.anchor_message_id);
   if (!row && !recent && !others.length) return undefined;
   const awaited = row && store.state(row) === "waiting_on_requester" && (row.waiting_on_user ?? row.user_id) === user &&
     (row.question_channel_id ?? row.channel_id) === channel;
-  const via = !row ? undefined : message?.reply_to ? "reply" : awaited ? "answer" : "continuation";
+  const via = !row ? undefined : linked ? linked.via : message?.reply_to ? "reply" : awaited ? "answer" : "continuation";
   return {
     ...(row ? {
       request: row.request, decided: row.decided, waiting_on: row.waiting_on, result: row.result,
       job: row.job, issue: row.issue, revision: row.revision, reply_disposition: row.reply_disposition,
       ...(message ? { relation: relation(store, row, message) } : {}),
-      ...(message ? { topic_binding: via === "continuation" ? "candidate" : "explicit", binding_via: via } : {}),
+      ...(message ? { topic_binding: via === "continuation" || via === "issue_link" ? "candidate" : "explicit", binding_via: via } : {}),
       joins_on_reply: !store.isParticipant(row.anchor_message_id, user),
       topic_id: row.anchor_message_id, topic: row.topic, summary: row.summary || row.topic, state: store.state(row),
       anchor_message_id: row.anchor_message_id, opened_at: new Date(row.opened_at).toISOString(),

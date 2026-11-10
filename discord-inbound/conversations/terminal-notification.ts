@@ -80,32 +80,54 @@ export async function terminalNotification(o: {
           [disposition, replyId ?? null, ...key, group.channel_id]);
         outcomes.push({ channel_id: group.channel_id, disposition, ...(replyId ? { reply_id: replyId } : {}) });
       };
-      const users: string[] = JSON.parse(group.users).filter((user: string) => !blocked(user));
+      const notified = new Set(db.query<{ user_id: string }, [string]>(
+        "SELECT user_id FROM topic_participants WHERE anchor_message_id=? AND notify=1").all(o.topic).map(row => row.user_id));
+      const users: string[] = JSON.parse(group.users).filter((user: string) => !blocked(user) && notified.has(user));
+      if (!users.length) { settle("undeliverable"); continue; }
       await requireReplyChannel(group.channel_id, o.config(), o.rest);
-      const source = await o.rest<{ id: string; channel_id: string; author: { id: string } }>(
-        `/channels/${group.channel_id}/messages/${group.target}`).catch(error => {
-          if (error instanceof DiscordRestError && error.status === 404) return undefined;
-          throw error;
-        });
-      if (!source || !users.length) { settle("undeliverable"); continue; }
+      // The newest message first, then the group's other messages in this channel; a deleted one never loses the group.
+      const candidates = [...new Set([group.target, ...db.query<{ message_id: string; author_id: string }, [string, string]>(`SELECT t.message_id,t.author_id FROM transcript t
+        JOIN conversations c ON c.channel_id=t.channel_id AND c.user_id=t.user_id AND c.opened_at=t.opened_at
+        WHERE c.anchor_message_id=? AND t.message_channel_id=? AND t.is_helio=0`).all(o.topic, group.channel_id)
+          .filter(row => users.includes(row.author_id)).map(row => row.message_id),
+        ...db.query<{ last_message_id: string; user_id: string }, [string, string]>(
+          "SELECT last_message_id,user_id FROM topic_participants WHERE anchor_message_id=? AND last_channel_id=?").all(o.topic, group.channel_id)
+          .filter(row => users.includes(row.user_id)).map(row => row.last_message_id),
+        ...(db.query<{ user_id: string }, [string, string]>("SELECT user_id FROM conversations WHERE anchor_message_id=? AND channel_id=?")
+          .all(o.topic, group.channel_id).some(row => users.includes(row.user_id)) ? [o.topic] : [])])]
+        .sort((a, b) => BigInt(b) > BigInt(a) ? 1 : BigInt(b) < BigInt(a) ? -1 : 0);
+      let source: { id: string; channel_id: string; author: { id: string } } | undefined;
+      for (const candidate of candidates) {
+        source = await o.rest<{ id: string; channel_id: string; author: { id: string } }>(`/channels/${group.channel_id}/messages/${candidate}`)
+          .then(found => ({ ...found, id: candidate })).catch(error => {
+            if (error instanceof DiscordRestError && error.status === 404) return undefined;
+            throw error;
+          });
+        if (source) break;
+      }
+      if (!source) { settle("undeliverable"); continue; }
+      if (source.id !== group.target) {
+        db.run("UPDATE followup_groups SET target=? WHERE repo=? AND issue=? AND anchor_message_id=? AND channel_id=?", [source.id, ...key, group.channel_id]);
+      }
+      const target = source.id;
       const mentioned = users.filter(user => user !== source.author.id);
       const content = [...mentioned.map(user => `<@${user}>`), o.text].join(" ");
       const identity = terminalEvent(o.repo, o.issue, o.topic, group.channel_id);
       const sent = await sendOnce({
-        path: join(o.state, "reply-sends.sqlite"), target: group.target, text: content, event: identity, now: o.now,
+        path: join(o.state, "reply-sends.sqlite"), target: target, text: content, event: identity, now: o.now,
         notification: { channel: group.channel_id, nonce: identity.slice(-25) },
         sleep: async () => { throw new Error("Terminal delivery cannot wait for another sender"); },
         waitForOther: false, retryUncertain: false,
         definitiveFailure: error => error instanceof RangeError ||
           error instanceof DiscordRestError && [400, 403, 404, 429].includes(error.status),
         findSent: (text, otherReplyIds) => findSentReply(o.rest,
-          { channel_id: group.channel_id, message_id: group.target, otherReplyIds }, text),
+          { channel_id: group.channel_id, message_id: target, otherReplyIds }, text),
         send: async () => {
           await requireReplyChannel(group.channel_id, o.config(), o.rest);
           const reply = await o.rest<{ id: string }>(`/channels/${group.channel_id}/messages`, {
             method: "POST", body: {
               content, nonce: identity.slice(-25), enforce_nonce: true,
-              message_reference: { type: 0, channel_id: group.channel_id, message_id: group.target, fail_if_not_exists: true },
+              message_reference: { type: 0, channel_id: group.channel_id, message_id: target, fail_if_not_exists: true },
               allowed_mentions: { parse: [], replied_user: users.includes(source.author.id), users: mentioned.slice(0, 100) },
             },
           });
