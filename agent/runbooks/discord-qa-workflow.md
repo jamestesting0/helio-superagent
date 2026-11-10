@@ -101,7 +101,7 @@ The confirmed guild ID is `1033924790513311756`. The authorized ID `{{HELIO_TEST
 
 If a server-folder click reports `target_covered`, inspect the page and use Discord's **Find or start a conversation** quick switcher instead; the warning is a pointer hit-test failure, not proof of a Discord permission error. Do not dismiss or bypass a real covering dialog. Re-sync after switching tabs or accounts.
 
-Discord's message composer is a structured Slate editor. Do not use BrowserSkill `fill` on it: in the observed session it replaced the editor's child structure with plain text, so Discord did not open the command picker. Focus the empty composer, send `/` as a real keypress and observe the picker before typing the command name with keypresses. Choose the explicit **Elo Beta** result. If the editor has already been damaged, reload only after ensuring there is no user-owned unsent draft; recheck the channel and account afterward. `fill` worked for the ordinary quick-switcher search field.
+Never type into Discord's message composer: it is a structured editor, and keypress typing or `fill` breaks its command picker. Commands go through `helio beta qa run` (section 6); only the manual fallback there touches the composer. `fill` is fine for ordinary inputs such as the quick-switcher search field.
 
 Helio's bot is in the main server but cannot read the test channel. Its REST API returning 403 for that channel is expected and is not a prerequisite or failure of browser QA. Use the authorized real test accounts to interact with Elo Beta. Do not try to solve this by inviting Helio, changing permissions, reading browser tokens, or using a different bot token. Only a missing permission of the actual test user or Elo Beta blocks the affected live scenario.
 
@@ -138,34 +138,28 @@ Compare existing failures with a fresh pre-change baseline by test identity. Nev
 
 ## 6. Exercise real commands and controls
 
-**Fastest way to enter a command: a mention posted where it runs.**
+**Use `helio beta qa` for every command and control.** It does the browser mechanics in one call each and prints one JSON line; you decide what to test and judge the result.
 
-1. Check where the command can run: `helio beta commands list` shows every Elo Beta command with `where`. `anywhere` commands run in the Test thread. `bound` commands (match base, result, war, set, schedule, start and abort, `self host` and `self store`, `match resubmit`, `thread delete`, `open-raid-post`) only work inside their match thread or required channel, and `why` names the check in Elo Bot's code. `unknown` means the command is not in the checked-out source; read its code before using it.
-2. Post the mention: `helio beta commands mention "<command>"` for the Test thread, or add `--channel <match thread ID>` for a bound command. Elo Beta posts the mention and the tool prints its `link` and `message_id`. A bound command is refused in the Test thread.
-3. Navigate to that link and make sure the message box is empty first: Discord keeps an unsent draft per channel, and clicking a mention while a command draft is in the box does nothing. Clear it with `bsk press --selector '[role=textbox][data-slate-editor]' Ctrl+A`, then the same with `Backspace`, and check the editor's text is empty. Then click the mention. It renders as a small `<span>` holding the command's last word inside `[id^=message-content]`; click that innermost element. Discord fills exactly Elo Beta's command into that channel's message box.
-4. Run `helio beta commands delete` to remove the mention message; the filled command stays in the message box.
-5. Fill the options by pasting, one option at a time, then send. Discord cannot pre-fill option values from a mention (removed on purpose; Discord points bots to buttons). After the click the first option is focused.
-   - Paste each value into the focused option with one call: `bsk evaluate --session S --context C --observation O "$(helio beta commands paste '<value>')"`. It must print `PASTED`. The paste goes through Discord's own editor, so the value is exact (quotes and apostrophes included) and pickers update. Never use `insertText` or `fill`: Discord ignores those values and `Tab` then picks whoever was listed first.
-   - User, channel, role and mentionable options: paste the **ID**, not a name. Discord resolves the ID when the command is sent, with no picker choice involved (verified 2026-11-03: pasted user IDs in `/player h2h` reached Elo Beta as those users; a pasted channel ID was accepted in `/giveaway create`; role IDs work the same way per Discord's documentation, not yet exercised live).
-   - `Tab` moves to the next required option. Optional options appear in an **Options** list after the required ones: pick the one you need from that list, then paste.
-   - Autocomplete options (a suggestion list appears while typing): after pasting, `Tab` takes the top suggestion, so check the top suggestion is the intended value first.
-   - Read the message box back before `Enter`, and re-sync once if an action reports that the observation changed (the picker is still rendering). Escape does not remove a filled command: send it or clear it (step 3), never leave it half-filled at the end of a test.
+```bash
+helio beta qa start --profile qa-a                    # opens the profile if needed, verifies account and Test thread
+helio beta qa run "leaderboard" --opt lb_type=Hitrate --screenshot "$EVIDENCE/lb.png"
+helio beta qa select --message <id> --menu "Overall" --option "Good"
+helio beta qa click --message <id> --button "▶"
+helio beta qa form --field "Page=5"                   # a modal the last step opened
+helio beta qa read [--message <id>]                   # look again, no input
+helio beta qa where <channel id>...                   # routing check over REST instead of browsing
+helio beta qa stop --all                              # in your cleanup path
+```
 
-Use the typed `/` picker below only if posting a mention fails.
+- `run` posts Elo Beta's command mention, clicks it, fills options from Elo Beta's registered schema (IDs for user/channel/role options; choice and autocomplete values must match the top suggestion exactly), reads the message box back, sends once and returns Elo Beta's answer. `helio beta commands list` shows which commands are `bound`; pass `--channel <match thread>` for those.
+- A second account is `--profile qa-b` (its own `start`); nothing logs out.
+- Results: `state` is `done`, `failed` (Discord: the application did not respond), `modal` (fill it with `form`) or `pending`. Printed text is trimmed; `full` is the path of the complete extraction for exact checks and evidence.
+- Exit 2: refused before any input (wrong account or channel, option mismatch, `QA_NOT_SENT`, out of scope, element not found); fix the cause and run again. Exit 3: input was sent but no answer was seen; never resend, follow up with `read`. Exit 4: a person is using the tab; wait. Run `helio beta qa doctor` first in a session, and if it reports `drift`, Discord's page changed: report it rather than clicking by hand.
+- If `run` reports `QA_MENTION_FAILED`, the manual fallback is: focus the empty composer, paste `/<command>` once with `bsk evaluate … "$(helio beta commands paste '/<command>')"`, choose the **Elo Beta** entry in the picker, then continue with `select`/`click`/`form`. Never type it key by key.
 
-In `{{HELIO_TEST_CHANNEL}}`, verify the channel, current user, and selected slash-command application. Explicitly choose **Elo Beta**, not the production bot with the same command name.
+For anything the helper does not cover, use BrowserSkill directly and keep reads small: `bsk step --action … --until-visible <selector>` (act and wait in one call), `bsk wait-for-element --selector … --timeout 10s`, `bsk cooperate sync --max-tokens 2000`, `bsk view <saved.json> --find <text>` instead of re-syncing, and `bsk get-html --ref @eN`.
 
-For each command:
-
-1. Navigate through the test account's Discord UI to the approved test channel. Confirm its current identity and channel header/ID. Record the channel URL for the other test accounts.
-2. Observe the message composer through BrowserSkill and focus that actual composer. Type `/` to open Discord's command picker, select Elo Beta's application, then choose the command under test. Do not paste a production command and assume the application is correct.
-3. Fill the command's current option fields using the picker, selectors, and autocomplete. Use labelled beta fixture IDs and the intended supplied participants. Re-observe after each menu/modal change instead of reusing refs.
-4. Review the selected application, options, actor, and destinations before pressing Enter to submit once. The response must belong to Elo Beta. An autocomplete suggestion or filled command draft is not an executed test.
-5. Observe the actual response: success/failure, embed fields, attachment, ephemeral/public visibility, and enabled/disabled controls. Capture any relevant runtime error from the owned beta process. If Discord reports that the application did not respond, inspect the result and logs before retrying; do not blindly submit twice.
-6. Operate the response's actual buttons/selects and modal fields through BrowserSkill. Complete the final confirmation when the scenario requires persistence; exercise Back/Cancel separately when it should leave state unchanged. Subscribe to the expected response/state change rather than waiting a fixed number of seconds.
-7. Record the resulting message/fixture IDs and compare the relevant stored beta records with what the UI claims. Check additional permitted channels for expected announcements or match outputs. A successful log line is supporting evidence, not a substitute for the rendered response.
-8. For a second-user check, switch to the intended supplied account using Discord's account UI, verify its identity and role, return to the same permitted channel/message, and perform that user's action. Verify foreign-control rejection or participant-specific controls as appropriate. Private previews must be inspected from the account that owns them, not another account.
-9. Capture the final response and relevant intermediate/private states as screenshots, then report what actually passed, failed, or remained unverified. Keep the reproduction, command options, actors, fixture IDs, logs, and state evidence together so the next attempt starts from the known failure rather than rediscovering setup.
+For each command, judge the result: it must come from Elo Beta; inspect success/failure, embed fields, visibility and enabled controls; compare the stored beta records with what the UI claims and check other permitted channels for announcements; for a second user, run the same steps with that profile and verify foreign-control rejection; capture private previews from their owning account; record message and fixture IDs with the evidence.
 
 Drive the actual slash command and its relevant buttons, selects, modals, pagination, and confirmations. For each step, read fresh BrowserSkill state, act once, and inspect the resulting UI and committed beta state.
 

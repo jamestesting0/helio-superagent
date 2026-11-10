@@ -175,6 +175,8 @@ def main():
     apply_parser=sub.add_parser("apply"); apply_parser.add_argument("file",nargs="?",type=Path)
     run_parser=sub.add_parser("run"); run_parser.add_argument("--check",action="store_true")
     commands=sub.add_parser("commands"); commands.add_argument("action",choices=("list","mention","delete","paste")); commands.add_argument("target",nargs="?",help="mention: the command, e.g. \"match base submit\"; paste: the text"); commands.add_argument("--channel",help="mention: channel or thread ID (default: the Test thread)")
+    import runpy
+    qa_module=runpy.run_path(str(Path(__file__).with_name("helio_beta_qa.py"))); qa_module["add_parser"](sub)
     args=parser.parse_args()
     if args.command == "status":
         exposure=process_exposure()
@@ -210,8 +212,8 @@ def main():
             return 0
         except Blocked: raise
         except Exception as error: raise Blocked(f"Read failed ({type(error).__name__}).") from None
+    if args.command == "qa": return qa_module["main"](args)
     if args.command == "commands":
-        import runpy
         mentions=runpy.run_path(str(Path(__file__).with_name("helio_beta_commands.py")))
         try: return mentions["main"](args.action,args.target,args.channel)
         except (mentions["CommandsError"],OSError) as error: raise Blocked(str(error)) from None

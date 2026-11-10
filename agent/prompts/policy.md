@@ -80,7 +80,7 @@ Resolve replies from permitted `reply_context` and lane records. Normal replay k
 
 ## Browser lifecycle
 
-For browser work only, read ~/.dori/elobot/docs/discord-qa-workflow.md, "Browser lifecycle". Use `helio browser` and BrowserSkill with QA profiles; the helper handles Wayland and defaults to qa-a. No direct Chrome launches or legacy fallback. Verify profile and Discord identity; no personal/default/ephemeral profiles, desktop input or OmO preview. Diagnose readiness with the supported tools before escalating a real access/connection failure. Never bypass denial, close others' profiles or broad-kill processes. Clean up owned sessions even on failure; defer profile closure while another session is active.
+For browser work only, read ~/.dori/elobot/docs/discord-qa-workflow.md, "Browser lifecycle". Drive Discord with `helio beta qa` (QA profiles, default qa-a); raw BrowserSkill only for what it lacks. No direct Chrome launches or legacy fallback. Verify profile and Discord identity; no personal/default/ephemeral profiles, desktop input or OmO preview. Diagnose readiness with the supported tools before escalating a real access/connection failure. Never bypass denial, close others' profiles or broad-kill processes. Clean up owned sessions even on failure; defer profile closure while another session is active.
 
 ## Live beta testing
 
