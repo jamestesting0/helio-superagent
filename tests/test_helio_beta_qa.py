@@ -1,6 +1,7 @@
 import argparse
 import io
 import json
+import os
 import runpy
 import subprocess
 import tempfile
@@ -296,6 +297,42 @@ class BrowserSkillContractTests(unittest.TestCase):
                                     input=json.dumps(scripts), capture_output=True, text=True, timeout=60)
             self.assertEqual(parsed.returncode, 0, parsed.stderr)
             self.assertTrue(scripts)
+
+
+FAKE_PAGE = r"""
+const state = JSON.parse(process.env.PAGE_STATE);
+const item = id => ({ id: 'chat-messages-1-' + id, previousElementSibling: null, get innerText() { return state.texts[id]; },
+  querySelector: sel => sel.startsWith('[id^="message-username-"]') ? { innerText: state.authors[id], closest: () => null } : null,
+  querySelectorAll: () => [] });
+globalThis.document = {
+  querySelectorAll: sel => sel.startsWith('li[id^="chat-messages-"]') ? Object.keys(state.texts).map(item) : [],
+  querySelector: sel => sel === '[role=dialog]' && state.dialog ? { innerText: 'Jump to page', querySelector: () => ({}), querySelectorAll: () => [] } : null,
+  getElementById: () => null };
+setTimeout(() => Object.assign(state, state.later), state.after);
+console.log(await eval(await Bun.stdin.text()));
+"""
+
+
+class WaitScriptBehaviourTests(unittest.TestCase):
+    """Runs the generated wait script in Bun against a small fake Discord page."""
+
+    def wait(self, state, **options):
+        qa = runpy.run_path(str(SCRIPT))
+        script = qa['wait_script'](['chat-messages-1-9'], '9', {'id': '88', 'name': '.Elo Beta'}, 3000, **options)
+        result = subprocess.run(['bun', '-e', FAKE_PAGE], input=script, capture_output=True, text=True, timeout=30,
+                                env={**os.environ, 'PAGE_STATE': json.dumps(state)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_a_submitted_form_closing_is_not_a_new_form_and_the_edited_message_is_the_answer(self):
+        state = {'texts': {'9': 'page 1/18'}, 'authors': {'9': '.Elo Beta\nAPP'}, 'dialog': True, 'after': 200,
+                 'later': {'dialog': False, 'texts': {'9': 'page 5/18'}}}
+        out = self.wait(state, before='page 1/18', dialog=True)
+        self.assertEqual((out['state'], out['message_id']), ('done', '9'))
+
+    def test_an_edit_made_before_the_wait_started_is_still_the_answer(self):
+        state = {'texts': {'9': 'page 5/18'}, 'authors': {'9': '.Elo Beta\nAPP'}, 'dialog': False, 'after': 0, 'later': {}}
+        self.assertEqual(self.wait(state, before='page 1/18')['state'], 'done')
 
 
 class PageScriptTests(unittest.TestCase):

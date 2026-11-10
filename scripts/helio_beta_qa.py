@@ -134,12 +134,13 @@ def page(body):
     return '(async()=>{' + PAGE + body + '})()'
 
 
-def wait_script(baseline, target, bot, timeout_ms, before=None):
+def wait_script(baseline, target, bot, timeout_ms, before=None, dialog=False):
     """Resolve with the answer to the last input: a new or edited Elo Beta message, a modal, or pending."""
     return page(f"""const base=new Set({json.dumps(baseline)}),target={json.dumps(target)},bot={json.dumps(bot)};
 const before={json.dumps(before)}??(target&&li(target)?li(target).innerText:null);const end=Date.now()+{int(timeout_ms)};
-while(Date.now()<end){{const d=document.querySelector('[role=dialog]');
- if(d&&d.querySelector('input,textarea'))return JSON.stringify({{state:'modal',title:(d.querySelector('h1,h2,[id*=title]')||{{}}).innerText||'',
+let gone={json.dumps(not dialog)};
+while(Date.now()<end){{const d=document.querySelector('[role=dialog]');if(!d)gone=true;
+ if(gone&&d&&d.querySelector('input,textarea'))return JSON.stringify({{state:'modal',title:(d.querySelector('h1,h2,[id*=title]')||{{}}).innerText||'',
   fields:fields(d).map(fieldName)}});
  const fresh=lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view);
  const edited=target&&li(target)&&li(target).innerText!==before?[view(li(target))]:[];
@@ -153,7 +154,7 @@ return JSON.stringify({{state:'pending',...(last||{{}}),expected:bot,
 
 def baseline_script(target=None):
     """Message IDs and the target's text, taken before an action so even an instant edit is seen as an answer."""
-    return page(f"const target={json.dumps(target)};return JSON.stringify({{ids:lis().map(l=>l.id),before:target&&li(target)?li(target).innerText:null}});")
+    return page(f"const target={json.dumps(target)};return JSON.stringify({{ids:lis().map(l=>l.id),before:target&&li(target)?li(target).innerText:null,dialog:!!document.querySelector('[role=dialog]')}});")
 
 
 def state_dir(home):
@@ -314,7 +315,8 @@ def bot_identity(home):
 
 
 def answer(home, session, ctx, baseline, target, timeout):
-    return evaluate(session, ctx, wait_script(baseline['ids'], target, bot_identity(home), timeout * 1000, baseline['before']),
+    return evaluate(session, ctx, wait_script(baseline['ids'], target, bot_identity(home), timeout * 1000, baseline['before'],
+                                                baseline.get('dialog', False)),
                     timeout=f'{timeout + 15}s')
 
 
