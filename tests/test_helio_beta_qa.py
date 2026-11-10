@@ -168,9 +168,10 @@ class StrictBrowser:
     """BrowserSkill's cooperation rules: scripts and navigation need an unused observation from the latest sync,
     input invalidates observations, and the first script after navigating meets Discord's still-loading media."""
 
-    def __init__(self, qa, account_path):
+    def __init__(self, qa, account_path, detected=True):
         self.qa, self.path, self.issued, self.calls, self.syncs, self.media_loading = qa, account_path, set(), [], 0, False
         self.filled = self.sent = False
+        self.scripts, self.detected = [], detected
 
     def __call__(self, *argv, timeout=60):
         self.calls.append(argv[0])
@@ -198,6 +199,11 @@ class StrictBrowser:
         if argv[0] != 'evaluate':
             return {}
         script = argv[-1]
+        self.scripts.append(script)
+        if 'const truth=' in script:
+            truth = json.loads(script.split('const truth=', 1)[1].split(',bot=', 1)[0])
+            rows = [{'id': i, 'expected': v, 'detected': v if self.detected else False, 'author': '', 'author_id': ''} for i, v in truth.items()]
+            return {'ok': True, 'result': json.dumps({'composer': True, 'messages': 5, 'account': True, 'identity': rows})}
         if 'location.pathname' in script:
             return {'ok': True, 'result': json.dumps({'path': self.path, 'account': 'Dominik dominikisop'})}
         if 'const t="' in script:
@@ -219,7 +225,7 @@ class StrictBrowser:
 class BrowserSkillContractTests(unittest.TestCase):
     def drive(self, home, namespace, **patches):
         qa = runpy.run_path(str(SCRIPT))
-        browser = StrictBrowser(qa, '/channels/1033924790513311756/100')
+        browser = StrictBrowser(qa, '/channels/1033924790513311756/100', patches.pop('detected', True))
         qa['main'].__globals__.update(_bsk_once=browser, bot_identity=lambda _home: {'id': '88', 'name': 'Elo Beta'}, subprocess=mock.Mock(
             run=mock.Mock(return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))), **patches)
         out = io.StringIO()
@@ -227,28 +233,49 @@ class BrowserSkillContractTests(unittest.TestCase):
             code = qa['main'](namespace, home=home)
         return code, json.loads(out.getvalue().strip().splitlines()[-1]), browser
 
-    def test_start_run_and_click_follow_the_observation_rules_through_loading_media(self):
+    def test_start_doctor_run_and_click_follow_browser_and_discord_rules(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             (home / '.dori/elobot').mkdir(parents=True)
             (home / '.dori/elobot/qa-accounts.json').write_text(json.dumps({'qa-a': {'account': 'Dominik', 'browser': 'b1'}}))
-            code, out, _ = self.drive(home, args('start'))
-            self.assertEqual((code, out['state']), (0, 'ready'), out)
             commands = runpy.run_path(str(SCRIPT.with_name('helio_beta_commands.py')))
 
             def mention(_token, home_, _table, _test, _path, channel):
                 (home_ / '.dori/elobot/state/beta-command-mentions.json').write_text(json.dumps([{'channel': channel, 'message': '555'}]))
 
-            discord = {'call': lambda *_a: {'id': '88', 'username': 'Elo Beta'}, 'collect': lambda *_a: (None, {}),
-                       'placement': lambda *_a: {}, 'source_root': lambda: None, 'mention': mention, 'CommandsError': RuntimeError,
-                       'delete_mentions': lambda *_a: 1, 'paste_expression': commands['paste_expression']}
-            code, out, browser = self.drive(home, args('run', 'leaderboard', opt=['lb_type=Hitrate']), rest=lambda _home: (discord, 't'),
-                                            schema=lambda *_a: {'leaderboard': LEADERBOARD})
+            def call(_token, _method, path):
+                if 'messages' in path:
+                    return [{'id': '9', 'author': {'id': '88'}}, {'id': '8', 'author': {'id': '66'}}]
+                return {'id': '88', 'username': '.Elo Beta'}
+
+            discord = {'call': call, 'collect': lambda *_a: (None, {}), 'placement': lambda *_a: {}, 'source_root': lambda: None,
+                       'mention': mention, 'CommandsError': RuntimeError, 'delete_mentions': lambda *_a: 1,
+                       'paste_expression': commands['paste_expression']}
+            api = {'rest': lambda _home: (discord, 't')}
+            scripts = []
+
+            def drive(namespace, **patches):
+                code, out, browser = self.drive(home, namespace, **patches)
+                scripts.extend(browser.scripts)
+                return code, out, browser
+
+            code, out, _ = drive(args('start'))
+            self.assertEqual((code, out['state']), (0, 'ready'), out)
+            code, out, _ = drive(args('doctor'), **api)
+            self.assertEqual((code, out['state'], out['authorship_checked']), (0, 'ok', 2), out)
+            # Elo Beta's message not recognised on the page is caught before any command is sent.
+            code, out, _ = drive(args('doctor'), detected=False, **api)
+            self.assertEqual((code, out['state'], [row['id'] for row in out['wrong']]), (2, 'drift', ['9']), out)
+            code, out, browser = drive(args('run', 'leaderboard', opt=['lb_type=Hitrate']), schema=lambda *_a: {'leaderboard': LEADERBOARD}, **api)
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
             self.assertEqual(browser.calls.count('press'), 2)
-            code, out, browser = self.drive(home, args('click', message='9', button='Next'))
+            code, out, browser = drive(args('click', message='9', button='Next'))
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
             self.assertEqual(browser.calls.count('click'), 1)
+            parsed = subprocess.run(['bun', '-e', 'const t=new Bun.Transpiler({loader:"js"});for(const s of JSON.parse(await Bun.stdin.text()))t.transformSync(s)'],
+                                    input=json.dumps(scripts), capture_output=True, text=True, timeout=60)
+            self.assertEqual(parsed.returncode, 0, parsed.stderr)
+            self.assertTrue(scripts)
 
 
 class PageScriptTests(unittest.TestCase):

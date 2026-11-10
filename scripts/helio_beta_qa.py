@@ -110,9 +110,11 @@ PAGE = r"""
 const lis=()=>[...document.querySelectorAll('li[id^="chat-messages-"]')];
 const li=id=>lis().find(l=>l.id.endsWith('-'+id));
 const mid=l=>l.id.split('-').pop();
-const author=l=>{for(let x=l;x;x=x.previousElementSibling){const n=x.querySelector&&x.querySelector('[id^="message-username-"]');if(n)return n.innerText.trim();}return '';};
-const authorId=l=>{for(let x=l;x;x=x.previousElementSibling){if(x.querySelector&&x.querySelector('[id^="message-username-"]')){const i=x.querySelector('img[src*="/avatars/"]');const m=i&&i.src.match(/avatars\/(\d+)\//);return m?m[1]:'';}}return '';};
-const isBot=(l,b)=>authorId(l)===b.id||author(l)===b.name;
+const header=l=>{for(let x=l;x;x=x.previousElementSibling){const n=x.querySelector&&x.querySelector('[id^="message-username-"]');if(n)return n;}return null;};
+const author=l=>{const n=header(l);return n?n.innerText.trim():'';};
+const authorId=l=>{const h=header(l),h3=h&&h.closest('h3'),i=h3&&h3.parentElement&&h3.parentElement.querySelector(':scope > img[src*="/avatars/"]');const m=i&&i.src.match(/avatars\/(\d+)\//);return m?m[1]:'';};
+const norm=s=>(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const isBot=(l,b)=>authorId(l)===b.id||(!!norm(b.name)&&norm(author(l)).startsWith(norm(b.name)));
 const view=l=>{const acc=l.querySelector('[id^="message-accessories-"]')||l;
  return {message_id:mid(l),author:author(l),ephemeral:/Only you can see this/.test(l.innerText),thinking:/is thinking/i.test(l.innerText),
   failed:/did not respond|interaction failed/i.test(l.innerText),text:(l.querySelector('[id^="message-content-"]')||{}).innerText||'',
@@ -140,7 +142,8 @@ while(Date.now()<end){{const d=document.querySelector('[role=dialog]');
  if(done.length)return JSON.stringify({{state:done[0].failed?'failed':'done',...done[0],also:done.slice(1).map(v=>v.message_id)}});
  await new Promise(r=>setTimeout(r,250));}}
 const last=[...lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view)].pop()||(target&&li(target)?view(li(target)):null);
-return JSON.stringify({{state:'pending',...(last||{{}})}});""")
+return JSON.stringify({{state:'pending',...(last||{{}}),expected:bot,
+ seen:lis().filter(l=>!base.has(l.id)).slice(-3).map(l=>({{id:mid(l),author:author(l),author_id:authorId(l)}}))}});""")
 
 
 def baseline_script():
@@ -283,12 +286,15 @@ def finish(home, result, session=None, ctx=None, screenshot=None):
     evidence.mkdir(parents=True, exist_ok=True)
     full = evidence / f"{time.strftime('%Y%m%dT%H%M%S')}-{result.get('message_id', 'result')}.json"
     full.write_text(json.dumps(result, indent=1) + '\n')
-    if screenshot and session and result.get('message_id'):
-        token = find(session, ctx, f"return mark(li({json.dumps(result['message_id'])}),t);", 'message')
-        bsk('scroll-to', '--session', session, '--context', ctx, '--selector', f'[data-helio-qa="{token}"]')
+    shot = None
+    if screenshot and session:
+        if result.get('message_id'):
+            token = find(session, ctx, f"return mark(li({json.dumps(result['message_id'])}),t);", 'message')
+            bsk('scroll-to', '--session', session, '--context', ctx, '--selector', f'[data-helio-qa="{token}"]')
         bsk('screenshot', '--session', session, '--context', ctx, '--out', screenshot)
+        shot = screenshot
     short = dict(result, embeds=[e[:1200] for e in result.get('embeds', [])], text=result.get('text', '')[:800],
-                 full=str(full), **({'screenshot': screenshot} if screenshot else {}))
+                 full=str(full), **({'screenshot': shot} if shot else {}))
     print(json.dumps(short, ensure_ascii=False))
     if result.get('state') == 'pending':
         raise Uncertain(f"no answer observed yet; follow up with helio beta qa read --message {result.get('message_id', '')}")
@@ -472,12 +478,22 @@ return JSON.stringify(l?{{state:'done',...view(l)}}:{{state:'missing'}});"""))
 
 
 def doctor(home, profile):
-    session = session_for(home, profile)['session']
+    """Read-only check of the page hooks, including Elo Beta authorship against Discord's own message history."""
+    entry = session_for(home, profile)
+    session = entry['session']
     ctx, _ = sync(session)
-    got = evaluate(session, ctx, page("""const l=lis();return JSON.stringify({composer:!!document.querySelector('[role=textbox][data-slate-editor]'),
-messages:l.length,parsed:l.length?view(l[l.length-1]):null,account:!!document.querySelector('[aria-label="User area"],section[class*="panels"]')});"""))
-    ok = got['composer'] and got['messages'] and got['parsed'] and got['parsed']['author'] and got['account']
-    print(json.dumps({'state': 'ok' if ok else 'drift', **got}, ensure_ascii=False))
+    m, token = rest(home)
+    bot = bot_identity(home)
+    history = m['call'](token, 'GET', f"/channels/{entry['channel']}/messages?limit=20") or []
+    truth = {message['id']: message['author']['id'] == bot['id'] for message in history}
+    got = evaluate(session, ctx, page(f"""const truth={json.dumps(truth)},bot={json.dumps(bot)};const l=lis();
+return JSON.stringify({{composer:!!document.querySelector('[role=textbox][data-slate-editor]'),messages:l.length,
+account:!!document.querySelector('[aria-label="User area"],section[class*="panels"]'),
+identity:Object.keys(truth).filter(id=>li(id)).map(id=>({{id,expected:truth[id],detected:isBot(li(id),bot),author:author(li(id)),author_id:authorId(li(id))}}))}});"""))
+    wrong = [row for row in got['identity'] if row['expected'] != row['detected']]
+    ok = bool(got['composer'] and got['messages'] and got['account'] and got['identity'] and not wrong)
+    print(json.dumps({'state': 'ok' if ok else 'drift', 'composer': got['composer'], 'messages': got['messages'],
+                      'account': got['account'], 'authorship_checked': len(got['identity']), 'wrong': wrong[:5]}, ensure_ascii=False))
     return 0 if ok else 2
 
 
