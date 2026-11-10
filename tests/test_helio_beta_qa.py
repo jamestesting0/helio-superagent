@@ -171,10 +171,10 @@ class StrictBrowser:
     """BrowserSkill's cooperation rules: scripts and navigation need an unused observation from the latest sync,
     input invalidates observations, and the first script after navigating meets Discord's still-loading media."""
 
-    def __init__(self, qa, account_path, detected=True, clicks_to_fill=1):
+    def __init__(self, qa, account_path, detected=True, clicks_to_fill=1, cover=None):
         self.qa, self.path, self.issued, self.calls, self.syncs, self.media_loading = qa, account_path, set(), [], 0, False
         self.filled = self.sent = False
-        self.scripts, self.detected, self.clicks, self.clicks_to_fill = [], detected, 0, clicks_to_fill
+        self.scripts, self.detected, self.clicks, self.clicks_to_fill, self.cover = [], detected, 0, clicks_to_fill, cover
 
     def __call__(self, *argv, timeout=60):
         self.calls.append(argv[0])
@@ -190,6 +190,8 @@ class StrictBrowser:
             if argv[0] == 'evaluate' and self.media_loading:
                 self.media_loading = False
                 raise self.qa['Refused']('The media source changed; synchronize and replan', unexecuted=True)
+        if argv[0] == 'click' and self.cover:
+            raise self.qa['Refused']('The pointer target is covered or unavailable; synchronize before clicking')
         if argv[0] in ('click', 'press', 'fill', 'navigate'):
             self.issued.clear()
             self.clicks += argv[0] == 'click'
@@ -216,6 +218,8 @@ class StrictBrowser:
             return {'ok': True, 'result': json.dumps({'state': 'done', 'message_id': '9', 'author': 'Elo Beta', 'embeds': []})}
         if 'ids:lis()' in script:
             return {'ok': True, 'result': json.dumps({'ids': [], 'before': 'old'})}
+        if 'elementFromPoint' in script:
+            return {'ok': True, 'result': json.dumps({'covered_by': self.cover, 'inside': ''})}
         if 'map(fieldName)' in script:
             return {'ok': True, 'result': json.dumps(['Page number'])}
         if 'DataTransfer' in script:
@@ -233,7 +237,7 @@ class StrictBrowser:
 class BrowserSkillContractTests(unittest.TestCase):
     def drive(self, home, namespace, **patches):
         qa = runpy.run_path(str(SCRIPT))
-        browser = StrictBrowser(qa, '/channels/1033924790513311756/100', patches.pop('detected', True), patches.pop('clicks_to_fill', 1))
+        browser = StrictBrowser(qa, '/channels/1033924790513311756/100', patches.pop('detected', True), patches.pop('clicks_to_fill', 1), patches.pop('cover', None))
         qa['main'].__globals__.update(_bsk_once=browser, bot_identity=lambda _home: {'id': '88', 'name': 'Elo Beta'}, subprocess=mock.Mock(
             run=mock.Mock(return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))), **patches)
         out = io.StringIO()
@@ -285,6 +289,9 @@ class BrowserSkillContractTests(unittest.TestCase):
             code, out, browser = drive(args('click', message='9', button='Next'))
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
             self.assertEqual(browser.calls.count('click'), 1)
+            code, out, _ = drive(args('click', message='9', button='Next'), cover="DIV What's new")
+            self.assertEqual(code, 2, out)
+            self.assertIn("What's new", out['error'])
             code, out, browser = drive(args('form', field=['Page=5']))
             self.assertEqual((code, out['state'], browser.calls.count('fill')), (0, 'done', 1), out)
             # The form edits the message whose button opened it, and that message's text was taken before submitting.

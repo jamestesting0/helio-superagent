@@ -199,7 +199,17 @@ def sync(session):
 
 def act(kind, session, ctx, token, *extra):
     sel = f'[data-helio-qa="{token}"]'
-    bsk(kind, '--session', session, '--context', ctx, '--selector', sel, *extra)
+    try:
+        bsk(kind, '--session', session, '--context', ctx, '--selector', sel, *extra)
+    except Refused as error:
+        if 'covered' not in str(error):
+            raise
+        top = evaluate(session, ctx, page(f"""const e=document.querySelector({json.dumps(sel)});if(!e)return 'the target is gone';
+e.scrollIntoView({{block:'center'}});const r=e.getBoundingClientRect(),c=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+if(!c)return 'nothing at the target point';const d=c.closest('[role=dialog],[role=menu],[role=tooltip],[role=alert]');
+return JSON.stringify({{covered_by:(c.tagName+' '+(c.getAttribute('aria-label')||c.innerText||'').slice(0,80)).trim(),
+inside:d?(d.getAttribute('role')+': '+(d.innerText||'').slice(0,120)):''}});"""))
+        raise Refused(f'{error} (on top of the target: {json.dumps(top, ensure_ascii=False)}); nothing was {kind}ed') from None
 
 
 def find(session, ctx, body, what):
