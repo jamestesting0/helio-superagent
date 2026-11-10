@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Tell requesters when their tracked issue is live or declined.
 
-    helio followups add --issue N --channel C --user U --reply-to M [--kind bug|qol|feature]
-    helio followups check | watch [--interval SECONDS] | done --issue N --user U | list
+    helio followups check | watch [--interval SECONDS] | deliver --issue N --topic T | list | show N
+
+A topic subscribes when an issue is linked to it (`helio conversation set TOPIC --issue URL`); its participants hear
+the outcome together, one message per channel where they last spoke.
 
 `check` prints one line per tracked issue with news:
   FOLLOWUP_LIVE      closed as completed and its merged fix is in the commit Elo Bot runs
@@ -40,16 +42,11 @@ def read_stamp() -> str:
 
 def connect() -> sqlite3.Connection:
     STATE.mkdir(parents=True, exist_ok=True)
+    DELIVERY["migrate"](STATE)
     path = STATE / "discord-conversations.sqlite"
     db = sqlite3.connect(path, timeout=10)
     path.chmod(0o600)
     db.execute("PRAGMA journal_mode=WAL")
-    db.executescript((Path(__file__).resolve().parent.parent / "discord-inbound/conversations/followups.sql").read_text())
-    db.execute("BEGIN IMMEDIATE")
-    if "announcement" not in {row[1] for row in db.execute("PRAGMA table_info(followups)")}:
-        db.execute("ALTER TABLE followups ADD COLUMN announcement TEXT")
-    db.commit()
-    DELIVERY["migrate"](db)
     return db
 
 
@@ -83,19 +80,24 @@ def is_live(merge_commit: str, head: str) -> bool:
 
 
 def news(row: tuple, head_cache: dict) -> dict | None:
-    issue, user_id, channel_id, reply_to, kind = row
+    issue, topic, kind, created_at = row
     # One check can notify several people about the same issue; reuse only this pass's GitHub snapshot.
     issues = head_cache.setdefault("issues", {})
     if issue not in issues:
         issues[issue] = json.loads(run(["gh", "issue", "view", str(issue), "--repo", REPO, "--json",
-                                      "state,stateReason,title,url,closedByPullRequestsReferences,comments"]))
+                                      "state,stateReason,title,url,closedAt,labels,closedByPullRequestsReferences,comments"]))
     info = issues[issue]
     if info.get("state") != "CLOSED":
         return None
     requests = runpy.run_path(str(Path(__file__).with_name("helio_plan_requests.py")))
     requests["closed"](REPO, issue, datetime.datetime.now(datetime.timezone.utc))
     base = {"issue": issue, "title": info.get("title"), "url": info.get("url"), "kind": kind,
-            "user_id": user_id, "channel_id": channel_id, "reply_to": reply_to}
+            "topic": topic}
+    labels = {label.get("name") for label in info.get("labels") or []}
+    base["kind"] = kind or next((name for name in ("bug", "qol", "feature") if name in labels), "bug")
+    closed_at = info.get("closedAt")
+    if closed_at and datetime.datetime.fromisoformat(closed_at.replace("Z", "+00:00")).timestamp() < created_at:
+        return {"event": "FOLLOWUP_ALREADY_CLOSED", **base}
     if info.get("stateReason") in ("NOT_PLANNED", "DUPLICATE"):
         comments = info.get("comments") or []
         reason = (comments[-1].get("body") or "")[:500] if comments else ""
@@ -128,7 +130,7 @@ def check(db: sqlite3.Connection, include_announced: bool, observation: dict | N
     if pending:
         print(f'FOLLOWUP_PENDING count={pending} read="helio followups list"', flush=True)
     statuses = ("open", "announced") if include_announced else ("open",)
-    rows = db.execute(f"SELECT issue, user_id, channel_id, reply_to, kind FROM followups WHERE repo = ? AND status IN ({','.join('?' * len(statuses))}) AND (status = 'open' OR announcement IS NULL) ORDER BY created_at",
+    rows = db.execute(f"SELECT issue, anchor_message_id, kind, created_at FROM followups WHERE repo = ? AND status IN ({','.join('?' * len(statuses))}) AND (status = 'open' OR announcement IS NULL) ORDER BY created_at",
                       (REPO, *statuses)).fetchall()
     head_cache: dict = {}
     if observation is not None:
@@ -141,19 +143,22 @@ def check(db: sqlite3.Connection, include_announced: bool, observation: dict | N
             failed += 1
             print(f"FOLLOWUP_WARN issue={row[0]} check unavailable: {error}".replace("\n", " ")[:1000], flush=True)
             continue
-        if event:
+        if event and event["event"] == "FOLLOWUP_ALREADY_CLOSED":
+            # Closed before Helio linked it: the linking reply already stated the outcome, so nobody is told twice.
+            db.execute("UPDATE followups SET status='done' WHERE repo=? AND issue=? AND anchor_message_id=?", (REPO, row[0], row[1]))
+            db.commit()
+        elif event:
             prefix = event.pop("event")
             announcement = json.dumps({"event": prefix, **event})
-            fields = {key: event[key] for key in ("issue", "user_id", "channel_id", "reply_to", "kind")}
+            fields = {key: event[key] for key in ("issue", "topic", "kind")}
             fields.update(preview=str(event.get("title") or event.get("reason") or "")[:200],
                           read=f"helio followups show {row[0]}")
             encoded = json.dumps(fields)
             while len(prefix) + len(encoded) + 1 > 1000:
                 fields["preview"] = fields["preview"][:-20]
                 encoded = json.dumps(fields)
-            db.execute("""UPDATE followups SET delivery_version=CASE WHEN status='open' THEN 1 ELSE delivery_version END,
-                status='announced',announcement=?,observed_at=? WHERE repo=? AND issue=? AND user_id=?""",
-                       (announcement, int(time.time()), REPO, row[0], row[1]))
+            db.execute("""UPDATE followups SET status='announced',announcement=?,observed_at=?
+                WHERE repo=? AND issue=? AND anchor_message_id=?""", (announcement, int(time.time()), REPO, row[0], row[1]))
             db.commit()
             sync = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
             sync["schedule"](REPO, row[0])
@@ -187,16 +192,9 @@ def daily_upkeep(housekeeping: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="action", required=True)
-    add = sub.add_parser("add")
-    add.add_argument("--issue", type=int, required=True)
-    add.add_argument("--channel", type=snowflake, required=True)
-    add.add_argument("--user", type=snowflake, required=True)
-    add.add_argument("--reply-to", type=snowflake, required=True)
-    add.add_argument("--kind", choices=KINDS, default="bug")
-    for action in ("done", "deliver"):
-        done = sub.add_parser(action)
-        done.add_argument("--issue", type=int, required=True)
-        done.add_argument("--user", type=snowflake, required=True)
+    deliver = sub.add_parser("deliver")
+    deliver.add_argument("--issue", type=int, required=True)
+    deliver.add_argument("--topic", type=snowflake, required=True)
     sub.add_parser("check")
     watch = sub.add_parser("watch")
     # A requester should hear about a closed issue within minutes; each poll is one `gh issue view` per open follow-up.
@@ -217,36 +215,31 @@ def main() -> int:
         publication = runpy.run_path(str(Path(__file__).with_name("helio_plan_publication.py")))
         try:
             with publication["scope"](REPO, args.issue, serialize=False):
-                code = DELIVERY["deliver"](db, STATE, REPO, args.issue, args.user, news)
+                code = DELIVERY["deliver"](db, STATE, REPO, args.issue, args.topic, news)
                 if code == 2:
-                    print(f'FOLLOWUP_RESUME command="helio followups deliver --issue {args.issue} --user {args.user}"')
+                    print(f'FOLLOWUP_RESUME command="helio followups deliver --issue {args.issue} --topic {args.topic}"')
                 return code
         except (OSError, RuntimeError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
-            print(f"FOLLOWUP_PENDING issue={args.issue} user={args.user}: {error}".replace("\n", " "))
+            print(f"FOLLOWUP_PENDING issue={args.issue} topic={args.topic}: {error}".replace("\n", " "))
             return 2
-    elif args.action == "add":
-        db.execute("INSERT INTO followups (repo, issue, user_id, channel_id, reply_to, kind, created_at,delivery_version) VALUES (?, ?, ?, ?, ?, ?, ?,1) "
-                   "ON CONFLICT (repo, issue, user_id) DO NOTHING",
-                   (REPO, args.issue, args.user, args.channel, args.reply_to, args.kind, int(time.time())))
-        db.commit()
-        print(f"FOLLOWUP_TRACKED issue={args.issue} user={args.user}")
-    elif args.action == "done":
-        if not db.execute("SELECT 1 FROM followups WHERE repo=? AND issue=? AND user_id=?", (REPO, args.issue, args.user)).fetchone():
-            print(f"FOLLOWUP_UNKNOWN issue={args.issue} user={args.user}", file=sys.stderr)
-            return 2
-        if not DELIVERY["complete"](db, STATE, REPO, args.issue, args.user):
-            print(f"FOLLOWUP_REFUSED issue={args.issue} user={args.user}: no verified terminal send receipt")
-            return 1
-        print(f"FOLLOWUP_CLOSED issue={args.issue} user={args.user}")
     elif args.action == "list":
-        rows = db.execute("SELECT issue, user_id, kind, status FROM followups WHERE repo = ? AND status != 'done' ORDER BY created_at,issue,user_id LIMIT 101 OFFSET ?", (REPO, args.offset)).fetchall()
-        for issue, user_id, kind, status in rows[:100]:
-            print(f"FOLLOWUP issue={issue} user={user_id} kind={kind} status={status} read=\"helio followups show {issue}\"")
+        rows = db.execute("""SELECT f.issue, f.anchor_message_id, f.kind, f.status,
+            (SELECT count(*) FROM topic_participants p WHERE p.anchor_message_id=f.anchor_message_id AND p.notify=1)
+            FROM followups f WHERE f.repo = ? AND f.status != 'done' ORDER BY f.created_at,f.issue LIMIT 101 OFFSET ?""",
+                          (REPO, args.offset)).fetchall()
+        for issue, topic, kind, status, people in rows[:100]:
+            print(f"FOLLOWUP issue={issue} topic={topic} kind={kind} status={status} participants={people} read=\"helio followups show {issue}\"")
         if len(rows) > 100:
             print(f"FOLLOWUP_PAGE next=\"helio followups list --offset {args.offset + 100}\"")
     elif args.action == "show":
         db.row_factory = sqlite3.Row
-        rows = [dict(row) for row in db.execute("SELECT * FROM followups WHERE repo = ? AND issue = ? ORDER BY user_id", (REPO, args.issue))]
+        rows = [dict(row) for row in db.execute("SELECT * FROM followups WHERE repo = ? AND issue = ? ORDER BY anchor_message_id", (REPO, args.issue))]
+        for row in rows:
+            row["participants"] = [person[0] for person in db.execute(
+                "SELECT user_id FROM topic_participants WHERE anchor_message_id=? AND notify=1 ORDER BY user_id", (row["anchor_message_id"],))]
+            row["deliveries"] = [dict(zip(("channel_id", "target", "users", "reply_id", "disposition"), group)) for group in db.execute(
+                "SELECT channel_id,target,users,reply_id,disposition FROM followup_groups WHERE repo=? AND issue=? AND anchor_message_id=?",
+                (REPO, args.issue, row["anchor_message_id"]))]
         if not rows:
             parser.error("unknown follow-up issue")
         for row in rows:

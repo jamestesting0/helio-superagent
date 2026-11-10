@@ -32,7 +32,7 @@ Inside the isolated workspace (`helio-wsl`): `helio start|resume`, `helio update
 `helio doctor`, `helio browser ready|close`, `helio beta ...`, `helio question ...`,
 `helio pr check --number N` (read-only current-main/CI/mergeability inspection),
 `helio release inspect`, `helio release-check ...`, `helio triage ...`,
-`helio conversation open|close|list`, `helio followups add|check|done|list`, `helio status`,
+`helio conversation list|show|open|set|join|leave|merge|close`, `helio followups check|deliver|list|show`, `helio status`,
 `helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`.
 These last three run inside the isolated workspace (or owner installation), not through the host launcher.
 

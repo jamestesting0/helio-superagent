@@ -1,7 +1,6 @@
 import json
 import os
 import sqlite3
-import hashlib
 import subprocess
 import sys
 import tempfile
@@ -74,28 +73,20 @@ class FollowupTests(unittest.TestCase):
     def cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=self.env, timeout=60)
 
-    def test_repeated_add_preserves_original_target_and_every_subscription_state(self):
-        self.assertEqual(self.cli("add", "--issue", "2", "--channel", "100", "--user", "7", "--reply-to", "902").returncode, 0)
-        path = Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite"
-        for status in ("open", "announced", "done"):
-            with self.subTest(status=status):
-                with sqlite3.connect(path) as db:
-                    db.execute("UPDATE followups SET status=?,announcement=?", (status, '{"event":"FOLLOWUP_DECLINED"}'))
-                    original = db.execute("SELECT * FROM followups").fetchone()
-                result = self.cli("add", "--issue", "2", "--channel", "101", "--user", "7", "--reply-to", "999", "--kind", "feature")
-                self.assertEqual(result.returncode, 0, result.stderr)
-                with sqlite3.connect(path) as db:
-                    self.assertEqual(db.execute("SELECT * FROM followups").fetchone(), original)
+    def subscribe(self, issue, topic, user="7", channel="100"):
+        """A topic with one participant whose issue is linked, created through the real schema migration."""
+        state = Path(self.env["DORI_STATE_DIR"])
+        state.mkdir(parents=True, exist_ok=True)
+        migrated = subprocess.run(["bun", str(SCRIPT.parent.parent / "discord-inbound/conversation.ts"), "migrate"],
+                                  capture_output=True, text=True, env=self.env, timeout=60)
+        self.assertIn("CONVERSATION_MIGRATED", migrated.stdout, migrated.stderr)
+        with sqlite3.connect(state / "discord-conversations.sqlite") as db:
+            db.execute("""INSERT OR IGNORE INTO conversations(channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status,issue)
+                VALUES(?,?,?,?,?,'report','open',?)""", (channel, user, int(topic), int(topic), topic, f"https://github.com/o/r/issues/{issue}"))
+            db.execute("INSERT OR IGNORE INTO topic_participants VALUES(?,?,0,'opened',?,?,1)", (topic, user, channel, topic))
+            db.execute("INSERT INTO followups(repo,issue,anchor_message_id,kind,created_at) VALUES('o/r',?,?,'bug',0)", (issue, topic))
 
-    def test_legacy_done_requires_a_verified_terminal_send_receipt(self):
-        self.assertEqual(self.cli("add", "--issue", "2", "--channel", "100", "--user", "7", "--reply-to", "902").returncode, 0)
-        self.assertEqual(self.cli("check").returncode, 0)
-        result = self.cli("done", "--issue", "2", "--user", "7")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite") as db:
-            self.assertEqual(db.execute("SELECT status FROM followups").fetchone()[0], "announced")
-
-    def test_existing_schema_migration_preserves_historical_states_and_targets(self):
+    def test_person_keyed_history_migrates_only_open_subscriptions(self):
         path = Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite"
         path.parent.mkdir(parents=True)
         with sqlite3.connect(path) as db:
@@ -104,13 +95,15 @@ class FollowupTests(unittest.TestCase):
             for issue, status in enumerate(("open", "announced", "done"), start=1):
                 db.execute("INSERT INTO followups VALUES('o/r',?,'7','100',?,'bug',0,?)",
                            (issue, str(900 + issue), status))
-            before = db.execute("SELECT * FROM followups ORDER BY issue").fetchall()
         result = self.cli("list")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("issue=1 topic=901 kind=bug status=open participants=1", result.stdout)
         with sqlite3.connect(path) as db:
-            after = db.execute("SELECT repo,issue,user_id,channel_id,reply_to,kind,created_at,status FROM followups ORDER BY issue").fetchall()
-            self.assertEqual(after, before)
-            self.assertEqual(db.execute("SELECT delivery_version FROM followups").fetchall(), [(0,), (0,), (0,)])
+            # An announcement without delivery proof stays history, so it is never re-announced in public.
+            self.assertEqual(db.execute("SELECT issue,status FROM followups_legacy ORDER BY issue").fetchall(),
+                             [(2, "announced"), (3, "done")])
+            self.assertEqual(db.execute("SELECT status,outcome FROM conversations WHERE anchor_message_id='901'").fetchone(),
+                             ("resolved", "issue"))
 
     def native_fixture(self):
         from plan_fixture import stage_source
@@ -155,39 +148,41 @@ globalThis.fetch = async(input, init) => {
                          "DORI_DISCORD_NORMAL_CHANNELS": "100", "DORI_DISCORD_TRUSTED_CHANNELS": "",
                          "DORI_DISCORD_SCOPE_CATEGORY": "", "DORI_DISCORD_IGNORED_CHANNELS": "",
                          "BUN_OPTIONS": f"--preload {preload}", "NATIVE_LOG": str(root / "native-log")})
-        self.assertEqual(self.cli("add", "--issue", "2", "--channel", "100", "--user", "7", "--reply-to", "902").returncode, 0)
+        self.subscribe(2, "902")
         return root / "native-log"
 
     def test_deliver_checks_current_outcome_and_completes_from_native_proof_once(self):
         log = self.native_fixture()
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("NOTIFICATION_SENT 9902", result.stdout)
+        self.assertIn("NOTIFICATION_SENT channel=100 message=9902", result.stdout)
         self.assertIn("FOLLOWUP_CLOSED", result.stdout)
-        second = self.cli("deliver", "--issue", "2", "--user", "7")
+        second = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         self.assertEqual(sum(call["method"] == "POST" for call in calls), 1)
         with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite") as db:
-            self.assertEqual(db.execute("SELECT status,delivered_reply_id FROM followups").fetchone(), ("done", "9902"))
+            self.assertEqual(db.execute("SELECT status FROM followups").fetchone()[0], "done")
+            self.assertEqual(db.execute("SELECT target,users,reply_id,disposition FROM followup_groups").fetchone(),
+                             ("902", '["7"]', "9902", "sent"))
 
     def test_deleted_target_closes_only_its_subscription_and_reports_once(self):
         log = self.native_fixture()
         self.env["NATIVE_DELETED"] = "1"
-        first = self.cli("deliver", "--issue", "2", "--user", "7")
+        first = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
-        self.assertIn("REPLY_FOLLOWUP_CLOSED", first.stdout)
-        second = self.cli("deliver", "--issue", "2", "--user", "7")
+        self.assertIn("NOTIFICATION_UNDELIVERABLE channel=100", first.stdout)
+        second = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
-        self.assertNotIn("REPLY_FOLLOWUP_CLOSED", second.stdout)
+        self.assertNotIn("NOTIFICATION_UNDELIVERABLE", second.stdout)
         self.assertTrue(all(json.loads(line)["method"] == "GET" for line in log.read_text().splitlines()))
 
     def test_lost_native_response_recovers_the_same_terminal_send(self):
         log = self.native_fixture()
         self.env.update(NATIVE_LOST="1", NATIVE_ACCEPTED=str(Path(self.tmp.name) / "accepted"))
-        first = self.cli("deliver", "--issue", "2", "--user", "7")
+        first = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(first.returncode, 2, first.stdout + first.stderr)
-        second = self.cli("deliver", "--issue", "2", "--user", "7")
+        second = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         self.assertEqual(sum(json.loads(line)["method"] == "POST" for line in log.read_text().splitlines()), 1)
 
@@ -195,7 +190,7 @@ globalThis.fetch = async(input, init) => {
         log = self.native_fixture()
         self.env["NATIVE_LOST"] = "1"
         for _ in range(2):
-            result = self.cli("deliver", "--issue", "2", "--user", "7")
+            result = self.cli("deliver", "--issue", "2", "--topic", "902")
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertEqual(sum(json.loads(line)["method"] == "POST" for line in log.read_text().splitlines()), 1)
         with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite") as db:
@@ -205,38 +200,19 @@ globalThis.fetch = async(input, init) => {
         log = self.native_fixture()
         self.assertEqual(self.cli("check").returncode, 0)
         self.env["FOLLOWUP_REOPENED"] = "2"
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("FOLLOWUP_WAIT", result.stdout)
         self.assertFalse(log.exists())
         with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite") as db:
             self.assertEqual(db.execute("SELECT status,announcement FROM followups").fetchone(), ("open", None))
 
-    def test_legacy_announced_delivery_stays_uncertain_and_open_can_transition(self):
-        log = self.native_fixture()
-        self.assertEqual(self.cli("check").returncode, 0)
-        path = Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite"
-        with sqlite3.connect(path) as db:
-            db.execute("UPDATE followups SET delivery_version=0")
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertFalse(log.exists())
-        with sqlite3.connect(path) as db:
-            self.assertEqual(db.execute("SELECT status FROM followups").fetchone()[0], "announced")
-            db.execute("UPDATE followups SET status='open',announcement=NULL")
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(sum(json.loads(line)["method"] == "POST" for line in log.read_text().splitlines()), 1)
-
     def test_permission_denial_retains_subscription_without_another_destination(self):
         log = self.native_fixture()
         self.env["NATIVE_FORBIDDEN"] = "1"
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("NOTIFICATION_PERMISSION_DENIED", result.stdout)
-        again = self.cli("deliver", "--issue", "2", "--user", "7")
-        self.assertEqual(again.returncode, 2, again.stdout + again.stderr)
-        self.assertNotIn("NOTIFICATION_PERMISSION_DENIED", again.stdout)
         self.assertTrue(all(json.loads(line)["method"] == "GET" for line in log.read_text().splitlines()))
         with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "discord-conversations.sqlite") as db:
             self.assertEqual(db.execute("SELECT status FROM followups").fetchone()[0], "announced")
@@ -244,17 +220,17 @@ globalThis.fetch = async(input, init) => {
     def test_definitively_rejected_post_can_resume_after_permission_is_restored(self):
         log = self.native_fixture()
         self.env["NATIVE_POST_FORBIDDEN"] = "1"
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.env.pop("NATIVE_POST_FORBIDDEN")
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(sum(json.loads(line)["method"] == "POST" for line in log.read_text().splitlines()), 2)
 
     def test_policy_revoked_during_target_read_prevents_terminal_send(self):
         log = self.native_fixture()
         self.env["NATIVE_REVOKE"] = "1"
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertTrue(all(json.loads(line)["method"] == "GET" for line in log.read_text().splitlines()))
 
@@ -263,42 +239,39 @@ globalThis.fetch = async(input, init) => {
         with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "discord-delivery.sqlite") as db:
             db.execute("""INSERT INTO blocked_users(user_id,source,reason,created_by,created_at)
                 VALUES('7','owner','fixture block','100',0)""")
-        result = self.cli("deliver", "--issue", "2", "--user", "7")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertTrue(all(json.loads(line)["method"] == "GET" for line in log.read_text().splitlines()))
+        result = self.cli("deliver", "--issue", "2", "--topic", "902")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("NOTIFICATION_UNDELIVERABLE", result.stdout)
+        self.assertFalse(log.exists() and any(json.loads(line)["method"] == "POST" for line in log.read_text().splitlines()))
 
     def test_live_declined_done_and_waiting(self):
         for issue in range(1, 6):
-            self.assertEqual(self.cli("add", "--issue", str(issue), "--channel", "100", "--user", "7", "--reply-to", str(900 + issue)).returncode, 0)
+            self.subscribe(issue, str(900 + issue))
         out = self.cli("check").stdout.splitlines()
         events = {line.split(" ", 1)[0] + ":" + str(json.loads(line.split(" ", 1)[1])["issue"]) for line in out}
         self.assertEqual(events, {"FOLLOWUP_DECLINED:2", "FOLLOWUP_LIVE:3", "FOLLOWUP_DONE:5"})
         page = json.loads(self.cli("show", "2").stdout)
-        declined = json.loads(page["content"])[0]["announcement"]
-        self.assertEqual((declined["reason"], declined["reply_to"], declined["channel_id"]), ("Out of scope for this season.", "902", "100"))
-        identity = hashlib.sha256(json.dumps(["o/r", 3, "7", "100", "903"], separators=(",", ":")).encode()).hexdigest()
-        with sqlite3.connect(Path(self.env["DORI_STATE_DIR"]) / "reply-sends.sqlite") as db:
-            db.execute("""CREATE TABLE reply_sends(target TEXT,text_hash TEXT,state TEXT,reply_id TEXT)""")
-            db.execute("INSERT INTO reply_sends VALUES(?,?,'sent','9903')", ("903", "event:followup:" + identity))
-        self.assertEqual(self.cli("done", "--issue", "3", "--user", "7").returncode, 0)
+        shown = json.loads(page["content"])[0]
+        self.assertEqual((shown["announcement"]["reason"], shown["announcement"]["topic"], shown["participants"]),
+                         ("Out of scope for this season.", "902", ["7"]))
         listed = self.cli("list").stdout
-        self.assertNotIn("issue=3 ", listed)
-        self.assertIn("issue=4 user=7 kind=bug status=open", listed)
-        self.assertIn("issue=2 user=7 kind=bug status=announced", listed)
+        self.assertIn("issue=4 topic=904 kind=bug status=open participants=1", listed)
+        self.assertIn("issue=2 topic=902 kind=bug status=announced participants=1", listed)
 
-    def test_unknown_follow_up_and_bad_ids_are_refused(self):
-        self.assertEqual(self.cli("done", "--issue", "9", "--user", "7").returncode, 2)
-        self.assertNotEqual(self.cli("add", "--issue", "1", "--channel", "abc", "--user", "7", "--reply-to", "1").returncode, 0)
+    def test_unknown_subscription_and_bad_ids_are_refused(self):
+        self.subscribe(1, "901")
+        self.assertEqual(self.cli("deliver", "--issue", "9", "--topic", "901").returncode, 1)
+        self.assertEqual(self.cli("deliver", "--issue", "1", "--topic", "abc").returncode, 2)
 
-    def test_one_check_reads_a_shared_issue_once_and_notifies_each_requester(self):
+    def test_one_check_reads_a_shared_issue_once_and_announces_each_topic(self):
         log = Path(self.tmp.name) / "gh-reads"
         self.env["FOLLOWUP_GH_LOG"] = str(log)
-        for user in ("7", "8"):
-            self.assertEqual(self.cli("add", "--issue", "2", "--channel", "100", "--user", user, "--reply-to", "902").returncode, 0)
+        self.subscribe(2, "902", user="7")
+        self.subscribe(2, "912", user="8")
         result = self.cli("check")
         self.assertEqual(result.returncode, 0, result.stderr)
         events = [json.loads(line.split(" ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("FOLLOWUP_DECLINED ")]
-        self.assertEqual({event["user_id"] for event in events}, {"7", "8"})
+        self.assertEqual({event["topic"] for event in events}, {"902", "912"})
         self.assertEqual([line for line in log.read_text().splitlines() if line.startswith("issue ")], ["issue view 2"])
 
     def test_open_pr_readiness_tracks_base_drift_ci_and_unknown_state(self):
@@ -353,7 +326,7 @@ globalThis.fetch = async(input, init) => {
     def test_checkout_only_evidence_never_announces_live(self):
         bins = Path(self.env["PATH"].split(":")[0])
         (bins / "helio").write_text('#!/bin/sh\necho \'{"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","active":true,"login_evidence":"observed"}\'\n')
-        self.assertEqual(self.cli("add", "--issue", "3", "--channel", "100", "--user", "7", "--reply-to", "903").returncode, 0)
+        self.subscribe(3, "903")
         result = self.cli("check")
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("FOLLOWUP_LIVE", result.stdout)

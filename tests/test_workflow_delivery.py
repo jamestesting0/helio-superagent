@@ -74,8 +74,14 @@ class WorkflowDeliveryTests(unittest.TestCase):
         return result
 
     def open_topic(self, channel="100"):
+        # Topics open on a message Helio received; the claim records its channel and author.
+        store = self.installed / ".dori/discord-inbound/conversations/conversations.ts"
+        claim = (f"import {{ Conversations }} from {json.dumps(str(store))};"
+                 f"const s = new Conversations({json.dumps(str(self.state / 'discord-conversations.sqlite'))});"
+                 f"s.claimWorking({json.dumps(channel)}, '77', '500', Date.now()); s.dispose();")
+        subprocess.run(["bun", "-e", claim], env=self.env, capture_output=True, check=True, timeout=20)
         result = subprocess.run(["bun", str(self.installed / ".dori/discord-inbound/conversation.ts"),
-                                 "open", channel, "77", "500", "Requested change"],
+                                 "open", "500", "Requested change"],
                                 env=self.env, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -89,8 +95,9 @@ class WorkflowDeliveryTests(unittest.TestCase):
         flags = ("--disposition", "final", "--job", "issue-8",
                  "--issue", "https://github.com/jamestesting0/elo-bot/issues/8")
         self.invoke("evidence.ts", "PR is prepared; checks passed.", extra=flags)
+        # A final reply that links an issue subscribes the topic, so it resolves as tracked by that issue.
         self.assertEqual((self.topic()["status"], self.topic()["outcome"], self.topic()["job"]),
-                         ("resolved", "answered", "issue-8"))
+                         ("resolved", "issue", "issue-8"))
         self.invoke("evidence.ts", "The same completed handoff.", extra=flags)
         self.assertEqual(len(self.messages()), 1)
 

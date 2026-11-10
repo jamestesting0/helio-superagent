@@ -17,44 +17,41 @@ async function invoke(state: string | undefined, ...args: string[]) {
   return { stdout, stderr, code };
 }
 
-test("CLI opens, lists and closes conversations with machine consumed prefixes", async () => {
+/** The lead opens a topic on a message it received; a claim records that message's channel and author. */
+function received(dir: string, anchor: string, user = "99") {
+  const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+  try { store.claimWorking("100", user, anchor, Date.now()); } finally { store.dispose(); }
+}
+const listed = (stdout: string) => stdout.split("\n").filter((line) => line.startsWith("CONVERSATION "))
+  .map((line) => JSON.parse(line.slice("CONVERSATION ".length)));
+
+test("CLI opens, lists and closes topics with machine consumed prefixes", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-cli-"));
   try {
-    const opened = await invoke(dir, "open", "100", "99", "10", "Investigate", "timeout");
+    received(dir, "10"); received(dir, "11");
+    const opened = await invoke(dir, "open", "10", "Investigate", "timeout");
     expect([opened.code, opened.stderr]).toEqual([0, ""]);
-    expect(opened.stdout.startsWith("CONVERSATION_OPEN ")).toBe(true);
     const row = JSON.parse(opened.stdout.slice("CONVERSATION_OPEN ".length));
-    expect([row.channel_id, row.user_id, row.anchor_message_id, row.topic, row.status])
-      .toEqual(["100", "99", "10", "Investigate timeout", "open"]);
-    const listed = await invoke(dir, "list");
-    expect([listed.code, listed.stderr]).toEqual([0, ""]);
-    expect(JSON.parse(listed.stdout.slice("CONVERSATION ".length))).toEqual({
-      ...row, summary: row.topic, state: "waiting_on_helio", age_ms: 0, idle_ms: 0,
-    });
-    const second = await invoke(dir, "open", "100", "99", "11", "another", "topic");
-    expect([second.code, second.stdout.startsWith("CONVERSATION_OPEN ")]).toEqual([0, true]);
-    expect((await invoke(dir, "close", "100", "99", "answered", "--topic", "12")).stdout)
-      .toBe("CONVERSATION_REFUSED No open conversation with topic anchor 12 in this channel\n");
-    const closed = await invoke(dir, "close", "100", "99", "answered", "--topic", "10");
-    expect([closed.code, closed.stderr, closed.stdout.startsWith("CONVERSATION_CLOSED ")]).toEqual([0, "", true]);
+    expect([row.topic_id, row.channel_id, row.user_id, row.topic, row.status]).toEqual(["10", "100", "99", "Investigate timeout", "open"]);
+    const first = await invoke(dir, "list");
+    expect([first.code, first.stderr]).toEqual([0, ""]);
+    expect(listed(first.stdout)).toEqual([expect.objectContaining({ topic_id: "10", title: "Investigate timeout", opened_by: "99",
+      participants: ["99"], state: "waiting_on_helio", age_ms: 0, idle_ms: 0, summary: "Investigate timeout" })]);
+    expect((await invoke(dir, "open", "11", "another", "topic")).code).toBe(0);
+    expect((await invoke(dir, "close", "12", "answered")).stdout).toBe("CONVERSATION_REFUSED No active topic 12\n");
+    const closed = await invoke(dir, "close", "10", "answered");
+    expect([closed.code, closed.stderr]).toEqual([0, ""]);
     expect(JSON.parse(closed.stdout.slice("CONVERSATION_CLOSED ".length))).toMatchObject({ anchor_message_id: "10", outcome: "answered" });
-    const remaining = (await invoke(dir, "list")).stdout.trim().split("\n");
-    expect(remaining.map((line) => JSON.parse(line.slice("CONVERSATION ".length)).anchor_message_id)).toEqual(["11"]);
-    expect((await invoke(dir, "close", "100", "99", "answered")).code).toBe(0);
+    expect(listed((await invoke(dir, "list")).stdout).map((topic) => topic.topic_id)).toEqual(["11"]);
+    expect((await invoke(dir, "close", "11", "answered")).code).toBe(0);
     expect((await invoke(dir, "list")).stdout).toBe("");
-    expect((await invoke(dir, "close", "100", "99", "answered")).code).toBe(2);
+    expect((await invoke(dir, "close", "11", "answered")).code).toBe(2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test.each([
-  ["open", "bad", "99", "10", "topic"],
-  ["open", "100", "bad", "10", "topic"],
-  ["open", "100", "99", "bad", "topic"],
-  ["open", "100", "99", "10", "x".repeat(201)],
-  ["open", "100", "99", "10"],
-  ["close", "100", "99", "invalid"],
-  ["close", "100", "99", "other", "extra"],
-  ["list", "extra"],
+  ["open", "bad", "topic"], ["open", "10", "x".repeat(201)], ["open", "10"], ["open", "10", "unknown anchor"],
+  ["close", "10", "invalid"], ["close", "10", "other", "extra"], ["list", "extra"], ["show", "10", "extra"],
 ].map((args) => ({ args })))("CLI refuses malformed arguments %j with exit 2", async ({ args }) => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-invalid-"));
   try {
@@ -74,10 +71,9 @@ test("opening a new topic after claiming its anchor transfers that message out o
   try {
     store.open("100", "99", "500", "logs", Date.now());
     store.claim("100", "99", { message_id: "600", author_id: "99", author: "owner", bot: false, sent_at: new Date().toISOString(),
-      content: "new topic", attachment_count: 0 }, Date.now());
-    expect((await invoke(dir, "open", "100", "99", "600", "roles")).code).toBe(0);
-    const logs = store.get("100", "99", "500");
-    const roles = store.get("100", "99", "600");
+      content: "new topic", attachment_count: 0 }, Date.now(), { channel: "100", audience: "public" });
+    expect((await invoke(dir, "open", "600", "roles")).code).toBe(0);
+    const logs = store.get("100", "99", "500"), roles = store.get("100", "99", "600");
     if (!logs || !roles) throw new Error("Both topics must remain open");
     expect(store.transcriptOf(logs).map((entry) => entry.message_id)).toEqual([]);
     expect(store.transcriptOf(roles).map((entry) => entry.message_id)).toEqual(["600"]);
@@ -87,44 +83,40 @@ test("opening a new topic after claiming its anchor transfers that message out o
 
 test("show, note, hold, resume and explicit reopen preserve a request through the CLI", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-commands-"));
+  const content = async () => JSON.parse(JSON.parse((await invoke(dir, "show", "10")).stdout.slice("CONVERSATION_SHOW ".length)).content);
   try {
-    await invoke(dir, "open", "100", "99", "10", "queue request");
+    received(dir, "10");
+    await invoke(dir, "open", "10", "queue request");
     const text = join(dir, "summary.txt");
     await Bun.write(text, "Queue fails after a timeout.");
-    expect((await invoke(dir, "note", "100", "99", "--text-file", text)).code).toBe(0);
-    expect((await invoke(dir, "hold", "100", "99", "owner", "decision")).code).toBe(0);
-    const held = JSON.parse((await invoke(dir, "list")).stdout.slice("CONVERSATION ".length));
+    expect((await invoke(dir, "note", "10", "--text-file", text)).code).toBe(0);
+    expect((await invoke(dir, "hold", "10", "owner", "decision")).code).toBe(0);
+    const held = await content();
     expect([held.state, held.hold_reason, held.summary]).toEqual(["on_hold", "owner decision", "Queue fails after a timeout."]);
-    expect((await invoke(dir, "resume", "100", "99")).code).toBe(0);
-    const shown = await invoke(dir, "show", "100", "99");
-    const page = JSON.parse(shown.stdout.slice("CONVERSATION_SHOW ".length));
-    expect([JSON.parse(page.content).state, page.truncated]).toEqual(["waiting_on_helio", false]);
-    const closed = await invoke(dir, "close", "100", "99", "issue", "--issue", "https://github.com/o/r/issues/3");
-    expect(closed.code).toBe(0);
-    const reopened = await invoke(dir, "reopen", "100", "99");
-    const row = JSON.parse(reopened.stdout.slice("CONVERSATION_REOPENED ".length));
+    expect((await invoke(dir, "resume", "10")).code).toBe(0);
+    expect((await content()).state).toBe("waiting_on_helio");
+    expect((await invoke(dir, "close", "10", "issue", "--issue", "https://github.com/o/r/issues/3")).code).toBe(0);
+    const row = JSON.parse((await invoke(dir, "reopen", "10")).stdout.slice("CONVERSATION_REOPENED ".length));
     expect([row.status, row.summary, row.issue]).toEqual(["open", "Queue fails after a timeout.", "https://github.com/o/r/issues/3"]);
     await Bun.write(text, "x".repeat(601));
-    expect((await invoke(dir, "note", "100", "99", "--text-file", text)).code).toBe(2);
+    expect((await invoke(dir, "note", "10", "--text-file", text)).code).toBe(2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("conversation listing pages long multibyte summaries and reasons within the tool budget", async () => {
+test("conversation listing pages long multibyte summaries within the tool budget", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-pages-"));
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));
   try {
     for (let user = 10; user < 25; user++) {
       store.open("100", String(user), String(user), "topic", Date.parse("2026-11-02T11:00:00Z"));
       store.note("100", String(user), "界".repeat(600));
-      store.hold("100", String(user), "界".repeat(600));
     }
     const users: string[] = [];
     let offset = 0;
     for (;;) {
       const page = await invoke(dir, "list", "--offset", String(offset));
       expect(Buffer.byteLength(page.stdout)).toBeLessThan(50_000);
-      users.push(...page.stdout.split("\n").filter((line) => line.startsWith("CONVERSATION "))
-        .map((line) => JSON.parse(line.slice("CONVERSATION ".length)).user_id));
+      users.push(...listed(page.stdout).map((topic) => topic.opened_by));
       const next = /--offset (\d+)"/.exec(page.stdout);
       if (!next) break;
       offset = Number(next[1]);
@@ -208,7 +200,7 @@ test.each([10, 1000])("transcript payload keeps newest entries within count and 
       id: String(20 + index), channel_id: "100", author: { id: "99", username: "owner" },
       content: "x".repeat(length), timestamp: "2026-11-02T11:00:00Z",
     }, 12000).entry);
-    for (const entry of entries) store.claim("100", "99", entry, Date.parse("2026-11-02T11:00:00Z"));
+    for (const entry of entries) store.claim("100", "99", entry, Date.parse("2026-11-02T11:00:00Z"), { channel: "100", audience: "public" });
     store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which match?" }, Date.parse("2026-11-02T11:00:00Z"));
     await intake(dir, "old");
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
@@ -233,7 +225,7 @@ test("startup sweep reports a stale conversation once after catch-up", async () 
       .map((line) => JSON.parse(line.slice("INBOUND_CONVERSATION_TIMEOUT ".length)));
     expect(notices).toEqual([{
       channel_id: "100", user_id: "55", anchor_message_id: "9", topic: "stale", opened_at: Date.parse("2026-10-29T12:00:00Z"),
-      sent: "901", read: "helio conversation show 100 55 --topic 9",
+      sent: "901", read: "helio conversation show 9",
     }]);
   } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
@@ -241,8 +233,9 @@ test("startup sweep reports a stale conversation once after catch-up", async () 
 test("a long topic's continuation command stays on that topic", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-topic-page-"));
   try {
-    expect((await invoke(dir, "open", "100", "99", "10", "first")).code).toBe(0);
-    expect((await invoke(dir, "open", "100", "99", "11", "second")).code).toBe(0);
+    received(dir, "10"); received(dir, "11");
+    expect((await invoke(dir, "open", "10", "first")).code).toBe(0);
+    expect((await invoke(dir, "open", "11", "second")).code).toBe(0);
     const store = new Conversations(join(dir, "discord-conversations.sqlite"));
     try {
       for (let i = 0; i < 3; i++) {
@@ -250,8 +243,8 @@ test("a long topic's continuation command stays on that topic", async () => {
           sent_at: "2026-11-02T12:00:00Z", content: "x".repeat(5_000), attachment_count: 0, reply_to: "10" }, Date.now());
       }
     } finally { store.dispose(); }
-    const shown = await invoke(dir, "show", "100", "99", "--topic", "10");
-    expect(shown.stdout).toContain("--topic 10");
+    const shown = await invoke(dir, "show", "10");
+    expect(shown.stdout).toContain("helio conversation show 10 --offset");
     expect(shown.stdout).toContain('"topic\\":\\"first');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -259,11 +252,12 @@ test("a long topic's continuation command stays on that topic", async () => {
 test("a topic that timed out or was closed can still be read by its anchor", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-closed-topic-"));
   try {
-    expect((await invoke(dir, "open", "100", "99", "9", "stale")).code).toBe(0);
-    expect((await invoke(dir, "close", "100", "99", "timed_out")).code).toBe(0);
-    const shown = await invoke(dir, "show", "100", "99", "--topic", "9");
+    received(dir, "9");
+    expect((await invoke(dir, "open", "9", "stale")).code).toBe(0);
+    expect((await invoke(dir, "close", "9", "timed_out")).code).toBe(0);
+    const shown = await invoke(dir, "show", "9");
     expect([shown.code, shown.stdout.startsWith("CONVERSATION_SHOW ")]).toEqual([0, true]);
     expect(shown.stdout).toContain('\\"status\\":\\"resolved');
-    expect((await invoke(dir, "show", "100", "99", "--topic", "8")).code).toBe(2);
+    expect((await invoke(dir, "show", "8")).code).toBe(2);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

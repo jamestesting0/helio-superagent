@@ -99,12 +99,11 @@ class MonitorDeliveryTests(unittest.TestCase):
         with patch.dict(namespace, {"STATE": self.state, "REPO": "owner/repo"}):
             db = module["connect"]()
             self.addCleanup(db.close)
-            for user in ("7", "8"):
-                db.execute("INSERT INTO followups (repo,issue,user_id,channel_id,reply_to,kind,created_at) VALUES ('owner/repo',1,?,'100','900','bug',0)", (user,))
+            for topic in ("900", "901"):
+                db.execute("INSERT INTO followups (repo,issue,anchor_message_id,kind,created_at) VALUES ('owner/repo',1,?,'bug',0)", (topic,))
             db.commit()
             def news(row, head):
-                return {"event": "FOLLOWUP_LIVE", "issue": row[0], "user_id": row[1],
-                        "channel_id": row[2], "reply_to": row[3], "kind": row[4], "title": "\n" * 100_000}
+                return {"event": "FOLLOWUP_LIVE", "issue": row[0], "topic": row[1], "kind": row[2], "title": "\n" * 100_000}
             out = io.StringIO()
             with patch.dict(namespace, {"news": news}), redirect_stdout(out):
                 self.assertEqual(module["check"](db, False), 0)
@@ -128,15 +127,9 @@ class MonitorDeliveryTests(unittest.TestCase):
             records = json.loads(content)
             self.assertEqual([row["announcement"]["title"] for row in records], ["\n" * 100_000] * 2)
             self.assertEqual([row["announcement"]["event"] for row in records], ["FOLLOWUP_LIVE"] * 2)
-            with sqlite3.connect(self.state / "reply-sends.sqlite") as sends:
-                sends.execute("CREATE TABLE reply_sends(target TEXT,text_hash TEXT,state TEXT,reply_id TEXT)")
-                for user in ("7", "8"):
-                    identity = hashlib.sha256(json.dumps(["owner/repo", 1, user, "100", "900"],
-                                                        separators=(",", ":")).encode()).hexdigest()
-                    sends.execute("INSERT INTO reply_sends VALUES('900',?,'sent',?)",
-                                  ("event:followup:" + identity, "99" + user))
-            for user in ("7", "8"):
-                self.invoke(module, "done", "--issue", "1", "--user", user)
+            # Grouped delivery (covered by the notification tests) marks each subscription done.
+            db.execute("UPDATE followups SET status='done'")
+            db.commit()
             out = io.StringIO()
             with redirect_stdout(out):
                 self.assertEqual(module["check"](db, False), 0)
@@ -148,7 +141,7 @@ class MonitorDeliveryTests(unittest.TestCase):
         with patch.dict(namespace, {"STATE": self.state, "REPO": "owner/repo"}):
             with sqlite3.connect(self.state / "discord-conversations.sqlite") as db:
                 module["connect"]().close()
-                db.executemany("INSERT INTO followups (repo,issue,user_id,channel_id,reply_to,kind,created_at) VALUES ('owner/repo',?,'7','100','900','bug',0)",
+                db.executemany("INSERT INTO followups (repo,issue,anchor_message_id,kind,created_at) VALUES ('owner/repo',?,'900','bug',0)",
                                [(i,) for i in range(1, 1006)])
             ids = []
             offset = 0

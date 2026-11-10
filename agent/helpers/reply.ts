@@ -26,17 +26,17 @@ export async function sendReply(
   })).id;
 }
 
-const USAGE = "Usage: bun reply.ts CHANNEL_ID MESSAGE_ID (--text-file PATH | TEXT) [--event KEY --disposition final|progress|question [--waiting-on TEXT] [--job KEY] [--issue URL]] [--covers ID,...] [--seen ID,...] [--ping ID,...]; events require DORI_STATE_DIR";
+const USAGE = "Usage: bun reply.ts CHANNEL_ID MESSAGE_ID (--text-file PATH | TEXT) [--event KEY --disposition final|progress|question [--waiting-on TEXT] [--job KEY] [--issue URL] [--topic TOPIC]] [--covers ID,...] [--seen ID,...] [--ping ID,...]; events require DORI_STATE_DIR";
 
 // --text-file keeps reply text away from any shell: inside a shell command string, `code` and $(...) are executed and vanish.
 export function parseArgs(argv: readonly string[]):
-  { channel_id: string; message_id: string; text: string; text_file?: string; event?: string; covers: string[]; seen: string[]; ping?: string[];
+  { channel_id: string; message_id: string; text: string; text_file?: string; event?: string; covers: string[]; seen: string[]; ping?: string[]; topic?: string;
     meaning?: { disposition: "final" | "progress" | "question"; waiting_on?: string; job?: string; issue?: string } } | undefined {
   const positional: string[] = [];
   let textFile: string | undefined;
   let event: string | undefined;
   let disposition: "final" | "progress" | "question" | undefined;
-  let waiting_on: string | undefined, job: string | undefined, issue: string | undefined;
+  let waiting_on: string | undefined, job: string | undefined, issue: string | undefined, topic: string | undefined;
   const lists: Record<"--covers" | "--seen" | "--ping", string[]> = { "--covers": [], "--seen": [], "--ping": [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -59,6 +59,9 @@ export function parseArgs(argv: readonly string[]):
     } else if ((positional.length === 3 || textFile !== undefined) && arg === "--issue") {
       issue = argv[++i];
       if (!issue || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*$/.test(issue)) return undefined;
+    } else if ((positional.length === 3 || textFile !== undefined) && arg === "--topic") {
+      topic = argv[++i];
+      if (!topic || !/^[0-9]{1,30}$/.test(topic)) return undefined;
     } else if ((positional.length === 3 || textFile !== undefined) && (arg === "--covers" || arg === "--seen" || arg === "--ping")) {
       const ids = (argv[++i] ?? "").split(",").map((id) => id.trim()).filter(Boolean);
       if (!ids.length || ids.some((id) => !/^[0-9]{1,30}$/.test(id))) return undefined;
@@ -69,10 +72,10 @@ export function parseArgs(argv: readonly string[]):
   const [channel_id, message_id, text] = positional;
   if (channel_id === undefined || message_id === undefined || (text === undefined && textFile === undefined)) return undefined;
   if ((disposition && !event) || (disposition === "question" && !waiting_on) || (waiting_on && disposition !== "question") ||
-      ((job || issue) && !disposition)) return undefined;
+      ((job || issue || topic) && !disposition)) return undefined;
   return { channel_id, message_id, text: text ?? "", ...(textFile !== undefined ? { text_file: textFile } : {}),
     ...(event ? { event } : {}), covers: lists["--covers"], seen: lists["--seen"],
-    ...(lists["--ping"].length ? { ping: [...new Set(lists["--ping"])] } : {}),
+    ...(lists["--ping"].length ? { ping: [...new Set(lists["--ping"])] } : {}), ...(topic ? { topic } : {}),
     ...(disposition ? { meaning: { disposition, ...(waiting_on ? { waiting_on } : {}), ...(job ? { job } : {}), ...(issue ? { issue } : {}) } } : {}) };
 }
 
@@ -91,29 +94,31 @@ if (import.meta.main) {
     const rest = discordRest(token);
     await requireReplyChannel(args.channel_id, filterConfig(process.env), rest);
     const discord = new Discord(fetchHttp, realClock, token);
-    const send = (mentions: readonly string[]) =>
-      sendReply(discord, { channel_id: args.channel_id, message_id: args.message_id }, args.text, [...mentions, ...(args.ping ?? [])]);
+    const send = (mentions: readonly string[], lead = "") =>
+      sendReply(discord, { channel_id: args.channel_id, message_id: args.message_id }, lead ? `${lead} ${args.text}` : args.text,
+        [...mentions, ...(args.ping ?? [])]);
     if (!state) {
       console.log("REPLY_WARN DORI_STATE_DIR is not set; sending without the newer-message check");
       console.log(`SENT ${await send([])}`);
     } else {
       // Loaded only here, so sendReply stays usable without the intake package's dependencies.
-      const [{ Delivery }, { Conversations }, { cleanupAttachments }, { guardedReply }, { sendOnce, findSentReply }] = await Promise.all([
+      const [{ Delivery }, { Conversations }, { cleanupAttachments }, { guardedReply }, { sendOnce, findSentReply }, { closureNotes }] = await Promise.all([
         import("../discord-inbound/delivery/delivery.ts"), import("../discord-inbound/conversations/conversations.ts"),
         import("../discord-inbound/messages/images.ts"), import("../discord-inbound/conversations/reply-guard.ts"),
-        import("../discord-inbound/conversations/reply-once.ts"),
+        import("../discord-inbound/conversations/reply-once.ts"), import("../discord-inbound/conversations/closure.ts"),
       ]);
       const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
       const store = new Conversations(`${state}/discord-conversations.sqlite`);
       try {
-        const bot = store.list().some((row) => row.channel_id === args.channel_id) ?
+        // Topics span channels, so any active topic may be continued here.
+        const bot = store.list().length ?
           await rest<{ id: string }>("/users/@me") : undefined;
         const content = discordText(args.text);
-        const once = async (mentions: readonly string[]) => {
+        const once = async (mentions: readonly string[], lead: string) => {
           const sent = await sendOnce({
             path: `${state}/reply-sends.sqlite`, target: args.message_id,
-            text: content, ...(args.event ? { event: `${args.channel_id}:${args.event}` } : {}), now: () => Date.now(),
-            sleep: (ms) => Bun.sleep(ms), send: () => send(mentions),
+            text: lead ? `${lead} ${content}` : content, ...(args.event ? { event: `${args.channel_id}:${args.event}` } : {}), now: () => Date.now(),
+            sleep: (ms) => Bun.sleep(ms), send: () => send(mentions, lead),
             findSent: (original, otherReplyIds) => findSentReply(rest, { ...args, otherReplyIds }, original),
           });
           if (sent.duplicate) console.log(`REPLY_DUPLICATE ${sent.id} this reply was already sent; nothing was sent again`);
@@ -121,7 +126,8 @@ if (import.meta.main) {
         };
         const result = await guardedReply({
           delivery, store, rest, channel: args.channel_id, target: args.message_id,
-          covers: args.covers, seen: args.seen, send: once,
+          covers: args.covers, seen: args.seen, send: once, text: content, ...(args.topic ? { topic: args.topic } : {}),
+          notifyOthers: (row, groups) => closureNotes({ state, rest, row, groups, config: () => filterConfig(process.env), now: () => Date.now() }),
           cleanup: (id) => cleanupAttachments(id, `${state}/attachments/inbound`),
           now: () => Date.now(), warn: (message) => console.log(`REPLY_WARN ${message}`),
           owner: process.env.DORI_DISCORD_OWNER_ID, issues: { text: content, path: `${state}/issue-sync.sqlite` },

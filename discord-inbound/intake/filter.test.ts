@@ -185,7 +185,7 @@ describe("classify", () => {
     const quoted = {
       message_reference: { message_id: "40" },
       referenced_message: { author: { id: APPROVER } },
-      content: `> <@${APPROVER}> request`,
+      content: `> <@${APPROVER}> request\nHelio, please do this`,
     };
     for (const embedded of [forwarded, quoted]) {
       const trusted = await classify(msg({ ...embedded, authorId: TRUSTED }), approverCfg, parentOf);
@@ -267,11 +267,11 @@ describe("classify", () => {
     expect(out?.scope).toBe("answer-only");
   });
 
-  test("known replies to other people remain reviewable, but missing bot identity is protected", async () => {
+  test("trusted replies between people stay with them, but missing bot identity is protected", async () => {
     const message = msg({
       message_reference: { message_id: "40" }, referenced_message: { author: { id: STAFF } },
     });
-    expect((await classify(message, cfg, parentOf))?.attention).toBe("review");
+    expect(await classify(message, cfg, parentOf)).toBeNull();
     expect((await classify(message, { ...cfg, botId: undefined }, parentOf))?.attention).toBe("direct");
   });
 });
@@ -300,5 +300,40 @@ describe("explicit pings and quiet follow-ups", () => {
     expect(await classify(chatter, { ...scoped, awaitingAnswer: () => false }, lookup)).toBeNull();
     expect((await classify(chatter, { ...scoped, awaitingAnswer: () => true }, lookup))?.attention).toBe("review");
     expect(countsTowardCatchUp(chatter, { ...scoped, awaitingAnswer: () => false }, "normal")).toBe(false);
+  });
+});
+
+describe("trusted-chat addressee", () => {
+  const COLLEAGUE = "203";
+  const classified = (over: Partial<IncomingMessage>, config: FilterConfig = cfg) => classify(msg(over), config, parentOf);
+
+  test("the 2026-11-10 17:02 commentary has no addressee and reaches review without counting as for Helio", async () => {
+    const result = await classified({ content: "that needs a fix, a new version coming, will be support multi user conversations now" });
+    expect([result?.addressee, result?.attention]).toEqual(["none", "review"]);
+  });
+
+  test.each([
+    { name: "a reply to a colleague", over: { message_reference: { message_id: "40" }, referenced_message: { author: { id: COLLEAGUE } } } },
+    { name: "a message opening with a colleague's mention", over: { content: `<@${COLLEAGUE}> can you check the queue?` } },
+  ])("$name stays between people and never reaches Helio", async ({ over }) => {
+    expect(await classified(over)).toBeNull();
+    expect(countsTowardCatchUp(msg(over), cfg, "trusted")).toBe(false);
+  });
+
+  test.each([
+    { name: "naming Helio", over: { content: "Helio, the queue is stuck" } },
+    { name: "a reply to a message that pinged Helio", over: { message_reference: { message_id: "40" },
+      referenced_message: { author: { id: COLLEAGUE }, content: "<@300> queue is stuck" } } },
+  ])("$name is for Helio", async ({ over }) => {
+    expect((await classified(over))?.addressee).toBe("helio");
+  });
+
+  test("a reply into a topic is for Helio whoever wrote the replied message", async () => {
+    const over = { message_reference: { message_id: "40" }, referenced_message: { author: { id: COLLEAGUE } } };
+    expect((await classified(over, { ...cfg, topicMessage: id => id === "40" }))?.addressee).toBe("helio");
+  });
+
+  test("a colleague named as the subject of a report leaves the message for review", async () => {
+    expect((await classified({ content: `why can't <@${COLLEAGUE}> join the queue?` }))?.addressee).toBe("none");
   });
 });

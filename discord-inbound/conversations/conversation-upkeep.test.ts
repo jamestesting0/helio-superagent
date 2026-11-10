@@ -9,7 +9,7 @@ import { DiscordRestError, type Rest } from "../discord/rest.ts";
 
 const NOW = Date.parse("2026-11-04T12:00:00Z");
 const entry = (author: string, id: string) => describeMessage({
-  id, channel_id: "100", author: { id: author, username: author }, content: "details",
+  id, channel_id: "100", author: { id: author, username: author, bot: author === "88" }, content: "details",
   timestamp: new Date(NOW).toISOString(),
 }, 12_000).entry;
 

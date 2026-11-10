@@ -13,8 +13,11 @@ export function newerInputPending(rows: readonly { readonly id: string; readonly
       if (!(error instanceof SyntaxError || error instanceof TypeError)) throw error;
       return false; // Unreadable work stays queued; it cannot be assigned to this topic.
     }
-    if (payload.channel_id !== topic.channel_id || payload.author_id !== topic.user_id) return false;
-    const owner = typeof payload.reply_to === "string" ? store.forReply(topic.channel_id, topic.user_id, payload.reply_to) : null;
-    return !owner || owner.opened_at === topic.opened_at;
+    // Any participant's newer message in the reply's channel counts, unless it explicitly belongs to another topic.
+    const channel = topic.reply_channel ?? topic.channel_id;
+    if (payload.channel_id !== channel || typeof payload.author_id !== "string" ||
+        !store.isParticipant(topic.anchor_message_id, payload.author_id)) return false;
+    const owner = typeof payload.reply_to === "string" ? store.topicOfMessage(payload.reply_to) : null;
+    return !owner || owner.anchor_message_id === topic.anchor_message_id;
   });
 }

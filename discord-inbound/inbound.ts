@@ -35,7 +35,7 @@ import { TurnAssembler, type TurnMessage } from "./intake/turns.ts";
 import { Preceding } from "./intake/preceding.ts";
 import { nearbyContext } from "./intake/nearby-context.ts";
 import { Conversations } from "./conversations/conversations.ts";
-import { conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
+import { audienceOf, conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
 import { isTerminalReply } from "./conversations/reply-once.ts";
 import { sweepConversations } from "./conversations/conversation-upkeep.ts";
 import { newerInputPending } from "./conversations/pending-input.ts";
@@ -65,7 +65,7 @@ const conversations = new Conversations(`${requireEnv("DORI_STATE_DIR")}/discord
 for (const row of conversations.resolveLegacy(Date.now())) {
   console.log(monitorLine(`INBOUND_CONVERSATION_MIGRATED ${JSON.stringify({
     channel_id: row.channel_id, user_id: row.user_id, opened_at: row.opened_at, topic: row.topic, outcome: "other",
-    read: `helio conversation reopen ${row.channel_id} ${row.user_id}`,
+    read: `helio conversation reopen ${row.anchor_message_id}`,
   })}`));
 }
 // When the owner last posted in each channel, from live events and catch-up pages: owner mentions are
@@ -276,11 +276,10 @@ function repliedTo(msg: IncomingMessage) {
   return { status: "parent_only", messages: [describeMessage(withoutBlocked(parent), 24_000).entry] };
 }
 
-async function conversationContext(msg: IncomingMessage) {
-  const pinged = cfg.botId !== undefined && (msg.mentions?.some((user) => user.id === cfg.botId) === true ||
-    msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`));
+async function conversationContext(msg: IncomingMessage, inbound: Inbound) {
   const conversation = conversationSnapshot(conversations, msg.channel_id, msg.author.id, Date.now(),
-    { reply_to: msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id, pinged });
+    { reply_to: msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id, pinged: inbound.pinged === true },
+    { channel: msg.channel_id, audience: audienceOf({ ...inbound, guild_id: msg.guild_id ?? null }) });
   const previous = (conversation?.transcript ?? [])
     .filter((entry) => BigInt(entry.message_id) < BigInt(msg.id));
   return {
@@ -295,11 +294,11 @@ function recordHelioReply(msg: IncomingMessage): void {
   const reference = msg.message_reference;
   if (!reference?.message_id || reference.type === 1 ||
       (reference.channel_id && reference.channel_id !== msg.channel_id)) return;
-  for (const conversation of conversations.list().filter((row) => row.channel_id === msg.channel_id)) {
-    if (conversation.anchor_message_id === reference.message_id ||
-        conversations.belongs(conversation, reference.message_id)) {
-      conversations.append(msg.channel_id, conversation.user_id, describeMessage(msg, 10000).entry, Date.parse(msg.timestamp));
-    }
+  // Helio's reply joins the topic of the message it answers, wherever that topic started.
+  const topic = conversations.topicOfMessage(reference.message_id);
+  if (topic) {
+    conversations.append(topic.channel_id, topic.user_id, describeMessage(msg, 10000).entry, Date.parse(msg.timestamp),
+      { channel: msg.channel_id, audience: conversations.audienceIn(msg.channel_id) });
   }
 }
 
@@ -416,7 +415,7 @@ async function enrich(msg: IncomingMessage, inbound: Inbound, staged: Inbound & 
     return;
   }
   const reply_context = inbound.channel_policy === "trusted" ? await replyContext(msg, fetchReply) : repliedTo(msg);
-  const conversation = await conversationContext(msg);
+  const conversation = await conversationContext(msg, inbound);
   const assembled = {
     ...staged, ...body, preparation_complete: true,
     ...(reply_context ? { reply_context } : {}), ...(conversation ? { conversation } : {}),
@@ -580,12 +579,14 @@ enqueue("catch-up", async () => {
       hasNewInput: row => newerInputPending(delivery.pending("inbound"), conversations, row,
         [row.latest_input_id ?? row.anchor_message_id]),
       canContact: async (row, guild) => {
-        if (blockedAuthor(row.user_id)) return false;
-        if (!guild) return row.user_id === cfg.ownerId || cfg.trustedIds?.has(row.user_id) === true;
-        if (cfg.scopeCategory && !await insideCategory(row.channel_id, cfg.scopeCategory, channelInfo)) return false;
-        if (await insideAllowed(row.channel_id, cfg.ignoredChannels ?? new Set(), parentOf) ||
-            await insideAllowed(row.channel_id, cfg.blockedChannels ?? new Set(), parentOf)) return false;
-        return insideAllowed(row.channel_id, cfg.allowed, parentOf);
+        // The person Helio's question waits on, in the channel where it was asked.
+        const person = row.waiting_on_user ?? row.user_id, where = row.question_channel_id ?? row.channel_id;
+        if (blockedAuthor(person)) return false;
+        if (!guild) return person === cfg.ownerId || cfg.trustedIds?.has(person) === true;
+        if (cfg.scopeCategory && !await insideCategory(where, cfg.scopeCategory, channelInfo)) return false;
+        if (await insideAllowed(where, cfg.ignoredChannels ?? new Set(), parentOf) ||
+            await insideAllowed(where, cfg.blockedChannels ?? new Set(), parentOf)) return false;
+        return insideAllowed(where, cfg.allowed, parentOf);
       },
     });
     await sweepWorking({ store: conversations, delivery, rest, now: Date.now(), warn });

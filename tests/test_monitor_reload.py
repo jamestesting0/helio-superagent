@@ -2,6 +2,7 @@ import os
 import selectors
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -243,7 +244,7 @@ class MonitorReloadTests(unittest.TestCase):
                                    "helio_plan_request_cli.py", "helio_plan_requests.py", "helio_approval.py",
                                    "helio_plan_source.py", "helio_runtime_policy.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
-                    for relative in ("conversations/followups.sql", "delivery/plan-requests.sql"):
+                    for relative in ("delivery/plan-requests.sql",):
                         destination = self.home / "discord-inbound" / relative
                         destination.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(ROOT / "discord-inbound" / relative, destination)
@@ -251,10 +252,14 @@ class MonitorReloadTests(unittest.TestCase):
                 argv = [sys.executable, str(script)]
                 if name == "followups":
                     self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*|*"pr list"*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
-                    subprocess.run(
-                        [*argv, "add", "--issue", "1", "--channel", "100", "--user", "7", "--reply-to", "9"],
-                        env=self.env, capture_output=True, check=True, timeout=3,
-                    )
+                    # One open topic subscription, created through the real conversation schema.
+                    subprocess.run(["bun", str(ROOT / "discord-inbound/conversation.ts"), "migrate"],
+                                   env=self.env, capture_output=True, check=True, timeout=60)
+                    with sqlite3.connect(self.home / "state/discord-conversations.sqlite") as db:
+                        db.execute("""INSERT INTO conversations(channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status)
+                            VALUES('100','7',1,1,'9','report','open')""")
+                        db.execute("INSERT INTO topic_participants VALUES('9','7',0,'opened','100','9',1)")
+                        db.execute("INSERT INTO followups(repo,issue,anchor_message_id,kind,created_at) VALUES('jamestesting0/elo-bot',1,'9','bug',0)")
                     argv.extend(["watch", "--interval", "1800"])
                 else:
                     (helpers / "helio_runtime_policy.py").write_text((ROOT / "scripts/helio_runtime_policy.py").read_text())

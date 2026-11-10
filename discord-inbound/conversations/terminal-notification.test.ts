@@ -67,10 +67,8 @@ test.each([
     const before = { conversations: store.list(), working: store.openWorkingRows(),
       pending: delivery.pending("inbound").map(row => row.id) };
     const db = new Database(path);
-    db.exec(await Bun.file(new URL("./followups.sql", import.meta.url)).text());
-    db.run(`INSERT INTO followups(repo,issue,user_id,channel_id,reply_to,kind,created_at,delivery_version,status,announcement)
-      VALUES('o/r',2,'66',?,?,'bug',0,1,'announced',?)`,
-      [normal, target, JSON.stringify({ event: "FOLLOWUP_DONE", issue: 2 })]);
+    db.run(`INSERT INTO followups(repo,issue,anchor_message_id,kind,created_at,status,announcement)
+      VALUES('o/r',2,?,'bug',0,'announced',?)`, [target, JSON.stringify({ event: "FOLLOWUP_DONE", issue: 2 })]);
     let packet: Record<string, unknown> = {};
     const rest: Rest = async <T>(route: string, init?: Parameters<Rest>[1]) => {
       if (route === `/channels/${normal}`) return { id: normal, type: 0, guild_id: "300" } as T;
@@ -86,10 +84,10 @@ test.each([
       throw new Error(`Unexpected terminal echo route ${route}`);
     };
     try {
-      const id = await terminalNotification({ state, repo: "o/r", issue: 2, user: "66", text: "Issue #2 was resolved.",
+      const outcomes = await terminalNotification({ state, repo: "o/r", issue: 2, topic: target, text: "Issue #2 was resolved.",
         rest, config: () => filterConfig({ DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: normal,
           DORI_DISCORD_NORMAL_CHANNELS: normal }), now: () => T0 + 120_000 });
-      expect(id).toBe("9902");
+      expect(outcomes).toEqual([{ channel_id: normal, disposition: "sent", reply_id: "9902" }]);
       if (!beforeResponse) await ingestTerminalEcho(state, packet);
       expect({ conversations: store.list(), working: store.openWorkingRows(),
         pending: delivery.pending("inbound").map(row => row.id) }).toEqual(before);
@@ -99,52 +97,47 @@ test.each([
   });
 });
 
-test("a terminal notification leaves a resolved report and a different active question untouched", async () => {
-  await withStores(async (delivery, store, path) => {
-    const state = dirname(path), target = idAt(T0), newer = idAt(T0 + 60_000);
-    store.open(normal, "66", target, "Original report", T0);
-    store.close(normal, "66", "issue", T0 + 1, "https://github.com/o/r/issues/2");
-    const active = store.open(normal, "66", newer, "Different question", T0 + 60_000);
-    store.applyReply(active, { disposition: "question", waiting_on: "Which match?" }, T0 + 60_001, "question");
-    store.openWorking(normal, "66", newer, T0 + 60_000);
-    store.claimWorking(normal, "66", newer, T0 + 60_000);
-    stage(delivery, newer);
+test("participants hear the outcome once per channel, with the rest mentioned, and a retry posts nothing", async () => {
+  await withStores(async (_delivery, store, path) => {
+    const state = dirname(path), other = `${normal.slice(0, -3)}777`;
+    const anchor = idAt(T0), second = idAt(T0 + 1000), elsewhere = idAt(T0 + 2000);
+    store.open(normal, "66", anchor, "Queue stuck", T0);
+    store.join(anchor, "77", "answered", normal, second, T0 + 1000);
+    store.join(anchor, "55", "answered", other, elsewhere, T0 + 2000);
+    store.close(normal, "66", "issue", T0 + 3000, "https://github.com/o/r/issues/2");
     const db = new Database(path);
-    db.exec(await Bun.file(new URL("./followups.sql", import.meta.url)).text());
-    db.run(`INSERT INTO followups(repo,issue,user_id,channel_id,reply_to,kind,created_at,delivery_version)
-      VALUES('o/r',2,'66',?,?,'bug',0,1)`, [normal, target]);
-    db.run("UPDATE followups SET status='announced',announcement=?", [JSON.stringify({ event: "FOLLOWUP_DONE", issue: 2 })]);
-    const before = {
-      conversations: store.list(), working: store.openWorkingRows(), pending: delivery.pending("inbound"),
-    };
-    const calls: string[] = [];
+    db.run(`INSERT INTO followups(repo,issue,anchor_message_id,kind,created_at,status,announcement)
+      VALUES('o/r',2,?,'bug',0,'announced',?)`, [anchor, JSON.stringify({ event: "FOLLOWUP_LIVE", issue: 2 })]);
+    const authors: Record<string, string> = { [second]: "77", [elsewhere]: "55" };
+    const posts: { channel: string; body: { content: string; message_reference: { message_id: string };
+      allowed_mentions: { replied_user: boolean; users: string[] } } }[] = [];
     const rest: Rest = async <T>(route: string, init?: Parameters<Rest>[1]) => {
-      calls.push(`${init?.method ?? "GET"} ${route}`);
-      if (route === `/channels/${normal}`) return { id: normal, type: 0, guild_id: "1" } as T;
-      if (route === `/channels/${normal}/messages/${target}`) return { id: target, channel_id: normal, author: { id: "66" } } as T;
-      if (route === `/channels/${normal}/messages` && init?.method === "POST") {
-        expect(init.body).toMatchObject({ message_reference: { message_id: target, fail_if_not_exists: true },
-          allowed_mentions: { parse: [], replied_user: true, users: ["66"] } });
-        return { id: "9902" } as T;
+      const channel = /^\/channels\/(\d+)/.exec(route)?.[1] ?? "";
+      if (route === `/channels/${channel}`) return { id: channel, type: 0, guild_id: "300" } as T;
+      const read = /\/messages\/(\d+)$/.exec(route)?.[1];
+      if (read && authors[read]) return { id: read, channel_id: channel, author: { id: authors[read] } } as T;
+      if (route === `/channels/${channel}/messages` && init?.method === "POST") {
+        posts.push({ channel, body: init.body as never });
+        return { id: String(9900 + posts.length) } as T;
       }
       throw new Error(`Unexpected notification request ${route}`);
     };
-    const config = () => filterConfig({ DORI_DISCORD_OWNER_ID: "100", DORI_DISCORD_ALLOWED: normal,
-      DORI_DISCORD_NORMAL_CHANNELS: normal });
+    const notify = () => terminalNotification({ state, repo: "o/r", issue: 2, topic: anchor, text: "Issue #2: the fix is live.",
+      rest, config: () => filterConfig({ DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: `${normal},${other}`,
+        DORI_DISCORD_NORMAL_CHANNELS: `${normal},${other}` }), now: () => T0 + 120_000 });
     try {
-      expect(await terminalNotification({ state, repo: "o/r", issue: 2, user: "66",
-        text: "Issue #2 was resolved.", rest, config, now: () => T0 + 120_000 })).toBe("9902");
-      expect({ conversations: store.list(), working: store.openWorkingRows(), pending: delivery.pending("inbound") })
-        .toEqual(before);
-      expect(calls.filter(call => call.startsWith("POST "))).toHaveLength(1);
-      expect(db.query("SELECT status,delivered_reply_id FROM followups").get())
-        .toEqual({ status: "done", delivered_reply_id: "9902" });
-      expect(followupStatus(path, normal, "66", T0 + 120_000)).toEqual([{
-        issue: "https://github.com/o/r/issues/2", subscription_state: "done",
-        source_target: target, delivered_reply_id: "9902", observed_event: "FOLLOWUP_DONE",
-        observation_age_seconds: null, read: "helio followups show 2",
-      }]);
+      expect(await notify()).toEqual([
+        { channel_id: normal, disposition: "sent" as const, reply_id: "9901" }, { channel_id: other, disposition: "sent" as const, reply_id: "9902" },
+      ].sort((a, b) => a.channel_id.localeCompare(b.channel_id)));
+      const here = posts.find(post => post.channel === normal)!, there = posts.find(post => post.channel === other)!;
+      // The newest message in each channel is the target; everyone else there is mentioned.
+      expect([here.body.message_reference.message_id, here.body.content, here.body.allowed_mentions])
+        .toEqual([second, "<@66> Issue #2: the fix is live.", expect.objectContaining({ replied_user: true, users: ["66"] })]);
+      expect([there.body.message_reference.message_id, there.body.content]).toEqual([elsewhere, "Issue #2: the fix is live."]);
+      expect(db.query("SELECT status FROM followups").get()).toEqual({ status: "done" });
+      await notify();
+      expect(posts).toHaveLength(2);
+      expect(followupStatus(path, anchor, T0 + 120_000)[0]?.deliveries.map(group => group.disposition)).toEqual(["sent", "sent"]);
     } finally { db.close(); }
-    expect(Bun.file(join(state, "reply-sends.sqlite")).size).toBeGreaterThan(0);
   });
 });

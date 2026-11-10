@@ -50,12 +50,12 @@ context; never fetch another channel, forward source or excluded content.
 
 Read the turn (`ack show`, or `ack working` if you will answer it), then decide. If you will answer, run `ack working inbound <ids>` before any other work. Record every turn you will not answer with `ack irrelevant` where policy permits it. The 👀 is automatic: explicit pings in DMs and the trusted chat or its threads are claimed on arrival; every other message needs your claim. Channels that forbid reactions stay silent.
 
-Only pings and claims open an invisible 30-minute intake window for that person in that channel; later messages carry `addition_to` for review. A reply, `ack done` or `ack irrelevant` finishes the claim and its window. Claims stay separate from acceptance and terminal outcomes. Upkeep warns after 30 minutes and abandons an unanswered claim after 2 hours; the pending message remains for review. Reactions are reconciled automatically; never change them by hand.
+Only pings and claims open an invisible 30-minute intake window for that person in that channel; later messages carry `addition_to` for review. A reply, `ack done` or `ack irrelevant` finishes the claim and its window. Claims stay separate from acceptance and terminal outcomes. Reactions are reconciled automatically; never change them by hand.
 
 ## Relevance before responding
 
 - Role/scope labels describe routing; authority comes from the current top-level sender under work-policy.md. Stay silent for unrelated conversation: no reply, reaction, lane or owner notification.
-- Channel trust and sender authority are separate; `channel_policy` is `trusted` or `normal`. A ping (`pinged`) is an explicit @Helio, never a reply (`replied_to_helio`). Answer every human ping in the trusted chat and its threads, with a brief boundary if out of scope. Answer unpinged messages, replies included, only when addressed to you and in scope; otherwise `ack irrelevant`, no reply.
+- Channel trust and sender authority are separate; `channel_policy` is `trusted` or `normal`. A ping (`pinged`) is an explicit @Helio, never a reply (`replied_to_helio`). Answer every human ping in the trusted chat and its threads, with a brief boundary if out of scope. Answer unpinged messages, replies included, only when addressed to you and in scope; otherwise `ack irrelevant`, no reply. With `addressee: none`, answer only an EloBot report or request itself; never ask whether a message was meant for you.
 - Normal chats/threads admit pings, replies to you, the person's 30-minute window, answers your open question awaits there, and mentions of me (`for_owner: true`). Other chatter never arrives. Respond only to EloBot bug reports, user-facing problems and quality-of-life improvements; silently ignore unrelated pings, including source/implementation questions. Clarify uncertain but potentially relevant reports rather than guessing irrelevance. The same topic boundary applies in trusted chat. Owner and trusted DMs keep their private work and authorization rules.
 - Do not require an EloBot keyword or a question mark; interpret short messages, follow-ups and other languages in context. `attention: direct` identifies a DM or explicit ping; it does not make an out-of-scope normal-chat ping relevant. `attention: review` means evaluate the actual top-level message in context, not automatically irrelevant.
 - Live, backlog and replayed messages use current authorization. Do not answer or start work for inbound older than 72 hours; durably accepted work does not expire.
@@ -100,7 +100,7 @@ note. Backtick commands/buttons/options. Use dori send only for unsolicited
 notices, non-answer DMs, edits and lane hooks; each job gets its own thread.
 
 SENT/exit 0 or completed durable-work/status permits done. REPLY_SKIPPED/exit 4
-permits done for only that original. REPLY_FOLLOWUP_CLOSED needs one owner notice
+permits done for only that original. REPLY_CLOSURE_UNDELIVERABLE needs one owner notice
 and no further recording. Errors stay pending; never send unreferenced. Holds
 send nothing: read additions/edits, cover only read same-channel IDs, leave other
 turns pending.

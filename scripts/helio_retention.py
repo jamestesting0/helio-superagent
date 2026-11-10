@@ -73,7 +73,7 @@ RULES: tuple[Rule, ...] = (
            ("DELETE FROM {t} WHERE quarantined_at < datetime(:now_s, 'unixepoch', '-30 days')".format(t=table),))
       for table in ("context_quarantine", "inbound_quarantine")),
     Rule("discord-conversations.sqlite", "conversations", "owned", "Conversation upkeep archives resolved rows at 7 days and deletes them 30 days after resolving."),
-    Rule("discord-conversations.sqlite", "transcript", "owned", "Deleted when its conversation resolves; open conversations are unresolved work."),
+    Rule("discord-conversations.sqlite", "transcript", "owned", "Text is erased when its topic resolves and message IDs when it archives; open topics are unresolved work."),
     Rule("discord-conversations.sqlite", "working", "owned", "Claims are pruned 72 hours after they close."),
     Rule("discord-conversations.sqlite", "conversation_notices", "owned", "Notice IDs are pruned after 37 days."),
     Rule("discord-conversations.sqlite", "conversation_notice_intents", "receipt", "Durable notice identities prevent duplicate sends; uncertain outcomes remain recoverable."),
@@ -89,6 +89,12 @@ RULES: tuple[Rule, ...] = (
          (f"DELETE FROM oracle_events WHERE handled=1 AND coalesce(json_extract(data,'$.at'),0) < :now_s - {DERIVED_DAYS * DAY_S}",)),
     Rule("discord-conversations.sqlite", "followups", "derived", "Delivered follow-ups are kept 180 days.",
          (f"DELETE FROM followups WHERE status='done' AND created_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
+    Rule("discord-conversations.sqlite", "followup_groups", "receipt", "Per-channel deliveries stay with their subscription.",
+         ("DELETE FROM followup_groups WHERE NOT EXISTS (SELECT 1 FROM followups f WHERE f.repo=followup_groups.repo "
+          "AND f.issue=followup_groups.issue AND f.anchor_message_id=followup_groups.anchor_message_id)",)),
+    Rule("discord-conversations.sqlite", "followups_legacy", "derived", "Delivered person-keyed history is kept 180 days.",
+         (f"DELETE FROM followups_legacy WHERE status='done' AND created_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
+    Rule("discord-conversations.sqlite", "topic_participants", "owned", "Removed with their topic."),
     Rule("discord-prompts.sqlite", "prompts", "raw_chat", "Settled prompts are deleted after 30 days; open, pending and unused confirmations stay.",
          ("DELETE FROM prompts WHERE status NOT IN ('sending','delivery_unknown','open','pending') "
           f"AND NOT (status='confirmed' AND used_at IS NULL) AND created_at < :now_ms - {RAW_DAYS * DAY_MS}",)),

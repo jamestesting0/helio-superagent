@@ -35,6 +35,8 @@ export class RuntimeRecords {
       row.question_started_at + (row.nudged_at === null ? nudgeHours : timeoutHours) * 3_600_000;
     const fields: DisplayField[] = [
       { name: "State", value: stateName(state) }, { name: "User", value: user },
+      ...(detail ? [{ name: "Participants", value: conversations.participants(row.anchor_message_id)
+        .map(person => `<@${person.user_id}>${person.notify ? "" : " (muted)"}`).join(" ") || "None" }] : []),
       { name: "Channel", value: `<#${row.channel_id}>` }, { name: "Original message", value: source },
       ...(["request", "decided", "waiting_on", "result"] as const).flatMap(name =>
         row[name] ? [{ name: ({ request: "Request", decided: "Decision", waiting_on: "Waiting on", result: "Result" })[name], value: row[name] }] : []),

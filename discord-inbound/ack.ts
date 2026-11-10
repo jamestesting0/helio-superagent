@@ -8,7 +8,7 @@ import { sweepExpired } from "./delivery/expiry.ts";
 import { cleanupIgnored } from "./delivery/ignored-cleanup.ts";
 import { contextReplayAllowed } from "./learning/context-replay.ts";
 import { Conversations } from "./conversations/conversations.ts";
-import { conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
+import { audienceOf, conversationEntry, conversationSnapshot } from "./conversations/conversation-context.ts";
 import { finishWorking, showWorking } from "./conversations/working.ts";
 import { contextSummary, inboundSummary, object } from "./delivery/monitor-summary.ts";
 import { contextSections, detailPage, renderTurn, SECTION_NAMES } from "./delivery/context-render.ts";
@@ -193,8 +193,9 @@ try {
       if (stream === "inbound" && last && typeof last.channel_id === "string" && typeof last.author_id === "string" && typeof last.message_id === "string") {
         const lastId = last.message_id;
         const routing = { ...(typeof last.reply_to === "string" ? { reply_to: last.reply_to } : {}), pinged: last.pinged === true };
-        const conversation = conversationSnapshot(store, last.channel_id, last.author_id, Date.now(), routing);
-        if (conversation || store.latest(last.channel_id, last.author_id)) {
+        const conversation = conversationSnapshot(store, last.channel_id, last.author_id, Date.now(), routing,
+          { channel: last.channel_id, audience: audienceOf(last) });
+        if (conversation) {
           const saved = last.conversation ? object(last.conversation) : {};
           last.conversation = {
             ...conversation, recent: saved.recent, context_status: saved.context_status, context_read: saved.context_read,
@@ -222,7 +223,8 @@ try {
           for (const message of messages) {
             if (typeof message.channel_id === "string" && typeof message.author_id === "string" &&
                 message.role !== "BOT_BUG_REPORT" && message.scope !== "evidence-only") {
-              store.claim(message.channel_id, message.author_id, conversationEntry(message), Date.now());
+              store.claim(message.channel_id, message.author_id, conversationEntry(message), Date.now(),
+                { channel: message.channel_id, audience: audienceOf(message) });
             }
           }
           for (const message of messages) {

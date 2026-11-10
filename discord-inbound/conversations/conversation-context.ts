@@ -1,4 +1,4 @@
-import type { Conversation, Conversations, ConversationEntry } from "./conversations.ts";
+import type { Audience, Conversation, Conversations, ConversationEntry, Placement } from "./conversations.ts";
 
 /** The delivery boundary already verified identity; transcript fields are parsed here once. */
 export function conversationEntry(message: Readonly<Record<string, unknown>>): ConversationEntry {
@@ -18,32 +18,61 @@ export function conversationEntry(message: Readonly<Record<string, unknown>>): C
   };
 }
 
+/** Who may read a message: an owner/trusted DM, the trusted chat and its threads, or an untrusted chat. */
+export function audienceOf(message: Readonly<Record<string, unknown>>): Audience {
+  const origin = message.discord_origin && typeof message.discord_origin === "object" ? message.discord_origin as Record<string, unknown> : {};
+  const guild = "guild_id" in message ? message.guild_id : origin.guild_id;
+  if (guild === undefined || guild === null) return message.channel_policy === "normal" ? "public" : "dm";
+  return message.channel_policy === "trusted" ? "staff" : "public";
+}
+
 /** How a new message relates to its conversation; a fresh ping may be a new topic for Helio to open. */
 function relation(store: Conversations, row: Conversation, message: { readonly reply_to?: string; readonly pinged?: boolean }) {
   if (message.reply_to && store.belongs(row, message.reply_to)) return "reply";
   return message.pinged ? "new_ping" : "follow_up";
 }
 
+/** A short view of another topic: never its transcript, only what every participant may see. */
+function summary(store: Conversations, row: Conversation) {
+  const people = store.participants(row.anchor_message_id);
+  return { topic_id: row.anchor_message_id, title: row.topic, state: store.state(row), issue: row.issue,
+    waiting_on_user: store.state(row) === "waiting_on_requester" ? row.waiting_on_user ?? row.user_id : null,
+    participants: people.map(person => person.user_id),
+    places: [...new Set([row.channel_id, ...people.map(person => person.last_channel_id)])] };
+}
+
+/**
+ * What Helio needs to continue a topic. The binding is explicit for a reply into a topic or an answer Helio's
+ * question waits on; an unthreaded continuation is a candidate. A newcomer joins only when Helio's topic reply
+ * answers or covers them. Transcript text is limited to what this place's audience may see.
+ */
 export function conversationSnapshot(store: Conversations, channel: string, user: string, now: number,
-  message?: { readonly reply_to?: string; readonly pinged?: boolean }) {
+  message?: { readonly reply_to?: string; readonly pinged?: boolean }, viewer: Placement = { channel, audience: "public" }) {
   const row = message ? store.forReply(channel, user, message.reply_to) : store.get(channel, user);
   const recent = store.recentlyResolved(channel, user, now);
-  if (!row && !recent) return undefined;
+  const others = store.topicsFor(user).filter(other => other.anchor_message_id !== row?.anchor_message_id);
+  if (!row && !recent && !others.length) return undefined;
+  const awaited = row && store.state(row) === "waiting_on_requester" && (row.waiting_on_user ?? row.user_id) === user &&
+    (row.question_channel_id ?? row.channel_id) === channel;
+  const via = !row ? undefined : message?.reply_to ? "reply" : awaited ? "answer" : "continuation";
   return {
     ...(row ? {
       request: row.request, decided: row.decided, waiting_on: row.waiting_on, result: row.result,
       job: row.job, issue: row.issue, revision: row.revision, reply_disposition: row.reply_disposition,
       ...(message ? { relation: relation(store, row, message) } : {}),
-      ...(message ? { topic_binding: relation(store, row, message) === "reply" ? "explicit" : "candidate" } : {}),
-      topic: row.topic, summary: row.summary || row.topic, state: store.state(row),
+      ...(message ? { topic_binding: via === "continuation" ? "candidate" : "explicit", binding_via: via } : {}),
+      joins_on_reply: !store.isParticipant(row.anchor_message_id, user),
+      topic_id: row.anchor_message_id, topic: row.topic, summary: row.summary || row.topic, state: store.state(row),
       anchor_message_id: row.anchor_message_id, opened_at: new Date(row.opened_at).toISOString(),
       last_activity: row.last_activity, hold_reason: row.hold_reason,
-      transcript: store.transcriptOf(row),
+      participants: summary(store, row).participants, places: summary(store, row).places,
+      transcript: store.transcriptOf(row, viewer),
     } : { transcript: [] }),
+    ...(others.length ? { other_topics: others.map(other => summary(store, other)) } : {}),
     ...(recent ? { recently_resolved: {
-      topic: recent.topic, summary: recent.summary || recent.topic, outcome: recent.outcome, issue: recent.issue,
-      read: `helio conversation reopen ${channel} ${user}`,
+      topic_id: recent.anchor_message_id, topic: recent.topic, summary: recent.summary || recent.topic, outcome: recent.outcome, issue: recent.issue,
+      read: `helio conversation reopen ${recent.anchor_message_id}`,
     } } : {}),
-    read_more: `helio conversation show ${channel} ${user}${row ? ` --topic ${row.anchor_message_id}` : ""}`,
+    read_more: row ? `helio conversation show ${row.anchor_message_id}` : `helio conversation list --user ${user}`,
   };
 }

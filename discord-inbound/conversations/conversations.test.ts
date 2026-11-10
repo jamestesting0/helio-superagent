@@ -65,9 +65,11 @@ test("resolution removes transcript text and keeps summary, outcome, issue and u
     const closed = store.close("100", "99", "issue", NOW + 1000, "https://github.com/o/r/issues/3");
     expect([closed.status, closed.summary, closed.outcome, closed.issue])
       .toEqual(["resolved", "Confirmed queue failure", "issue", "https://github.com/o/r/issues/3"]);
-    expect(db.query("SELECT * FROM transcript").all()).toEqual([]);
+    // Text goes at resolution; message IDs stay so a later reply still finds the topic.
+    expect(db.query("SELECT message_id,entry FROM transcript").all()).toEqual([{ message_id: "10", entry: null }]);
     expect(db.query("SELECT * FROM other_tool").all()).toEqual([{ value: "preserved" }]);
-    expect(db.query("SELECT name FROM sqlite_master WHERE name='followups'").all()).toEqual([]);
+    // Closing with an issue records it on the topic; only linking it (setState/applyReply) subscribes.
+    expect(db.query("SELECT count(*) AS n FROM followups").get()).toEqual({ n: 0 });
   });
 });
 

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { policyValues } from "../intake/runtime-policy.ts";
 
 /** Every TypeScript writer enters through this migration, including short-lived commands. */
 export function conversationDatabase(path: string, now: number, busyMs = 5000): Database {
@@ -131,5 +132,114 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
       id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL
     ); PRAGMA user_version=6`);
   }).immediate();
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 7) return;
+    sharedTopics(db, now);
+    db.exec("PRAGMA user_version=7");
+  }).immediate();
   return db;
+}
+
+/**
+ * Topics are shared: the anchor message identifies a topic, its opener and origin channel stay as the row key, and
+ * participants, message channels and audiences are recorded separately. Follow-ups subscribe a topic, not a person.
+ */
+function sharedTopics(db: Database, now: number): void {
+  const normal = new Set((policyValues().DORI_DISCORD_NORMAL_CHANNELS ?? "").split(",").map(id => id.trim()).filter(Boolean));
+  // Rows sharing an anchor were one subject; keep the newest and move the others' transcript into it.
+  for (const dup of db.query<{ channel_id: string; user_id: string; opened_at: number; anchor_message_id: string }, []>(
+    `SELECT c.channel_id,c.user_id,c.opened_at,c.anchor_message_id FROM conversations c WHERE EXISTS (
+      SELECT 1 FROM conversations n WHERE n.anchor_message_id=c.anchor_message_id AND n.rowid>c.rowid)`).all()) {
+    const keep = db.query<{ channel_id: string; user_id: string; opened_at: number }, [string]>(
+      "SELECT channel_id,user_id,opened_at FROM conversations WHERE anchor_message_id=? ORDER BY rowid DESC LIMIT 1").get(dup.anchor_message_id)!;
+    db.run(`UPDATE OR IGNORE transcript SET channel_id=?,user_id=?,opened_at=? WHERE channel_id=? AND user_id=? AND opened_at=?`,
+      [keep.channel_id, keep.user_id, keep.opened_at, dup.channel_id, dup.user_id, dup.opened_at]);
+    db.run("DELETE FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?", [dup.channel_id, dup.user_id, dup.opened_at]);
+    db.run(`CREATE TABLE IF NOT EXISTS topic_participants_seed (anchor TEXT, user_id TEXT, opened_at INTEGER, channel_id TEXT)`);
+    db.run("INSERT INTO topic_participants_seed VALUES (?,?,?,?)", [dup.anchor_message_id, dup.user_id, dup.opened_at, dup.channel_id]);
+    db.run("DELETE FROM conversations WHERE channel_id=? AND user_id=? AND opened_at=?", [dup.channel_id, dup.user_id, dup.opened_at]);
+  }
+  db.exec(`CREATE UNIQUE INDEX conversations_anchor ON conversations(anchor_message_id);
+    ALTER TABLE conversations ADD COLUMN waiting_on_user TEXT;
+    ALTER TABLE conversations ADD COLUMN question_channel_id TEXT;
+    ALTER TABLE conversations ADD COLUMN question_message_id TEXT;
+    ALTER TABLE conversations ADD COLUMN merged_into TEXT;
+    UPDATE conversations SET waiting_on_user=user_id,question_channel_id=channel_id,
+      question_message_id=coalesce(latest_input_id,anchor_message_id)
+      WHERE reply_disposition='question' AND question_started_at IS NOT NULL;
+    CREATE TABLE topic_participants (
+      anchor_message_id TEXT NOT NULL, user_id TEXT NOT NULL, joined_at INTEGER NOT NULL,
+      via TEXT NOT NULL CHECK(via IN ('opened','answered','covered','lead','merge','issue')),
+      last_channel_id TEXT NOT NULL, last_message_id TEXT NOT NULL, notify INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY(anchor_message_id,user_id));
+    INSERT INTO topic_participants
+      SELECT anchor_message_id,user_id,opened_at,'opened',channel_id,coalesce(latest_input_id,anchor_message_id),1 FROM conversations;
+    CREATE TABLE IF NOT EXISTS topic_participants_seed (anchor TEXT, user_id TEXT, opened_at INTEGER, channel_id TEXT);
+    INSERT OR IGNORE INTO topic_participants SELECT anchor,user_id,opened_at,'merge',channel_id,anchor,1 FROM topic_participants_seed;
+    DROP TABLE topic_participants_seed;
+    CREATE TABLE transcript_next (
+      message_id TEXT NOT NULL, channel_id TEXT NOT NULL, user_id TEXT NOT NULL, opened_at INTEGER NOT NULL,
+      author_id TEXT NOT NULL, sent_at TEXT, entry TEXT, message_channel_id TEXT NOT NULL,
+      audience TEXT NOT NULL CHECK(audience IN ('public','staff','dm')), is_helio INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(message_id,channel_id,user_id,opened_at));`);
+  const rows = db.query<{ rowid: number; channel_id: string; entry: string }, []>("SELECT rowid,channel_id,entry FROM transcript ORDER BY rowid").all();
+  for (const row of rows) {
+    const helio = (() => { try { return JSON.parse(row.entry)?.bot === true; } catch { return false; } })();
+    db.run(`INSERT INTO transcript_next SELECT message_id,channel_id,user_id,opened_at,author_id,sent_at,entry,channel_id,?,?
+      FROM transcript WHERE rowid=?`, [normal.has(row.channel_id) ? "public" : "staff", helio ? 1 : 0, row.rowid]);
+  }
+  db.exec(`DROP TABLE transcript;
+    ALTER TABLE transcript_next RENAME TO transcript;
+    CREATE INDEX transcript_message ON transcript(message_id);
+    CREATE UNIQUE INDEX transcript_person ON transcript(message_id) WHERE is_helio=0;
+    CREATE INDEX participants_user ON topic_participants(user_id);`);
+  topicFollowups(db, now);
+}
+
+/** Person-keyed follow-ups become topic subscriptions; delivered rows stay as history. */
+function topicFollowups(db: Database, now: number): void {
+  const legacy = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='followups'").get() !== null;
+  if (legacy) db.exec("ALTER TABLE followups RENAME TO followups_legacy");
+  db.exec(`CREATE TABLE followups (
+      repo TEXT NOT NULL, issue INTEGER NOT NULL, anchor_message_id TEXT NOT NULL, kind TEXT, created_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','announced','done')), announcement TEXT, observed_at INTEGER,
+      PRIMARY KEY(repo,issue,anchor_message_id));
+    CREATE TABLE followup_groups (
+      repo TEXT NOT NULL, issue INTEGER NOT NULL, anchor_message_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+      target TEXT NOT NULL, users TEXT NOT NULL, reply_id TEXT, disposition TEXT,
+      PRIMARY KEY(repo,issue,anchor_message_id,channel_id));`);
+  if (!legacy) return;
+  const columns = new Set(db.query<{ name: string }, []>("PRAGMA table_info(followups_legacy)").all().map(row => row.name));
+  // A pre-subscription table names no person or message, so its rows stay as history only.
+  if (!["repo", "user_id", "channel_id", "reply_to"].every(name => columns.has(name))) return;
+  // Without a delivery_version column an announcement has no delivery proof; it stays history, never re-announced.
+  const version = columns.has("delivery_version") ? "delivery_version" : "0";
+  const open = db.query<{ repo: string; issue: number; user_id: string; channel_id: string; reply_to: string; kind: string;
+    created_at: number; status: string; announcement: string | null; observed_at: number | null }, []>(
+    `SELECT repo,issue,user_id,channel_id,reply_to,kind,created_at,status,${columns.has("announcement") ? "announcement" : "NULL"} AS announcement,
+      ${columns.has("observed_at") ? "observed_at" : "NULL"} AS observed_at FROM followups_legacy
+      WHERE status='open' OR (status='announced' AND ${version}=1)`).all();
+  for (const row of open) {
+    const url = `https://github.com/${row.repo}/issues/${row.issue}`;
+    let anchor = db.query<{ anchor_message_id: string }, [string, string]>(
+      `SELECT c.anchor_message_id FROM conversations c WHERE c.anchor_message_id=? OR EXISTS (SELECT 1 FROM transcript t
+        WHERE t.channel_id=c.channel_id AND t.user_id=c.user_id AND t.opened_at=c.opened_at AND t.message_id=?)`)
+      .get(row.reply_to, row.reply_to)?.anchor_message_id ?? db.query<{ anchor_message_id: string }, [string, string]>(
+      "SELECT anchor_message_id FROM conversations WHERE issue=? AND channel_id=? ORDER BY opened_at DESC LIMIT 1")
+      .get(url, row.channel_id)?.anchor_message_id;
+    if (!anchor) {
+      anchor = row.reply_to;
+      const opened = Math.max(row.created_at * 1000, (db.query<{ opened_at: number | null }, [string, string]>(
+        "SELECT max(opened_at) AS opened_at FROM conversations WHERE channel_id=? AND user_id=?").get(row.channel_id, row.user_id)?.opened_at ?? -1) + 1);
+      db.run(`INSERT INTO conversations (channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status,outcome,closed_at,
+          summary,resolved_at,issue) VALUES (?,?,?,?,?,?,'resolved','issue',?,?,?,?)`,
+      [row.channel_id, row.user_id, opened, opened, anchor, `Issue #${row.issue}`, now, `Issue #${row.issue}`, now, url]);
+    }
+    db.run(`INSERT OR IGNORE INTO topic_participants VALUES (?,?,?,'issue',?,?,1)`,
+      [anchor, row.user_id, row.created_at * 1000, row.channel_id, row.reply_to]);
+    db.run(`INSERT OR IGNORE INTO followups (repo,issue,anchor_message_id,kind,created_at,status,announcement,observed_at)
+      VALUES (?,?,?,?,?,?,?,?)`, [row.repo, row.issue, anchor, row.kind, row.created_at, row.status, row.announcement, row.observed_at]);
+    db.run("DELETE FROM followups_legacy WHERE repo=? AND issue=? AND user_id=?", [row.repo, row.issue, row.user_id]);
+  }
 }

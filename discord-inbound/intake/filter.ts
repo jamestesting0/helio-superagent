@@ -5,6 +5,7 @@ import type { MessageBody } from "../messages/forwarded.ts";
 
 export type Role = "OWNER_REQUEST" | "TRUSTED_REQUEST" | "STAFF_QUESTION" | "BOT_BUG_REPORT";
 export type ChannelPolicy = "normal" | "trusted";
+export type Addressee = "helio" | "other" | "none";
 
 export interface FilterConfig {
   ownerId: string;
@@ -20,6 +21,8 @@ export interface FilterConfig {
   readonly ignoredChannels?: ReadonlySet<string>;
   /** Helio's open question in this channel is waiting on this person. */
   readonly awaitingAnswer?: (channelId: string, userId: string) => boolean;
+  /** The message belongs to an active or recently resolved topic, so a reply to it continues that subject. */
+  readonly topicMessage?: (messageId: string) => boolean;
   readonly workingAnchor?: (channelId: string, userId: string, messageId: string) => string | undefined;
   /** Admit server messages that mention the owner (not Helio), so Helio can answer for the owner. */
   readonly answerForOwner?: boolean;
@@ -47,7 +50,7 @@ export interface IncomingMessage extends MessageBody {
   readonly member?: { readonly nick?: string | null };
   timestamp: string;
   readonly mentions?: readonly { readonly id: string }[];
-  readonly referenced_message?: { readonly author: { readonly id: string } } | null;
+  readonly referenced_message?: { readonly author: { readonly id: string }; readonly content?: string } | null;
   readonly webhook_id?: string;
 }
 
@@ -72,6 +75,8 @@ export interface Inbound {
   /** An explicit `<@Helio>` in the text. A Discord reply-ping is not a ping. */
   readonly pinged?: true;
   readonly replied_to_helio?: true;
+  /** Who the message is for, from its structure: Helio, another person, or nobody in particular. */
+  readonly addressee?: Addressee;
   /** Mentions the owner, not Helio: Helio may answer for the owner; it never authorizes Helio actions. */
   readonly for_owner?: true;
 }
@@ -122,7 +127,12 @@ export async function classify(
 
   const channelPolicy: ChannelPolicy = msg.guild_id === undefined ? "trusted" :
     await insideAllowed(msg.channel_id, cfg.trustedChannels ?? new Set(), parentOf) ? "trusted" : "normal";
-  const { mentioned, additionTo, repliesToHelio, followUp, forOwner } = addressing(msg, cfg, channelPolicy, isBugReport);
+  const { mentioned, additionTo, repliesToHelio, followUp, forOwner, addressee } = addressing(msg, cfg, channelPolicy, isBugReport);
+  // Two people talking to each other in the trusted chat are not talking to Helio.
+  if (channelPolicy === "trusted" && cfg.botId !== undefined && msg.guild_id !== undefined && !isBugReport && !forOwner && addressee === "other") {
+    onIneligible?.();
+    return null;
+  }
   // Unpinged normal-chat input needs a reply to Helio, the person's own working window, or Helio's open question.
   if (channelPolicy === "normal" && !isBugReport && !mentioned && !followUp && !forOwner) {
     onIneligible?.();
@@ -151,6 +161,7 @@ export async function classify(
     attention: isBugReport || forOwner ? "review" : direct ? "direct" : "review",
     ...(mentioned && !isBugReport ? { pinged: true as const } : {}),
     ...(repliesToHelio && !isBugReport ? { replied_to_helio: true as const } : {}),
+    ...(msg.guild_id !== undefined && !isBugReport ? { addressee } : {}),
     ...(forOwner ? { for_owner: true as const } : {}),
   };
 }
@@ -161,7 +172,7 @@ const bugReport = (msg: IncomingMessage, cfg: FilterConfig): boolean => msg.auth
 
 /**
  * How a message is addressed. A ping is an explicit `<@Helio>` mention: Discord also lists a replied-to Helio in
- * `mentions`, so a reply to Helio without the mention text is never a ping. Unpinged follow-ups are replies to Helio, the person's own
+ * `mentions`, so a reply to Helio without the mention text is never a ping. Unpinged follow-ups are replies to Helio or into a topic, the person's own
  * working window, or an answer Helio's open question is waiting for.
  */
 function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy, isBugReport: boolean) {
@@ -170,10 +181,20 @@ function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: Chan
     (msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`) ||
       (!repliesToHelio && msg.mentions?.some((user) => user.id === cfg.botId) === true));
   const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
+  const repliedTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
   const followUp = channelPolicy === "normal" && !isBugReport && !mentioned &&
-    (additionTo !== undefined || repliesToHelio || cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true);
+    (additionTo !== undefined || repliesToHelio || cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true ||
+      (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true));
   const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned);
-  return { mentioned, additionTo, repliesToHelio, followUp, forOwner };
+  const parent = repliedTo !== undefined ? msg.referenced_message : undefined;
+  const parentPingedHelio = cfg.botId !== undefined && typeof parent?.content === "string" &&
+    (parent.content.includes(`<@${cfg.botId}>`) || parent.content.includes(`<@!${cfg.botId}>`));
+  const toHelio = mentioned || repliesToHelio || parentPingedHelio || additionTo !== undefined || /\bhelio\b/i.test(msg.content) ||
+    cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true || (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true);
+  const opener = /^\s*<@!?(\d+)>/.exec(msg.content)?.[1];
+  const toPerson = (parent != null && parent.author.id !== cfg.botId) || (opener !== undefined && opener !== cfg.botId);
+  const addressee: Addressee = toHelio ? "helio" : toPerson ? "other" : "none";
+  return { mentioned, additionTo, repliesToHelio, followUp, forOwner, addressee };
 }
 
 /**
@@ -185,8 +206,9 @@ export function countsTowardCatchUp(msg: IncomingMessage, cfg: FilterConfig, cha
   const isBugReport = bugReport(msg, cfg);
   if (msg.author.bot && !isBugReport) return false;
   if (!requestMessage(msg, isBugReport)) return false;
-  if (channelPolicy === "trusted" || isBugReport || cfg.botId === undefined) return true;
-  const { mentioned, followUp, forOwner } = addressing(msg, cfg, channelPolicy, false);
+  if (isBugReport || cfg.botId === undefined) return true;
+  const { mentioned, followUp, forOwner, addressee } = addressing(msg, cfg, channelPolicy, false);
+  if (channelPolicy === "trusted") return addressee !== "other" || forOwner;
   return mentioned || followUp || forOwner;
 }
 

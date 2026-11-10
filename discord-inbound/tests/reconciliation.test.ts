@@ -63,10 +63,17 @@ test.each([
   const manifest = join(dir, "manifest.json");
   try {
     store.open("100", "99", "20", "mixed history", now);
-    for (const id of ["30", "31"]) store.append("100", "99", {
-      message_id: id, author_id: "88", author: "Helio", bot: id === "31" || known, content: "old bot entry",
-      attachment_count: 0, reply_to: "20", sent_at: new Date(now + (id === "31" ? 2 : 1)).toISOString(),
-    }, now + (id === "31" ? 2 : 1));
+    // Rows written by an older release, some without the bot flag, exactly as they sit in the database.
+    const seed = new Database(join(dir, "discord-conversations.sqlite"));
+    try {
+      for (const id of ["30", "31"]) {
+        const at = now + (id === "31" ? 2 : 1), bot = id === "31" || known;
+        seed.run(`INSERT INTO transcript VALUES (?,'100','99',?,'88',?,?,'100','public',?)`, [id, now, new Date(at).toISOString(),
+          JSON.stringify({ message_id: id, author_id: "88", author: "Helio", bot, content: "old bot entry", attachment_count: 0,
+            reply_to: "20", sent_at: new Date(at).toISOString() }), bot ? 1 : 0]);
+        seed.run("UPDATE conversations SET last_activity=max(last_activity,?) WHERE anchor_message_id='20'", [at]);
+      }
+    } finally { seed.close(); }
     // Historical contamination predates ingress exclusion.
     store.recordNotice("31", now + 2);
     if (question) store.applyReply(store.get("100", "99")!, {

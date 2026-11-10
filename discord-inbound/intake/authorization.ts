@@ -5,7 +5,7 @@ import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "../discord/rest
 import { policyValues } from "./runtime-policy.ts";
 
 /** Channel trust never grants sender authority or adds a channel to the allowlist. */
-export type IntakeCallbacks = Pick<FilterConfig, "awaitingAnswer" | "workingAnchor" | "lastOwnerPost">;
+export type IntakeCallbacks = Pick<FilterConfig, "awaitingAnswer" | "workingAnchor" | "lastOwnerPost" | "topicMessage">;
 
 export function filterConfig(
   values: Readonly<Record<string, string | undefined>>, callbacks: IntakeCallbacks = {},

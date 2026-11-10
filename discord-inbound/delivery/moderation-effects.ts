@@ -46,7 +46,10 @@ export async function settleBlock(o: {
 }, userId: string, result: BlockResult): Promise<void> {
   const now = Date.now();
   for (const id of result.dismissed) await cleanupAttachments(id, `${o.stateDir}/attachments/inbound`);
-  for (const row of o.conversations.list().filter((conversation) => conversation.user_id === userId)) {
+  // A blocked person stops hearing about shared topics; topics only they take part in close.
+  for (const row of o.conversations.list().filter((conversation) => o.conversations.isParticipant(conversation.anchor_message_id, userId))) {
+    const others = o.conversations.participants(row.anchor_message_id).some(person => person.user_id !== userId);
+    if (others) { o.conversations.leave(row.anchor_message_id, userId); continue; }
     o.conversations.close(row.channel_id, row.user_id, "irrelevant", now, undefined, row.anchor_message_id);
   }
   const claims = o.conversations.openWorkingRows().filter((row) => row.user_id === userId && row.closed_at === null);

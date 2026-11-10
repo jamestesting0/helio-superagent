@@ -29,7 +29,7 @@ test("user_version guards a table rebuild that preserves followups and terminal 
     INSERT INTO working VALUES ('10','100','99',1,NULL,1,0,0,NULL);`);
   let store = new Conversations(path, NOW);
   try {
-    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+    expect(db.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
     expect(db.query("SELECT user_id,status,outcome FROM conversations ORDER BY user_id").all()).toEqual([
       { user_id: "65", status: "resolved", outcome: "other" },
       { user_id: "66", status: "resolved", outcome: "timed_out" },
@@ -44,7 +44,8 @@ test("user_version guards a table rebuild that preserves followups and terminal 
     store = new Conversations(path, NOW + 1000);
     expect(store.resolveLegacy(NOW + 1000)).toEqual([]);
     expect(db.serialize()).toEqual(before);
-    expect(db.query("SELECT * FROM followups ORDER BY issue").all())
+    expect(db.query("SELECT * FROM followups_legacy ORDER BY issue").all())
       .toEqual([{ issue: 3, status: "open" }, { issue: 4, status: "announced" }]);
+    expect(db.query("SELECT count(*) AS n FROM followups").get()).toEqual({ n: 0 });
   } finally { store.dispose(); db.close(); await rm(dir, { recursive: true, force: true }); }
 });

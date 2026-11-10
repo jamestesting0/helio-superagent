@@ -1,4 +1,5 @@
-import type { Conversations, ConversationEntry } from "./conversations.ts";
+import type { Conversation, Conversations, ConversationEntry } from "./conversations.ts";
+import { audienceOf, conversationEntry } from "./conversation-context.ts";
 import type { Delivery } from "../delivery/delivery.ts";
 import { DiscordRestError, IgnoredChannelError, type Rest } from "../discord/rest.ts";
 import { finishWorking } from "./working.ts";
@@ -20,7 +21,7 @@ export interface NewerMessage {
   readonly attachments: number;
 }
 
-type Payload = Partial<NewerMessage> & { channel_id?: string; attachments?: unknown[]; embed_text?: string; for_owner?: boolean };
+type Payload = Partial<NewerMessage> & { channel_id?: string; reply_to?: string; attachments?: unknown[]; embed_text?: string; for_owner?: boolean };
 const clip = (text: string | undefined, max: number) => text && text.length > max ? `${text.slice(0, max)}…` : text;
 
 export function newerPending(delivery: Delivery, channel: string, target: string, known: ReadonlySet<string>): NewerMessage[] {
@@ -121,7 +122,14 @@ export async function guardedReply(o: {
   readonly delivery: Delivery; readonly store: Conversations; readonly rest: Rest;
   readonly channel: string; readonly target: string;
   readonly covers: readonly string[]; readonly seen: readonly string[];
-  readonly send: (mentionUsers: readonly string[]) => Promise<string>;
+  /** Sends the reply; `lead` holds mention tokens the text lacks, so the named people are actually pinged. */
+  readonly send: (mentionUsers: readonly string[], lead: string) => Promise<string>;
+  readonly text?: string;
+  /** Continue this topic: needed for a candidate or a topic picked up from another channel. */
+  readonly topic?: string;
+  /** Tells participants elsewhere that the topic closed; one templated note per channel, idempotent. */
+  readonly notifyOthers?: (row: Conversation, others: readonly { readonly channel: string; readonly target: string; readonly users: readonly string[] }[]) =>
+    Promise<readonly string[]>;
   readonly cleanup: (messageId: string) => Promise<void>;
   readonly replyEntry?: Omit<ConversationEntry, "message_id" | "sent_at">;
   readonly now: () => number; readonly warn: (message: string) => void; readonly owner?: string;
@@ -133,7 +141,11 @@ export async function guardedReply(o: {
   try {
   if (settlements && settlementKey) {
     const recovered = settlements.recover(settlementKey, o.store, o.now());
-    if (recovered) return { code: 0, lines: [`REPLY_SETTLED ${recovered.join(",")}; existing delivery retained`] };
+    if (recovered) {
+      const resolved = o.settlement?.meaning.disposition === "final" ? o.store.topicOfMessage(o.target, o.now()) : null;
+      return { code: 0, lines: [`REPLY_SETTLED ${recovered.join(",")}; existing delivery retained`,
+        ...await closeElsewhere(o, resolved ? [resolved.anchor_message_id] : [])] };
+    }
   }
   const known = new Set([...o.covers, ...o.seen]);
   const check = await checkBeforeReply({ ...o, known, now: o.now() });
@@ -142,15 +154,10 @@ export async function guardedReply(o: {
   }
   if (check.action === "skip") {
     await finishWorking({ store: o.store, rest: o.rest, now: o.now(), warn: o.warn }, [o.target]);
-    const closed = check.gone ? o.store.closeFollowupsFor(o.channel, o.target) : [];
     if (check.gone) {
       for (const row of o.store.list().filter((row) => row.channel_id === o.channel && row.anchor_message_id === o.target)) {
         o.store.resolveIfCurrent(row, "other", o.now());
       }
-    }
-    if (closed.length) {
-      return { code: 4, lines: closed.map((followup) => `REPLY_FOLLOWUP_CLOSED issue=${followup.issue} user=${followup.user_id}: ` +
-        "the request message is gone, so nothing was sent and the follow-up is closed. Tell the owner once; nothing else to record.") };
     }
     return { code: 4, lines: [`REPLY_SKIPPED message_id=${o.target}: ${check.reason}; nothing was sent. Run: ack done inbound ${o.target}`] };
   }
@@ -163,31 +170,48 @@ export async function guardedReply(o: {
     o.delivery.status("inbound", id).disposition === "pending");
   const notCovered = o.covers.filter((id) => id !== o.target && !covered.includes(id));
   const targetAuthor = pending.get(o.target)?.author_id ?? o.store.working(o.target)?.user_id ?? check.author_id;
-  const authors = new Set(covered.map((id) => pending.get(id)?.author_id).filter((id): id is string => !!id));
-  const mentions = [...authors].filter((id) => id !== targetAuthor);
-  if (targetAuthor) authors.add(targetAuthor);
+  const authorOf = (id: string) => pending.get(id)?.author_id ?? o.store.working(id)?.user_id ?? (id === o.target ? targetAuthor : undefined);
   const claimed = [o.target, ...covered].some((id) => o.store.working(id)?.claimed_at != null);
-
-  const topics = [...authors].flatMap(author => {
-    const ids = [o.target, ...covered].filter(id =>
-      (pending.get(id)?.author_id ?? o.store.working(id)?.user_id ?? (id === o.target ? targetAuthor : undefined)) === author);
-    return ids.flatMap(id => {
-      const row = o.store.forReply(o.channel, author, id);
-      return row ? [row] : [];
-    });
-  }).filter((row, index, rows) => rows.findIndex(other =>
-    other.user_id === row.user_id && other.opened_at === row.opened_at) === index);
-  if (settlements && settlementKey && o.settlement) {
-    settlements.prepare(settlementKey, topics.map(row => ({ ...row, covered: [o.target, ...covered] })), o.settlement.meaning,
-      [{ target: o.target, event: `${o.channel}:${o.settlement.event}` }]);
+  const now = o.now();
+  const named = o.topic ? o.store.topic(o.topic) : null;
+  if (o.topic && !named) return { code: 3, lines: [`REPLY_WITHHELD message_id=${o.target}: unknown topic ${o.topic}; nothing was sent.`] };
+  // A topic reply that asks or reports progress on a recently resolved topic reopens it.
+  const reopened = named && named.status === "resolved" && o.settlement && o.settlement.meaning.disposition !== "final" ?
+    o.store.reopen(named.channel_id, named.user_id, now, named.anchor_message_id) : named;
+  const found = new Map<string, Conversation>();
+  for (const id of [o.target, ...covered]) {
+    const author = authorOf(id);
+    if (!author) continue;
+    const payload = pending.get(id);
+    const row = reopened && (reopened.status === "open" || reopened.status === "on_hold") ? reopened :
+      o.store.forReply(o.channel, author, typeof payload?.reply_to === "string" ? payload.reply_to : undefined);
+    if (!row) continue;
+    // Only a topic reply that answers or covers someone adds them; a plain reply never changes membership.
+    if (o.settlement && payload && typeof payload.content === "string") {
+      o.store.recordAnswered(row, conversationEntry({ ...payload, message_id: id }),
+        { channel: o.channel, audience: audienceOf(payload as Record<string, unknown>) }, id === o.target ? "answered" : "covered", now);
+    }
+    found.set(row.anchor_message_id, o.store.topic(row.anchor_message_id)!);
   }
-  const replyId = await o.send(mentions);
+  const topics = [...found.values()];
+  const final = o.settlement?.meaning.disposition === "final";
+  const coveredAuthors = covered.map(authorOf).filter((id): id is string => !!id && id !== targetAuthor);
+  const here = final ? topics.flatMap(row => o.store.participants(row.anchor_message_id))
+    .filter(person => person.notify && person.last_channel_id === o.channel && person.user_id !== targetAuthor).map(person => person.user_id) : [];
+  const mentions = [...new Set([...coveredAuthors, ...here])].slice(0, 100);
+  const lead = mentions.filter(user => !(o.text ?? "").includes(`<@${user}>`)).map(user => `<@${user}>`).join(" ");
+  if (settlements && settlementKey && o.settlement) {
+    settlements.prepare(settlementKey, topics.map(row => ({ ...row, covered: [o.target, ...covered],
+      reply_channel: o.channel, ...(targetAuthor ? { asked_user: targetAuthor } : {}), asked_message: o.target })),
+    o.settlement.meaning, [{ target: o.target, event: `${o.channel}:${o.settlement.event}` }]);
+  }
+  const replyId = await o.send(mentions, lead);
   const lines = [`SENT ${replyId}`];
   if (o.replyEntry) {
     for (const conversation of topics) {
-      o.store.append(o.channel, conversation.user_id, {
+      o.store.append(conversation.channel_id, conversation.user_id, {
         ...o.replyEntry, reply_to: conversation.anchor_message_id, message_id: replyId, sent_at: new Date(o.now()).toISOString(),
-      }, o.now());
+      }, o.now(), { channel: o.channel, audience: audienceOf((pending.get(o.target) ?? {}) as Record<string, unknown>) });
     }
   }
   if (o.issues) {
@@ -211,6 +235,7 @@ export async function guardedReply(o: {
     settlements.delivered(settlementKey);
     lines.push(`REPLY_SETTLED ${settlements.settle(settlementKey, o.store, o.now()).join(",")}`);
   }
+  if (final) lines.push(...await closeElsewhere(o, topics.map(row => row.anchor_message_id)));
   for (const id of covered) {
     try { o.delivery.acknowledge("inbound", id); await o.cleanup(id); }
     catch (error) { o.warn(`could not mark covered message_id=${id} handled: ${String(error)}`); }
@@ -222,4 +247,26 @@ export async function guardedReply(o: {
   if (!claimed) lines.push("REPLY_NOTE no claim was recorded for this turn; run ack working first when you pick a turn up");
   return { code: 0, lines };
   } finally { settlements?.close(); }
+}
+
+/** Participants who last spoke on a closed topic in another channel get one templated note there. */
+async function closeElsewhere(o: Pick<Parameters<typeof guardedReply>[0], "store" | "channel" | "notifyOthers">,
+  anchors: readonly string[]): Promise<string[]> {
+  const lines: string[] = [];
+  if (!o.notifyOthers) return lines;
+  for (const anchor of anchors) {
+    const row = o.store.topic(anchor);
+    if (!row) continue;
+    const elsewhere = Map.groupBy(o.store.participants(row.anchor_message_id)
+      .filter(person => person.notify && person.last_channel_id !== o.channel), person => person.last_channel_id);
+    const groups = [...elsewhere].map(([channel, people]) => ({ channel, users: people.map(person => person.user_id),
+      target: people.map(person => person.last_message_id).reduce((a, b) => BigInt(a) > BigInt(b) ? a : b) }));
+    if (!groups.length) continue;
+    try { lines.push(...await o.notifyOthers(row, groups)); }
+    catch (error) {
+      if (!(error instanceof Error)) throw error;
+      lines.push(`REPLY_CLOSURE_PENDING topic=${anchor}: ${error.message}; rerun this reply command to finish the notes`);
+    }
+  }
+  return lines;
 }

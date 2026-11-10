@@ -1,3 +1,4 @@
+import { audienceOf } from "./conversation-context.ts";
 import type { Conversations, ConversationEntry } from "./conversations.ts";
 import { WORKING_WINDOW_MS } from "./conversations.ts";
 import type { Delivery } from "../delivery/delivery.ts";
@@ -18,6 +19,7 @@ export interface ClaimMessage {
   readonly role: string;
   readonly scope?: string;
   readonly channel_policy?: string;
+  readonly discord_origin?: unknown;
   readonly pinged?: boolean;
   readonly entry?: ConversationEntry;
 }
@@ -61,7 +63,10 @@ export async function syncReceipts(o: ReceiptContext, force = true): Promise<Rea
 
 export async function showWorking(o: ReceiptContext, message: ClaimMessage): Promise<WorkingReaction> {
   if (message.role === "BOT_BUG_REPORT" || message.scope === "evidence-only") return "skipped";
-  if (message.entry) o.store.claim(message.channel_id, message.author_id, message.entry, o.now);
+  if (message.entry) {
+    o.store.claim(message.channel_id, message.author_id, message.entry, o.now,
+      { channel: message.channel_id, audience: audienceOf(message as unknown as Record<string, unknown>) });
+  }
   const row = o.store.claimWorking(message.channel_id, message.author_id, message.message_id, o.now);
   if (row.closed_at !== null) return "skipped-already-replied";
   return (await syncReceipts(o, false)).get(message.message_id) ?? "skipped";

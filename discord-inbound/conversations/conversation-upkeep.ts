@@ -11,7 +11,7 @@ async function findNotice(rest: Rest, intent: NoticeIntent): Promise<string | un
   let after = intent.target_id;
   for (let page = 0; page < 10; page++) {
     const messages = await rest<{ id: string; nonce?: string | number; author: { id: string } }[]>(
-      `/channels/${intent.channel_id}/messages?after=${after}&limit=100`);
+      `/channels/${intent.send_channel_id ?? intent.channel_id}/messages?after=${after}&limit=100`);
     const found = messages.find(message => message.author.id === me.id && String(message.nonce) === intent.nonce);
     if (found) return found.id;
     if (messages.length < 100) return undefined;
@@ -42,16 +42,21 @@ export async function sweepConversations(options: {
     const closing = idle >= timeoutMs;
     if (!closing && (idle < nudgeMs || row.nudged_at !== null)) continue;
     let intent: NoticeIntent | undefined;
+    // The question waits on one person in the channel where it was asked; the nudge goes there, to their latest message.
+    const person = row.waiting_on_user ?? row.user_id, where = row.question_channel_id ?? row.channel_id;
     try {
-      const channel = await rest<{ guild_id?: string }>(`/channels/${row.channel_id}`);
+      const channel = await rest<{ guild_id?: string }>(`/channels/${where}`);
       if (!await options.canContact(row, channel.guild_id)) continue;
-      await rest(`/channels/${row.channel_id}/messages/${row.anchor_message_id}`);
-      if (channel.guild_id) await rest(`/guilds/${channel.guild_id}/members/${row.user_id}`);
-      const last = store.transcriptOf(row).findLast((entry) => entry.author_id === row.user_id);
-      const target = last?.message_id ?? row.anchor_message_id;
-      // A deleted last requester message follows the same silent resolution path as a deleted anchor.
-      if (target !== row.anchor_message_id) await rest(`/channels/${row.channel_id}/messages/${target}`);
-      const claim = store.notices.claim(row, closing ? "timeout" : "nudge", target, now);
+      if (channel.guild_id) await rest(`/guilds/${channel.guild_id}/members/${person}`);
+      const participant = store.participants(row.anchor_message_id).find(entry => entry.user_id === person);
+      const candidates = [participant?.last_channel_id === where ? participant.last_message_id : undefined,
+        row.question_message_id ?? undefined, where === row.channel_id ? row.anchor_message_id : undefined]
+        .filter((id): id is string => !!id);
+      if (!candidates.length) continue;
+      const target = candidates.reduce((a, b) => BigInt(a) > BigInt(b) ? a : b);
+      // A deleted target follows the same silent resolution path as a deleted anchor.
+      await rest(`/channels/${where}/messages/${target}`);
+      const claim = store.notices.claim(row, closing ? "timeout" : "nudge", target, now, where);
       if (!claim) continue;
       intent = claim.intent;
       if (intent.state === "cancelled" || intent.settled) continue;
@@ -64,11 +69,12 @@ export async function sweepConversations(options: {
         store.notices.cancel(intent);
         continue;
       }
-      const reply = await rest<{ id: string }>(`/channels/${row.channel_id}/messages`, {
+      const title = `**${row.topic.replace(/[*_\`~|]/g, "")}**`;
+      const reply = await rest<{ id: string }>(`/channels/${where}/messages`, {
         method: "POST", body: {
-          content: closing ? "I'll drop this request for now as I haven't heard back. Ping me when you're ready to pick it up again." :
-            "Do you still need help with this request? Send the details when you're ready.",
-          message_reference: { message_id: target, channel_id: row.channel_id, fail_if_not_exists: true },
+          content: closing ? `Pausing ${title} since I haven't heard back. Reply here or ping me to pick it up.` :
+            `Still need ${row.waiting_on.replace(/\.$/, "")} for ${title}. Send it when you can.`,
+          message_reference: { message_id: target, channel_id: where, fail_if_not_exists: true },
           allowed_mentions: { parse: [], replied_user: true },
           nonce: intent.nonce, enforce_nonce: true,
         },
@@ -82,7 +88,7 @@ export async function sweepConversations(options: {
       emit(monitorLine(`${closing ? "INBOUND_CONVERSATION_TIMEOUT" : "INBOUND_CONVERSATION_NUDGE"} ${JSON.stringify({
         channel_id: row.channel_id, user_id: row.user_id, anchor_message_id: row.anchor_message_id,
         topic: row.topic, opened_at: row.opened_at, sent: intent.message_id,
-        read: `helio conversation show ${row.channel_id} ${row.user_id} --topic ${row.anchor_message_id}`,
+        read: `helio conversation show ${row.anchor_message_id}`,
       })}`));
     } catch (error) {
       if (intent) store.notices.uncertain(intent);
@@ -99,7 +105,7 @@ export async function sweepConversations(options: {
     emit(monitorLine(`INBOUND_CONVERSATION_WAITING ${JSON.stringify({
       channel_id: row.channel_id, user_id: row.user_id, topic: row.topic,
       state: "waiting_on_helio", idle_ms: now - row.last_activity,
-      read: `helio conversation show ${row.channel_id} ${row.user_id} --topic ${row.anchor_message_id}`,
+      read: `helio conversation show ${row.anchor_message_id}`,
     })}`));
   }
   store.retain(now);

@@ -9,35 +9,6 @@ import { describeMessage } from "../messages/reply-context.ts";
 import { guardedReply } from "./reply-guard.ts";
 import { normal, T0, MIN, idAt, eyesPath, withStores, stage, fakeRest, reply } from "../fixtures/working.ts";
 
-test("a follow-up whose request message is gone is closed once, not re-announced after every restart", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "helio-followup-gone-"));
-  const path = join(dir, "discord-conversations.sqlite");
-  const delivery = new Delivery(join(dir, "discord-delivery.sqlite"));
-  const store = new Conversations(path);
-  // The table exactly as scripts/helio-followups.py creates it in this same database.
-  const db = new Database(path);
-  db.run(`CREATE TABLE IF NOT EXISTS followups (
-    repo TEXT NOT NULL, issue INTEGER NOT NULL, user_id TEXT NOT NULL, channel_id TEXT NOT NULL,
-    reply_to TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'announced', 'done')),
-    PRIMARY KEY (repo, issue, user_id))`);
-  const anchor = idAt(T0), other = idAt(T0, 1);
-  db.run("INSERT INTO followups VALUES ('o/r', 3, '66', ?, ?, 'feature', 0, 'announced')", [normal, anchor]);
-  db.run("INSERT INTO followups VALUES ('o/r', 4, '67', ?, ?, 'bug', 0, 'open')", [normal, other]);
-  const status = (issue: number) => (db.query("SELECT status FROM followups WHERE issue=?").get(issue) as { status: string }).status;
-  try {
-    const { rest } = fakeRest({ [anchor]: null, [other]: "still here" });
-    const first = await reply(delivery, store, rest, anchor, T0).result;
-    expect(first.code).toBe(4);
-    expect(first.lines).toEqual([expect.stringMatching(/^REPLY_FOLLOWUP_CLOSED issue=3 user=66: /)]);
-    expect([status(3), status(4)]).toEqual(["done", "open"]);
-    expect((await reply(delivery, store, rest, anchor, T0).result).lines[0]).toStartWith("REPLY_SKIPPED");
-  } finally {
-    db.close(); delivery.close(); store.dispose();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("a deleted original with no follow-up table keeps the plain skip", async () => {
   await withStores(async (delivery, store) => {
     const gone = idAt(T0);

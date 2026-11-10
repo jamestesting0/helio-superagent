@@ -74,15 +74,18 @@ test("two topics from one person stay separate, and a reply goes to the topic it
   try {
     s.conversations.open(NORMAL, STAFF, "500", "logs", AT);
     s.conversations.open(NORMAL, STAFF, "600", "roles", AT + 1);
-    s.conversations.claim(NORMAL, STAFF, said("501", STAFF, "500"), AT + 2);
-    s.conversations.claim(NORMAL, STAFF, said("601", STAFF, "600"), AT + 3);
-    s.conversations.append(NORMAL, STAFF, said("502", BOT, "501"), AT + 4);
+    const here = { channel: NORMAL, audience: "public" } as const;
+    s.conversations.claim(NORMAL, STAFF, said("501", STAFF, "500"), AT + 2, here);
+    s.conversations.claim(NORMAL, STAFF, said("601", STAFF, "600"), AT + 3, here);
+    s.conversations.append(NORMAL, STAFF, said("502", BOT, "501"), AT + 4, here);
     const topic = (replyTo?: string) => conversationSnapshot(s.conversations, NORMAL, STAFF, AT + 5, { reply_to: replyTo, pinged: true });
     const logs = topic("502"), fresh = topic(undefined);
-    expect(logs?.read_more).toBe(`helio conversation show ${NORMAL} ${STAFF} --topic 500`);
+    expect(logs?.read_more).toBe("helio conversation show 500");
     expect(logs && "topic" in logs ? [logs.topic, logs.relation, logs.transcript.map((e) => e.message_id)] : [])
       .toEqual(["logs", "reply", ["501", "502"]]);
-    expect(fresh).toBeUndefined();
+    // An unthreaded ping with two open topics binds neither; the lead sees both and picks or opens one.
+    expect(fresh && "topic_id" in fresh).toBe(false);
+    expect(fresh?.other_topics?.map(other => other.topic_id)).toEqual(["500", "600"]);
     s.conversations.setState(NORMAL, STAFF, { request: "Fix role sync" }, "600");
     const roles = topic("601");
     expect(roles && "topic" in roles ? [roles.topic, roles.request, roles.transcript.map((e) => e.message_id)] : [])

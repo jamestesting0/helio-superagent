@@ -112,12 +112,5 @@ export class WorkingStore {
       .run(now - 72 * 60 * 60 * 1000);
   }
 
-  closeFollowupsFor(channelId: string, messageId: string): { readonly issue: number; readonly user_id: string }[] {
-    if (!this.db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='followups'").get()) return [];
-    return this.db.query<{ issue: number; user_id: string }, [string, string]>(
-      "UPDATE followups SET status='done' WHERE channel_id=? AND reply_to=? AND status!='done' RETURNING issue,user_id",
-    ).all(channelId, messageId);
-  }
-
   dispose(): void { this.db.close(); }
 }

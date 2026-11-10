@@ -15,6 +15,8 @@ export interface NoticeIntent {
   readonly state: "sending" | "uncertain" | "sent" | "cancelled";
   readonly message_id: string | null;
   readonly settled: number;
+  /** Where the notice is sent; a question can wait in a channel other than the topic's origin. */
+  readonly send_channel_id: string | null;
 }
 
 /** One owner may send an intent. An interrupted owner is reconciled, never replaced by a lease. */
@@ -27,6 +29,9 @@ export class NoticeStore {
       state TEXT NOT NULL CHECK(state IN ('sending','uncertain','sent','cancelled')),
       message_id TEXT,settled INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(channel_id,user_id,opened_at,generation,kind))`);
+    if (!db.query<{ name: string }, []>("PRAGMA table_info(conversation_notice_intents)").all().some(column => column.name === "send_channel_id")) {
+      db.exec("ALTER TABLE conversation_notice_intents ADD COLUMN send_channel_id TEXT");
+    }
   }
 
   current(intent: NoticeIntent): boolean {
@@ -36,7 +41,7 @@ export class NoticeStore {
       .get(intent.channel_id, intent.user_id, intent.opened_at, intent.revision, intent.generation) !== null;
   }
 
-  claim(row: Conversation, kind: NoticeIntent["kind"], target: string, now: number):
+  claim(row: Conversation, kind: NoticeIntent["kind"], target: string, now: number, channel = row.channel_id):
     { readonly intent: NoticeIntent; readonly mine: boolean } | undefined {
     return this.db.transaction(() => {
       const values = [row.channel_id, row.user_id, row.opened_at, row.question_generation, kind] as const;
@@ -47,12 +52,12 @@ export class NoticeStore {
       const nonce = new Bun.CryptoHasher("sha256").update(JSON.stringify(values)).digest("hex").slice(0, 25);
       const intent: NoticeIntent = { channel_id: row.channel_id, user_id: row.user_id, opened_at: row.opened_at,
         generation: row.question_generation, kind, revision: row.revision, target_id: target,
-        nonce, owner: crypto.randomUUID(), created_at: now, state: "sending", message_id: null, settled: 0 };
+        nonce, owner: crypto.randomUUID(), created_at: now, state: "sending", message_id: null, settled: 0, send_channel_id: channel };
       if (!this.current(intent)) return undefined;
       this.db.run(`INSERT INTO conversation_notice_intents
-        (channel_id,user_id,opened_at,generation,kind,revision,target_id,nonce,owner,created_at,state)
-        VALUES(?,?,?,?,?,?,?,?,?,?,'sending')`,
-      [...values, row.revision, target, nonce, intent.owner, now]);
+        (channel_id,user_id,opened_at,generation,kind,revision,target_id,nonce,owner,created_at,state,send_channel_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,'sending',?)`,
+      [...values, row.revision, target, nonce, intent.owner, now, channel]);
       return { intent, mine: true };
     }).immediate();
   }
@@ -71,7 +76,7 @@ export class NoticeStore {
   observe(channel: string, nonce: string | number | undefined, messageId: string, now: number): boolean {
     if (nonce === undefined) return false;
     const intent = this.db.query<NoticeIntent, [string, string]>(
-      "SELECT * FROM conversation_notice_intents WHERE channel_id=? AND nonce=?").get(channel, String(nonce));
+      "SELECT * FROM conversation_notice_intents WHERE coalesce(send_channel_id,channel_id)=? AND nonce=?").get(channel, String(nonce));
     if (!intent) return false;
     this.complete(intent, messageId, now);
     return true;

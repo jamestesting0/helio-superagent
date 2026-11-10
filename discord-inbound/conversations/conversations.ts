@@ -45,11 +45,39 @@ export interface Conversation {
   readonly question_generation: number;
   readonly last_reply_key: string | null;
   readonly latest_input_id: string | null;
+  /** Who and where Helio's delivered question waits on; a topic's opener and origin channel for legacy rows. */
+  readonly waiting_on_user: string | null;
+  readonly question_channel_id: string | null;
+  readonly question_message_id: string | null;
+  readonly merged_into: string | null;
 }
 export type TopicRevision = Pick<Conversation,
   "channel_id" | "user_id" | "opened_at" | "anchor_message_id" | "revision" | "last_activity"> & {
     readonly covered?: readonly string[];
+    /** Where the reply was sent and whose message it answered; a question waits on that person there. */
+    readonly reply_channel?: string;
+    readonly asked_user?: string;
+    readonly asked_message?: string;
   };
+
+/** Who may see a message: untrusted chats, the trusted chat and its threads, or one DM. */
+export type Audience = "public" | "staff" | "dm";
+export interface Placement { readonly channel: string; readonly audience: Audience }
+export const PARTICIPANT_VIA = ["opened", "answered", "covered", "lead", "merge", "issue"] as const;
+export interface Participant {
+  readonly anchor_message_id: string;
+  readonly user_id: string;
+  readonly joined_at: number;
+  readonly via: typeof PARTICIPANT_VIA[number];
+  readonly last_channel_id: string;
+  readonly last_message_id: string;
+  readonly notify: number;
+}
+const VISIBLE: Record<Audience, readonly Audience[]> = { public: ["public"], staff: ["public", "staff"], dm: ["public", "staff", "dm"] };
+/** A DM sees only its own DM entries; other audiences never see DM text. */
+export function visibleTo(entry: { readonly audience: Audience; readonly message_channel_id: string }, viewer: Placement): boolean {
+  return VISIBLE[viewer.audience].includes(entry.audience) && (entry.audience !== "dm" || entry.message_channel_id === viewer.channel);
+}
 
 export const UNDERSTANDING_FIELDS = ["request", "decided", "waiting_on", "result"] as const;
 export type Understanding = Partial<Record<typeof UNDERSTANDING_FIELDS[number], string>>;
@@ -77,14 +105,18 @@ export class Conversations extends WorkingStore {
         summary: "", hold_reason: null, nudged_at: null, resolved_at: null, archived_at: null, issue: null,
         request: "", decided: "", waiting_on: "", result: "",
         revision: 0, job: null, reply_disposition: null, question_started_at: null, question_generation: 0, last_reply_key: null,
-        latest_input_id: anchor,
+        latest_input_id: anchor, waiting_on_user: null, question_channel_id: null, question_message_id: null, merged_into: null,
       };
+      if (this.db.query("SELECT 1 FROM conversations WHERE anchor_message_id=?").get(anchor)) {
+        throw new RangeError("This message already anchors a topic; reopen or merge it instead");
+      }
       this.db.query(`INSERT INTO conversations
         (channel_id,user_id,opened_at,last_activity,anchor_message_id,topic,status,latest_input_id)
         VALUES (?,?,?,?,?,?,'open',?)`).run(channel, user, opened_at, now, anchor, topic, anchor);
-      // A claim can precede topic selection. The new anchor belongs only to this topic, not the previous default.
-      this.db.query("UPDATE transcript SET opened_at=? WHERE channel_id=? AND user_id=? AND message_id=?")
-        .run(opened_at, channel, user, anchor);
+      this.db.query("INSERT INTO topic_participants VALUES (?,?,?,'opened',?,?,1)").run(anchor, user, now, channel, anchor);
+      // A claim can precede topic selection. The new anchor belongs only to this topic, wherever it was recorded.
+      this.db.query("UPDATE transcript SET channel_id=?,user_id=?,opened_at=? WHERE message_id=? AND is_helio=0")
+        .run(channel, user, opened_at, anchor);
       return row;
     }).immediate();
   }
@@ -96,9 +128,10 @@ export class Conversations extends WorkingStore {
       const summary = row.summary || row.topic;
       this.db.query(`UPDATE conversations SET status='resolved',outcome=?,closed_at=?,resolved_at=?,
         summary=?,hold_reason=NULL,issue=coalesce(?,issue),revision=revision+1 WHERE channel_id=? AND user_id=? AND opened_at=?`)
-        .run(outcome, now, now, summary, issue ?? null, channel, user, row.opened_at);
-      this.db.query("DELETE FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?")
-        .run(channel, user, row.opened_at);
+        .run(outcome, now, now, summary, issue ?? null, row.channel_id, row.user_id, row.opened_at);
+      // Text goes now; message IDs stay until archiving so a later reply still finds its topic.
+      this.db.query("UPDATE transcript SET entry=NULL WHERE channel_id=? AND user_id=? AND opened_at=?")
+        .run(row.channel_id, row.user_id, row.opened_at);
       return { ...row, status: "resolved", outcome, closed_at: now, resolved_at: now,
         summary, hold_reason: null, issue: issue ?? row.issue, revision: row.revision + 1 };
     }).immediate();
@@ -113,29 +146,159 @@ export class Conversations extends WorkingStore {
     }
   }
 
-  /** The person's most recently active conversation in this channel; commands act on it unless a topic is named. */
+  /**
+   * An active topic. A named topic is found by its anchor alone; otherwise the person's most recently active topic
+   * present in this channel (opened here, or where they last spoke on it).
+   */
   get(channel: string, user: string, topic?: string): Conversation | null {
-    return this.db.query<Conversation, [string, string, string | null, string | null]>(
-      `SELECT * FROM conversations WHERE channel_id=? AND user_id=? AND status IN ('open','on_hold')
-        AND (? IS NULL OR anchor_message_id=?) ORDER BY last_activity DESC, opened_at DESC LIMIT 1`,
-    ).get(channel, user, topic ?? null, topic ?? null);
+    if (topic) {
+      return this.db.query<Conversation, [string]>(
+        "SELECT * FROM conversations WHERE anchor_message_id=? AND status IN ('open','on_hold')").get(topic);
+    }
+    return this.presentIn(channel, user)[0] ?? null;
   }
 
-  /** Explicit replies never fall through; an unthreaded continuation needs exactly one active topic. */
+  /** Active topics this person takes part in that are present in this channel, most recent first. */
+  private presentIn(channel: string, user: string): Conversation[] {
+    return this.db.query<Conversation, [string, string, string]>(`SELECT c.* FROM conversations c
+      JOIN topic_participants p ON p.anchor_message_id=c.anchor_message_id AND p.user_id=?
+      WHERE c.status IN ('open','on_hold') AND (c.channel_id=? OR p.last_channel_id=?)
+      ORDER BY c.last_activity DESC, c.opened_at DESC`).all(user, channel, channel);
+  }
+
+  /**
+   * The active topic a person's message belongs to: an explicit reply into a topic, an answer to the question that
+   * waits on this person in this channel, or an unthreaded continuation of their only topic present here.
+   * A reply that matches no active topic never falls into another one.
+   */
   forReply(channel: string, user: string, replyTo?: string): Conversation | null {
-    if (replyTo) {
-      const owner = this.db.query<Conversation, [string, string, string, string]>(`SELECT c.* FROM conversations c
-        WHERE c.channel_id=? AND c.user_id=? AND c.status IN ('open','on_hold') AND (c.anchor_message_id=? OR EXISTS (
-          SELECT 1 FROM transcript t WHERE t.channel_id=c.channel_id AND t.user_id=c.user_id AND t.opened_at=c.opened_at
-            AND t.message_id=?)) ORDER BY c.last_activity DESC LIMIT 1`).get(channel, user, replyTo, replyTo);
-      return owner;
-    }
-    const rows = this.list().filter(row => row.channel_id === channel && row.user_id === user);
+    if (replyTo) return this.topicOfMessage(replyTo);
+    const awaited = this.list().filter(row => this.state(row) === "waiting_on_requester" &&
+      (row.waiting_on_user ?? row.user_id) === user && (row.question_channel_id ?? row.channel_id) === channel);
+    if (awaited.length === 1) return awaited[0]!;
+    const rows = this.presentIn(channel, user);
     return rows.length === 1 ? rows[0]! : null;
   }
 
+  /** The topic holding this message (anchor or recorded entry), following merges; resolved topics only on request. */
+  topicOfMessage(messageId: string, now?: number): Conversation | null {
+    const row = this.db.query<Conversation, [string, string]>(`SELECT c.* FROM conversations c
+      WHERE c.anchor_message_id=? OR EXISTS (SELECT 1 FROM transcript t WHERE t.channel_id=c.channel_id
+        AND t.user_id=c.user_id AND t.opened_at=c.opened_at AND t.message_id=?)
+      ORDER BY c.last_activity DESC LIMIT 1`).get(messageId, messageId);
+    const current = row ? this.followMerge(row) : null;
+    if (!current) return null;
+    if (current.status === "open" || current.status === "on_hold") return current;
+    return now !== undefined && current.status === "resolved" && (current.resolved_at ?? 0) > now - 7 * DAY_MS ? current : null;
+  }
+
+  /** Any retained topic by its anchor, following merges. */
+  topic(anchor: string): Conversation | null {
+    const row = this.db.query<Conversation, [string]>("SELECT * FROM conversations WHERE anchor_message_id=?").get(anchor);
+    return row ? this.followMerge(row) : null;
+  }
+
+  private followMerge(row: Conversation): Conversation {
+    let current = row;
+    for (let hops = 0; current.merged_into && hops < 10; hops++) {
+      const next = this.db.query<Conversation, [string]>("SELECT * FROM conversations WHERE anchor_message_id=?").get(current.merged_into);
+      if (!next) break;
+      current = next;
+    }
+    return current;
+  }
+
   belongs(row: Conversation, messageId: string): boolean {
-    return row.anchor_message_id === messageId || this.transcriptOf(row).some((entry) => entry.message_id === messageId);
+    return row.anchor_message_id === messageId || this.db.query(
+      "SELECT 1 FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=? AND message_id=?")
+      .get(row.channel_id, row.user_id, row.opened_at, messageId) !== null;
+  }
+
+  participants(anchor: string): Participant[] {
+    return this.db.query<Participant, [string]>(
+      "SELECT * FROM topic_participants WHERE anchor_message_id=? ORDER BY joined_at,user_id").all(anchor);
+  }
+
+  isParticipant(anchor: string, user: string): boolean {
+    return this.db.query("SELECT 1 FROM topic_participants WHERE anchor_message_id=? AND user_id=?").get(anchor, user) !== null;
+  }
+
+  /** Adds a person, or records where they last spoke; a later message never moves their location backwards. */
+  join(anchor: string, user: string, via: Participant["via"], channel: string, messageId: string, now: number): void {
+    this.db.query(`INSERT INTO topic_participants VALUES (?,?,?,?,?,?,1)
+      ON CONFLICT(anchor_message_id,user_id) DO UPDATE SET
+        last_channel_id=CASE WHEN length(excluded.last_message_id)>length(last_message_id) OR
+          (length(excluded.last_message_id)=length(last_message_id) AND excluded.last_message_id>last_message_id)
+          THEN excluded.last_channel_id ELSE last_channel_id END,
+        last_message_id=CASE WHEN length(excluded.last_message_id)>length(last_message_id) OR
+          (length(excluded.last_message_id)=length(last_message_id) AND excluded.last_message_id>last_message_id)
+          THEN excluded.last_message_id ELSE last_message_id END`).run(anchor, user, now, via, channel, messageId);
+  }
+
+  /** Stops closure pings for a person while keeping their history. */
+  leave(anchor: string, user: string): void {
+    if (!this.db.query("UPDATE topic_participants SET notify=0 WHERE anchor_message_id=? AND user_id=?").run(anchor, user).changes) {
+      throw new RangeError("That person is not a participant of this topic");
+    }
+  }
+
+  /** A person's active topics in any channel, most recent first. */
+  topicsFor(user: string, limit = 5): Conversation[] {
+    return this.db.query<Conversation, [string, number]>(`SELECT c.* FROM conversations c
+      JOIN topic_participants p ON p.anchor_message_id=c.anchor_message_id AND p.user_id=?
+      WHERE c.status IN ('open','on_hold') ORDER BY c.last_activity DESC, c.opened_at DESC LIMIT ?`).all(user, limit);
+  }
+
+  /**
+   * Folds one topic into another: participants and transcript move, the source resolves as a duplicate pointing at
+   * the target, and its issue subscription moves with it.
+   */
+  merge(from: string, into: string, now: number): Conversation {
+    return this.db.transaction((): Conversation => {
+      const source = this.get("", "", from), target = this.topic(into);
+      if (!source) throw new RangeError("The topic to merge is not active");
+      if (!target || (target.status !== "open" && target.status !== "on_hold")) throw new RangeError("The target topic is not active");
+      if (source.anchor_message_id === target.anchor_message_id) throw new RangeError("A topic cannot merge into itself");
+      if (source.issue && target.issue && source.issue !== target.issue) throw new RangeError("The topics track different issues");
+      for (const person of this.participants(from)) {
+        this.join(into, person.user_id, "merge", person.last_channel_id, person.last_message_id, now);
+        if (!person.notify) this.db.run("UPDATE topic_participants SET notify=0 WHERE anchor_message_id=? AND user_id=?", [into, person.user_id]);
+      }
+      this.db.run(`INSERT OR IGNORE INTO transcript SELECT message_id,?,?,?,author_id,sent_at,entry,message_channel_id,audience,is_helio
+        FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=? AND is_helio=1`,
+      [target.channel_id, target.user_id, target.opened_at, source.channel_id, source.user_id, source.opened_at]);
+      this.db.run(`UPDATE transcript SET channel_id=?,user_id=?,opened_at=? WHERE channel_id=? AND user_id=? AND opened_at=? AND is_helio=0`,
+        [target.channel_id, target.user_id, target.opened_at, source.channel_id, source.user_id, source.opened_at]);
+      this.db.run("DELETE FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?", [source.channel_id, source.user_id, source.opened_at]);
+      if (source.issue && !target.issue) {
+        this.db.run("UPDATE conversations SET issue=? WHERE anchor_message_id=?", [source.issue, into]);
+      }
+      this.db.run("UPDATE OR IGNORE followups SET anchor_message_id=? WHERE anchor_message_id=?", [into, from]);
+      this.db.run("DELETE FROM followups WHERE anchor_message_id=?", [from]);
+      this.db.run(`UPDATE conversations SET revision=revision+1,last_activity=max(last_activity,?) WHERE anchor_message_id=?`, [now, into]);
+      this.close(source.channel_id, source.user_id, "duplicate", now, undefined, from);
+      this.db.run("UPDATE conversations SET merged_into=? WHERE anchor_message_id=?", [into, from]);
+      return this.topic(into)!;
+    }).immediate();
+  }
+
+  /** Subscribes a topic to its issue's terminal outcome; the subscription survives the topic's own resolution. */
+  private subscribe(row: Conversation, issue: string, now: number): void {
+    const match = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/([1-9]\d*)$/.exec(issue);
+    if (!match) return;
+    this.db.run("INSERT OR IGNORE INTO followups (repo,issue,anchor_message_id,created_at) VALUES (?,?,?,?)",
+      [match[1]!, Number(match[2]), row.anchor_message_id, Math.floor(now / 1000)]);
+  }
+
+  /** Links an issue: another active topic with that issue absorbs the newer one, so each issue has one topic. */
+  private linkTopicIssue(row: Conversation, issue: string, now: number): Conversation {
+    const other = this.db.query<Conversation, [string, string]>(`SELECT * FROM conversations WHERE issue=? AND anchor_message_id<>?
+      AND status IN ('open','on_hold') ORDER BY opened_at LIMIT 1`).get(issue, row.anchor_message_id);
+    if (!other) { this.subscribe(row, issue, now); return row; }
+    const [older, newer] = other.opened_at <= row.opened_at ? [other, row] : [row, other];
+    const merged = this.merge(newer.anchor_message_id, older.anchor_message_id, now);
+    this.subscribe(merged, issue, now);
+    return merged;
   }
 
   /** Any retained conversation (open, resolved or archived) with this anchor, for reading only. */
@@ -151,16 +314,23 @@ export class Conversations extends WorkingStore {
     ).get(channel, user);
   }
 
+  /** A topic resolved within 7 days: the named one, or the person's latest as a participant present in this channel. */
   recentlyResolved(channel: string, user: string, now: number, topic?: string): Conversation | null {
-    return this.db.query<Conversation, [string, string, number, string | null, string | null]>(`SELECT * FROM conversations
-      WHERE channel_id=? AND user_id=? AND status='resolved' AND resolved_at>?
-      AND (? IS NULL OR anchor_message_id=?)
-      ORDER BY resolved_at DESC LIMIT 1`).get(channel, user, now - 7 * DAY_MS, topic ?? null, topic ?? null);
+    if (topic) {
+      return this.db.query<Conversation, [string, number]>(
+        "SELECT * FROM conversations WHERE anchor_message_id=? AND status='resolved' AND resolved_at>? AND merged_into IS NULL")
+        .get(topic, now - 7 * DAY_MS);
+    }
+    return this.db.query<Conversation, [string, number, string, string]>(`SELECT c.* FROM conversations c
+      JOIN topic_participants p ON p.anchor_message_id=c.anchor_message_id AND p.user_id=?
+      WHERE c.status='resolved' AND c.resolved_at>? AND c.merged_into IS NULL AND (c.channel_id=? OR p.last_channel_id=?)
+      ORDER BY c.resolved_at DESC LIMIT 1`).get(user, now - 7 * DAY_MS, channel, channel);
   }
 
-  /** Helio's delivered question in this channel is waiting on this person. */
+  /** Helio's delivered question waits on this person, asked in this channel. */
   awaitingAnswer(channel: string, user: string): boolean {
-    return this.list().some(row => row.channel_id === channel && row.user_id === user && this.state(row) === "waiting_on_requester");
+    return this.list().some(row => this.state(row) === "waiting_on_requester" &&
+      (row.waiting_on_user ?? row.user_id) === user && (row.question_channel_id ?? row.channel_id) === channel);
   }
 
   /** The conversation-backed admission callbacks every intake reader shares. */
@@ -168,6 +338,7 @@ export class Conversations extends WorkingStore {
     return {
       awaitingAnswer: (channel: string, user: string) => this.awaitingAnswer(channel, user),
       workingAnchor: (channel: string, user: string, messageId: string) => this.workingAnchor(channel, user, messageId),
+      topicMessage: (messageId: string) => this.topicOfMessage(messageId, Date.now()) !== null,
     };
   }
 
@@ -192,58 +363,89 @@ export class Conversations extends WorkingStore {
     }
   }
 
-  append(channel: string, user: string, entry: ConversationEntry, now = Date.now()): void {
+  /**
+   * Records a message in the topic it belongs to. A participant's message needs an open claim; Helio's replies are
+   * always recorded; anyone else joins only through a topic reply (`recordAnswered`).
+   */
+  append(channel: string, user: string, entry: ConversationEntry, now = Date.now(), placement?: Placement): void {
     if (this.isNotice(entry.message_id)) return;
     this.db.transaction(() => {
       const row = this.get(channel, user, entry.message_id) ?? this.forReply(channel, user, entry.reply_to);
       if (!row) return;
-      const claim = this.working(entry.message_id);
-      if (entry.author_id === user && (claim?.claimed_at == null || claim.closed_at !== null)) return;
-      const inserted = this.db.query(`INSERT OR IGNORE INTO transcript
-        (message_id,channel_id,user_id,opened_at,author_id,sent_at,entry) VALUES (?,?,?,?,?,?,?)`)
-        .run(entry.message_id, channel, user, row.opened_at, entry.author_id, entry.sent_at ?? null, JSON.stringify(entry));
-      if (!inserted.changes) return;
-      if (entry.author_id === user) this.observeInput(channel, user, entry.message_id, now, entry.reply_to);
-      // Only the person's input clears a question; reply settlement owns what Helio's own replies mean.
-      const input = entry.author_id === user ? 1 : 0;
-      this.db.query(`UPDATE conversations SET last_activity=max(last_activity,?),nudged_at=NULL,
-        waiting_on=CASE WHEN ?2 THEN '' ELSE waiting_on END,
-        question_started_at=CASE WHEN ?2 THEN NULL ELSE question_started_at END,
-        reply_disposition=CASE WHEN ?2 THEN NULL ELSE reply_disposition END
-        WHERE channel_id=? AND user_id=? AND opened_at=?`)
-        .run(now, input, channel, user, row.opened_at);
+      if (!entry.bot) {
+        const claim = this.working(entry.message_id);
+        if (!this.isParticipant(row.anchor_message_id, entry.author_id) || claim?.claimed_at == null || claim.closed_at !== null) return;
+      }
+      this.record(row, entry, placement ?? { channel, audience: this.audienceIn(channel) }, now);
     }).immediate();
+  }
+
+  /** A topic reply answers or covers this message: its author joins, and the message is recorded in the topic. */
+  recordAnswered(row: Conversation, entry: ConversationEntry, placement: Placement, via: "answered" | "covered", now: number): void {
+    this.db.transaction(() => {
+      this.join(row.anchor_message_id, entry.author_id, via, placement.channel, entry.message_id, now);
+      this.record(row, entry, placement, now);
+    }).immediate();
+  }
+
+  private record(row: Conversation, entry: ConversationEntry, placement: Placement, now: number): void {
+    const helio = entry.bot === true;
+    const inserted = this.db.query(`INSERT OR IGNORE INTO transcript
+      (message_id,channel_id,user_id,opened_at,author_id,sent_at,entry,message_channel_id,audience,is_helio) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(entry.message_id, row.channel_id, row.user_id, row.opened_at, entry.author_id, entry.sent_at ?? null,
+        JSON.stringify(entry), placement.channel, placement.audience, helio ? 1 : 0);
+    if (!inserted.changes) return;
+    if (!helio) {
+      this.join(row.anchor_message_id, entry.author_id, "answered", placement.channel, entry.message_id, now);
+      this.inputFor(row, entry.message_id, now);
+    }
+    this.db.query(`UPDATE conversations SET last_activity=max(last_activity,?),nudged_at=NULL
+      WHERE channel_id=? AND user_id=? AND opened_at=?`).run(now, row.channel_id, row.user_id, row.opened_at);
+  }
+
+  /** The audience last recorded for a channel; unknown channels are treated as staff so nothing becomes public. */
+  audienceIn(channel: string): Audience {
+    return this.db.query<{ audience: Audience }, [string]>(
+      "SELECT audience FROM transcript WHERE message_channel_id=? ORDER BY rowid DESC LIMIT 1").get(channel)?.audience ?? "staff";
   }
 
   /** Authorized, prepared input invalidates a covered revision before the lead claims its turn. */
   observeInput(channel: string, user: string, messageId: string, now: number, replyTo?: string): void {
     this.db.transaction(() => {
       const row = this.get(channel, user, messageId) ?? this.forReply(channel, user, replyTo);
-      if (!row || (row.latest_input_id && BigInt(messageId) <= BigInt(row.latest_input_id))) return;
-      this.db.run(`UPDATE conversations SET latest_input_id=?,revision=revision+1,last_activity=max(last_activity,?),
-        waiting_on='',question_started_at=NULL,reply_disposition=NULL,nudged_at=NULL
-        WHERE channel_id=? AND user_id=? AND opened_at=?`, [messageId, now, channel, user, row.opened_at]);
+      if (row) this.inputFor(row, messageId, now);
     }).immediate();
   }
 
-  claim(channel: string, user: string, entry: ConversationEntry, now: number): void {
+  /** New participant input puts the topic back on Helio and clears its question. */
+  private inputFor(row: Conversation, messageId: string, now: number): void {
+    if (row.latest_input_id && BigInt(messageId) <= BigInt(row.latest_input_id)) return;
+    this.db.run(`UPDATE conversations SET latest_input_id=?,revision=revision+1,last_activity=max(last_activity,?),
+      waiting_on='',question_started_at=NULL,reply_disposition=NULL,nudged_at=NULL,waiting_on_user=NULL
+      WHERE channel_id=? AND user_id=? AND opened_at=?`, [messageId, now, row.channel_id, row.user_id, row.opened_at]);
+  }
+
+  claim(channel: string, user: string, entry: ConversationEntry, now: number, placement?: Placement): void {
     this.db.transaction(() => {
       this.claimWorking(channel, user, entry.message_id, now);
-      this.append(channel, user, entry, now);
+      this.append(channel, user, entry, now, placement);
     }).immediate();
   }
 
-  transcriptOf(row: Conversation): ConversationEntry[] {
-    return this.db.query<{ entry: string }, [string, string, number]>(
-      "SELECT entry FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=? ORDER BY rowid",
-    ).all(row.channel_id, row.user_id, row.opened_at).map((entry) => JSON.parse(entry.entry));
+  /** Recorded text, optionally limited to what a viewer in this place may see. */
+  transcriptOf(row: Conversation, viewer?: Placement): ConversationEntry[] {
+    return this.db.query<{ entry: string; audience: Audience; message_channel_id: string }, [string, string, number]>(
+      `SELECT entry,audience,message_channel_id FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?
+        AND entry IS NOT NULL ORDER BY rowid`,
+    ).all(row.channel_id, row.user_id, row.opened_at)
+      .filter(entry => !viewer || visibleTo(entry, viewer)).map((entry) => JSON.parse(entry.entry));
   }
 
-  /** Every active topic's entries for this person in this channel. */
+  /** Every active topic's entries that this person opened in this channel. */
   transcript(channel: string, user: string): ConversationEntry[] {
     return this.db.query<{ entry: string }, [string, string]>(`SELECT t.entry FROM transcript t
       JOIN conversations c ON c.channel_id=t.channel_id AND c.user_id=t.user_id AND c.opened_at=t.opened_at
-      WHERE c.status IN ('open','on_hold') AND t.channel_id=? AND t.user_id=? ORDER BY t.rowid`)
+      WHERE c.status IN ('open','on_hold') AND t.channel_id=? AND t.user_id=? AND t.entry IS NOT NULL ORDER BY t.rowid`)
       .all(channel, user).map((row) => JSON.parse(row.entry));
   }
 
@@ -251,11 +453,12 @@ export class Conversations extends WorkingStore {
     if (!text.trim() || text.length > 600) throw new TypeError("Summary must be 1-600 characters");
     const row = this.requireOpen(channel, user, topic);
     this.db.query("UPDATE conversations SET summary=? WHERE channel_id=? AND user_id=? AND opened_at=?")
-      .run(text, channel, user, row.opened_at);
+      .run(text, row.channel_id, row.user_id, row.opened_at);
   }
 
-  /** Records what Helio understood; an empty string clears a field. */
-  setState(channel: string, user: string, fields: Understanding & { readonly job?: string; readonly issue?: string }, topic?: string): void {
+  /** Records what Helio understood; an empty string clears a field. Linking an issue may merge into its existing topic. */
+  setState(channel: string, user: string, fields: Understanding & { readonly job?: string; readonly issue?: string }, topic?: string,
+    now = Date.now()): Conversation {
     const entries = UNDERSTANDING_FIELDS.flatMap((name) => fields[name] === undefined ? [] : [[name, fields[name]] as const]);
     const task = (["job", "issue"] as const).flatMap(name => fields[name] === undefined ? [] : [[name, fields[name]] as const]);
     if (fields.job !== undefined && (!/^[a-z0-9][a-z0-9._-]{1,60}$/.test(fields.job) || fields.job.includes(".."))) throw new TypeError("Invalid stable job");
@@ -272,34 +475,36 @@ export class Conversations extends WorkingStore {
     this.db.query(`UPDATE conversations SET revision=revision+1,
       ${fields.waiting_on !== undefined ? "question_started_at=NULL,reply_disposition=NULL," : ""}
       ${updates.map(([name]) => `${name}=?`).join(",")}
-      WHERE channel_id=? AND user_id=? AND opened_at=?`).run(...updates.map(([, value]) => value), channel, user, row.opened_at);
+      WHERE channel_id=? AND user_id=? AND opened_at=?`).run(...updates.map(([, value]) => value), row.channel_id, row.user_id, row.opened_at);
+    const current = this.topic(row.anchor_message_id)!;
+    return fields.issue ? this.linkTopicIssue(current, fields.issue, now) : current;
   }
 
   hold(channel: string, user: string, reason: string, topic?: string): void {
     if (!reason.trim() || reason.length > 600) throw new TypeError("Hold reason must be 1-600 characters");
     const row = this.requireOpen(channel, user, topic);
     this.db.query("UPDATE conversations SET revision=revision+1,status='on_hold',hold_reason=? WHERE channel_id=? AND user_id=? AND opened_at=?")
-      .run(reason, channel, user, row.opened_at);
+      .run(reason, row.channel_id, row.user_id, row.opened_at);
   }
 
   resume(channel: string, user: string, topic?: string): void {
     const row = this.requireOpen(channel, user, topic);
     this.db.query(`UPDATE conversations SET revision=revision+1,status='open',hold_reason=NULL
-      WHERE channel_id=? AND user_id=? AND opened_at=? AND status='on_hold'`).run(channel, user, row.opened_at);
+      WHERE channel_id=? AND user_id=? AND opened_at=? AND status='on_hold'`).run(row.channel_id, row.user_id, row.opened_at);
   }
 
   reopen(channel: string, user: string, now: number, topic?: string): Conversation {
     return this.db.transaction((): Conversation => {
-      this.requireSlot(channel, user);
       const row = this.recentlyResolved(channel, user, now, topic);
       if (!row) throw new RangeError("No conversation resolved in the last 7 days; open a new one");
+      this.requireSlot(row.channel_id, row.user_id);
       this.db.query(`UPDATE conversations SET status='open',outcome=NULL,closed_at=NULL,resolved_at=NULL,
         revision=revision+1,waiting_on='',question_started_at=NULL,last_reply_key=NULL,reply_disposition=NULL,
-        archived_at=NULL,last_activity=?,nudged_at=NULL WHERE channel_id=? AND user_id=? AND opened_at=?`)
-        .run(now, channel, user, row.opened_at);
+        archived_at=NULL,last_activity=?,nudged_at=NULL,waiting_on_user=NULL WHERE channel_id=? AND user_id=? AND opened_at=?`)
+        .run(now, row.channel_id, row.user_id, row.opened_at);
       return { ...row, status: "open", outcome: null, closed_at: null, resolved_at: null,
         archived_at: null, last_activity: now, nudged_at: null, revision: row.revision + 1, waiting_on: "",
-        question_started_at: null, last_reply_key: null, reply_disposition: null };
+        question_started_at: null, last_reply_key: null, reply_disposition: null, waiting_on_user: null };
     }).immediate();
   }
 
@@ -385,18 +590,26 @@ export class Conversations extends WorkingStore {
       if (key && current?.last_reply_key === key) return "applied";
       if (!current || current.opened_at !== row.opened_at || current.revision !== row.revision ||
           current.status !== "open") return "newer-input";
-      const lastHuman = this.transcriptOf(current).findLast(entry => entry.author_id === row.user_id);
+      const lastHuman = this.transcriptOf(current).findLast(entry => !entry.bot);
       if (row.covered && lastHuman && !row.covered.includes(lastHuman.message_id)) return "newer-input";
       if (row.covered && current.latest_input_id && !row.covered.includes(current.latest_input_id)) return "newer-input";
       if (meaning.disposition === "question" && !meaning.waiting_on?.trim()) throw new TypeError("Question requires waiting_on");
+      const asking = meaning.disposition === "question";
+      // A question waits on the person it answered, in the channel and at the message where it was asked.
       this.db.run(`UPDATE conversations SET reply_disposition=?,waiting_on=?,question_started_at=?,
         question_generation=question_generation+?,last_reply_key=?,job=coalesce(job,?),issue=coalesce(issue,?),
+        waiting_on_user=?,question_channel_id=?,question_message_id=?,
         revision=revision+? WHERE channel_id=? AND user_id=? AND opened_at=?`,
-      [meaning.disposition, meaning.disposition === "question" ? meaning.waiting_on! : "",
-        meaning.disposition === "question" ? now : null, meaning.disposition === "question" ? 1 : 0,
-        key ?? null, meaning.job ?? null, meaning.issue ?? null, meaning.disposition === "final" ? 0 : 1,
+      [meaning.disposition, asking ? meaning.waiting_on! : "", asking ? now : null, asking ? 1 : 0,
+        key ?? null, meaning.job ?? null, meaning.issue ?? null,
+        asking ? row.asked_user ?? row.user_id : null, asking ? row.reply_channel ?? row.channel_id : null,
+        asking ? row.asked_message ?? row.anchor_message_id : null, meaning.disposition === "final" ? 0 : 1,
         row.channel_id, row.user_id, row.opened_at]);
-      if (meaning.disposition === "final") this.close(row.channel_id, row.user_id, "answered", now, undefined, row.anchor_message_id);
+      if (meaning.issue && !current.issue) this.subscribe(current, meaning.issue, now);
+      if (meaning.disposition === "final") {
+        const tracked = this.db.query(`SELECT 1 FROM followups WHERE anchor_message_id=? AND status<>'done'`).get(row.anchor_message_id);
+        this.close(row.channel_id, row.user_id, tracked ? "issue" : "answered", now, undefined, row.anchor_message_id);
+      }
       return "applied";
     }).immediate();
   }
@@ -418,7 +631,12 @@ export class Conversations extends WorkingStore {
       this.db.query(`UPDATE conversations SET status='archived',archived_at=resolved_at+?
         WHERE status='resolved' AND resolved_at<=?`).run(7 * DAY_MS, now - 7 * DAY_MS);
       // Raw conversation text has a 30-day ceiling counted from resolution, archived or not.
-      this.db.query("DELETE FROM conversations WHERE status='archived' AND resolved_at<=?").run(now - 30 * DAY_MS);
+      this.db.query("DELETE FROM transcript WHERE entry IS NULL AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.channel_id=transcript.channel_id AND c.user_id=transcript.user_id AND c.opened_at=transcript.opened_at AND c.status IN ('open','on_hold','resolved'))").run();
+      // A topic whose issue subscription is still undelivered keeps its participants and summary until delivery.
+      this.db.query(`DELETE FROM conversations WHERE status='archived' AND resolved_at<=? AND NOT EXISTS (
+        SELECT 1 FROM followups f WHERE f.anchor_message_id=conversations.anchor_message_id AND f.status<>'done')`).run(now - 30 * DAY_MS);
+      this.db.exec(`DELETE FROM topic_participants WHERE NOT EXISTS (
+        SELECT 1 FROM conversations c WHERE c.anchor_message_id=topic_participants.anchor_message_id)`);
       this.db.query("DELETE FROM conversation_notices WHERE created_at<=?").run(now - 37 * DAY_MS);
       this.db.exec(`DELETE FROM conversation_migrations WHERE NOT EXISTS (
         SELECT 1 FROM conversations c WHERE c.channel_id=conversation_migrations.channel_id
