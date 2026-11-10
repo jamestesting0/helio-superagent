@@ -66,16 +66,14 @@ test("legacy replay resolves the original type before treating a saved heading a
   } finally { fetcher.mockRestore(); }
 });
 
-test("conversation follow-ups preserve authority, require an exact owner/channel match, and revoke on replay after close", async () => {
+test("an answer to Helio's open question preserves authority, needs the exact person and channel, and revokes after close", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-policy-"));
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));
   try {
-    const config = { ...cfg, inConversation: (channel: string, user: string) => store.isOpen(channel, user) };
-    store.open(normal, "66", "9", "intake", 1000);
-    const followup = {
-      ...message, content: "more details", mentions: [],
-      message_reference: { message_id: "9" }, referenced_message: { author: { id: "88" } },
-    };
+    const config = { ...cfg, ...store.intakeCallbacks() };
+    const topic = store.open(normal, "66", "9", "intake", 1000);
+    store.applyReply(topic, { disposition: "question", waiting_on: "Which server?" }, 1001);
+    const followup = { ...message, content: "more details", mentions: [] };
     const current = await classify(followup, config, parentOf);
     expect([current?.attention, current?.role, current?.scope]).toEqual(["review", "STAFF_QUESTION", "may-report-issue"]);
     expect(await classify({ ...followup, author: { id: "77", username: "other" } }, config, parentOf)).toBeNull();
@@ -111,7 +109,6 @@ test.each([
   { content: "unmentioned discussion" },
   { content: "<@880> wrong bot <@!088>" },
   { content: "<@88 missing terminator" },
-  { content: "reply", message_reference: { message_id: "9" }, referenced_message: { author: { id: "88" } } },
   { content: "", message_reference: { type: 1, message_id: "9" }, message_snapshots: [{ message: { content: "<@88> forwarded ping" } }] },
   { content: "", embeds: [{ description: "<@88> embedded ping" }] },
   { content: "", attachments: [{ filename: "<@88>.txt", url: "https://cdn.discordapp.com/attachments/1/2/file.txt" }] },
@@ -120,6 +117,14 @@ test.each([
     expect(await classify({
       ...message, mentions: [], ...overrides, author: { id, username: "human" },
     }, cfg, parentOf)).toBeNull();
+  }
+});
+
+test("a normal-chat reply to Helio without a mention is reviewed, never pinged", async () => {
+  for (const id of ["99", "77", "66"]) {
+    const out = await classify({ ...message, content: "reply", mentions: [{ id: "88" }], author: { id, username: "human" },
+      message_reference: { message_id: "9" }, referenced_message: { author: { id: "88" } } }, cfg, parentOf);
+    expect([out?.attention, out?.pinged, out?.replied_to_helio]).toEqual(["review", undefined, true]);
   }
 });
 

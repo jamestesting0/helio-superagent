@@ -228,12 +228,18 @@ describe("classify", () => {
     { mentions: [{ id: "300" }] },
     { content: "<@300> help" },
     { content: "<@!300> help" },
-    { message_reference: { message_id: "40" }, referenced_message: { author: { id: "300" } } },
-    { message_reference: { message_id: "40" }, referenced_message: null },
-    { message_reference: { message_id: "40" } },
-  ])("direct messages, mentions and unresolved replies cannot be discarded: %j", async (over) => {
+  ])("direct messages and mentions are direct: %j", async (over) => {
     const out = await classify(msg(over), cfg, parentOf);
     expect(out?.attention).toBe("direct");
+  });
+
+  test.each([
+    { message_reference: { message_id: "40" }, referenced_message: { author: { id: "300" } }, mentions: [{ id: "300" }] },
+    { message_reference: { message_id: "40" }, referenced_message: null },
+    { message_reference: { message_id: "40" } },
+  ])("replies and unresolved replies stay available for review without counting as pings: %j", async (over) => {
+    const out = await classify(msg(over), cfg, parentOf);
+    expect([out?.attention, out?.pinged]).toEqual(["review", undefined]);
   });
 
   test.each([
@@ -267,5 +273,32 @@ describe("classify", () => {
     });
     expect((await classify(message, cfg, parentOf))?.attention).toBe("review");
     expect((await classify(message, { ...cfg, botId: undefined }, parentOf))?.attention).toBe("direct");
+  });
+});
+
+describe("explicit pings and quiet follow-ups", () => {
+  const NORMAL = "31";
+  const scoped: FilterConfig = { ...cfg, allowed: new Set([STAFF_CATEGORY, NORMAL]), normalChannels: new Set([NORMAL]) };
+  const replyToHelio = { message_reference: { message_id: "9" }, referenced_message: { author: { id: "300" } }, mentions: [{ id: "300" }] };
+  const lookup = async (id: string) => id === NORMAL ? undefined : parentOf(id);
+
+  test("a reply-ping is reviewed and never counts as a ping, in trusted and normal chats", async () => {
+    for (const channel_id of [STAFF_CHANNEL, NORMAL]) {
+      const out = await classify(msg({ channel_id, content: "johnny sins playing elo", ...replyToHelio }), scoped, lookup);
+      expect([out?.attention, out?.pinged, out?.replied_to_helio]).toEqual(["review", undefined, true]);
+    }
+  });
+
+  test("an explicit mention is a direct ping", async () => {
+    const out = await classify(msg({ channel_id: NORMAL, content: "<@300> the queue is stuck" }), scoped, lookup);
+    expect([out?.attention, out?.pinged]).toEqual(["direct", true]);
+  });
+
+  test("unpinged normal-chat chatter is dropped even while its author has an open conversation", async () => {
+    // 2026-11-10 11:43 UTC: owner chatter was admitted only because a conversation was open.
+    const chatter = msg({ channel_id: NORMAL, authorId: OWNER, content: "some beta testing rn to spot any issues before I announce it" });
+    expect(await classify(chatter, { ...scoped, awaitingAnswer: () => false }, lookup)).toBeNull();
+    expect((await classify(chatter, { ...scoped, awaitingAnswer: () => true }, lookup))?.attention).toBe("review");
+    expect(countsTowardCatchUp(chatter, { ...scoped, awaitingAnswer: () => false }, "normal")).toBe(false);
   });
 });

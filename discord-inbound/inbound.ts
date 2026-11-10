@@ -79,9 +79,7 @@ function noteOwnerPost(message: { readonly channel_id?: string; readonly author?
 }
 let cfg: FilterConfig;
 try {
-  cfg = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user),
-    (channel, user, id) => conversations.workingAnchor(channel, user, id), (channel) => ownerPosts.get(channel),
-    (channel, user) => conversations.talkedRecently(channel, user, Date.now()));
+  cfg = filterConfig(process.env, { ...conversations.intakeCallbacks(), lastOwnerPost: channel => ownerPosts.get(channel) });
   await validateChannelPolicy(cfg, discordRest(token), (message) => console.log(monitorLine(`INBOUND_WARN ${message}`)));
 } catch (error) {
   if (!(error instanceof Error)) throw error;
@@ -239,9 +237,7 @@ function refreshPolicy(): Promise<void> {
   updatingPolicy = (async () => {
     do {
       const revision = runtimePolicy()?.revision;
-      const next = filterConfig(process.env, (channel, user) => conversations.isOpen(channel, user),
-        (channel, user, id) => conversations.workingAnchor(channel, user, id), channel => ownerPosts.get(channel),
-        (channel, user) => conversations.talkedRecently(channel, user, Date.now()));
+      const next = filterConfig(process.env, { ...conversations.intakeCallbacks(), lastOwnerPost: channel => ownerPosts.get(channel) });
       if (cfg.botId !== undefined) next.botId = cfg.botId;
       channels.clear();
       await validateChannelPolicy(next, rest, warn);

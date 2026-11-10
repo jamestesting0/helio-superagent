@@ -139,3 +139,14 @@ test("strike evidence renders as message links, falling back to IDs when a chann
     { link: "channel 701 message 2", reason: "b" },
   ]);
 });
+
+test("a joking reply to Helio in the trusted chat is dismissed silently with no strike, but an explicit trusted mention must be answered", () => {
+  // 2026-11-10 14:20 UTC: a member's reply-ping to Helio, without any @mention, drew a scope boundary reply.
+  const reply = ping(0, { channel_policy: "trusted", attention: "review", pinged: undefined, replied_to_helio: true });
+  expect(dismiss(reply).blocked).toBeUndefined();
+  expect(delivery.status("inbound", reply).disposition).toBe("irrelevant");
+  expect(delivery.moderation.strikeCount("500", now)).toBe(0);
+  const mention = ping(1, { channel_policy: "trusted" });
+  expect(() => dismiss(mention)).toThrow("keep it pending");
+  expect(delivery.status("inbound", mention).disposition).toBe("pending");
+});

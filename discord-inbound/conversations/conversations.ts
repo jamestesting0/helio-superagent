@@ -158,10 +158,17 @@ export class Conversations extends WorkingStore {
       ORDER BY resolved_at DESC LIMIT 1`).get(channel, user, now - 7 * DAY_MS, topic ?? null, topic ?? null);
   }
 
-  isOpen(channel: string, user: string): boolean { return this.get(channel, user) !== null; }
+  /** Helio's delivered question in this channel is waiting on this person. */
+  awaitingAnswer(channel: string, user: string): boolean {
+    return this.list().some(row => row.channel_id === channel && row.user_id === user && this.state(row) === "waiting_on_requester");
+  }
 
-  talkedRecently(channel: string, user: string, now: number): boolean {
-    return this.isOpen(channel, user) || this.recentlyResolved(channel, user, now) !== null;
+  /** The conversation-backed admission callbacks every intake reader shares. */
+  intakeCallbacks() {
+    return {
+      awaitingAnswer: (channel: string, user: string) => this.awaitingAnswer(channel, user),
+      workingAnchor: (channel: string, user: string, messageId: string) => this.workingAnchor(channel, user, messageId),
+    };
   }
 
   list(): Conversation[] {
@@ -197,11 +204,14 @@ export class Conversations extends WorkingStore {
         .run(entry.message_id, channel, user, row.opened_at, entry.author_id, entry.sent_at ?? null, JSON.stringify(entry));
       if (!inserted.changes) return;
       if (entry.author_id === user) this.observeInput(channel, user, entry.message_id, now, entry.reply_to);
+      // Only the person's input clears a question; reply settlement owns what Helio's own replies mean.
+      const input = entry.author_id === user ? 1 : 0;
       this.db.query(`UPDATE conversations SET last_activity=max(last_activity,?),nudged_at=NULL,
-        waiting_on=CASE WHEN ? THEN '' ELSE waiting_on END,
-        question_started_at=NULL,reply_disposition=NULL
+        waiting_on=CASE WHEN ?2 THEN '' ELSE waiting_on END,
+        question_started_at=CASE WHEN ?2 THEN NULL ELSE question_started_at END,
+        reply_disposition=CASE WHEN ?2 THEN NULL ELSE reply_disposition END
         WHERE channel_id=? AND user_id=? AND opened_at=?`)
-        .run(now, entry.author_id === user ? 1 : 0, channel, user, row.opened_at);
+        .run(now, input, channel, user, row.opened_at);
     }).immediate();
   }
 

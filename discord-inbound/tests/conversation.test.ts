@@ -169,7 +169,8 @@ test.each(["old", "fresh", "rest"])("intake excludes unclaimed chatter and retai
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));
   const opened = Date.parse("2026-11-02T11:00:00Z");
   try {
-    store.open("100", "99", "9", "Match timeout", opened);
+    // Unthreaded follow-ups reach Helio only while its question waits on this person here.
+    store.applyReply(store.open("100", "99", "9", "Match timeout", opened), { disposition: "question", waiting_on: "Which match?" }, opened);
     const stdout = await intake(dir, mode);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
@@ -208,6 +209,7 @@ test.each([10, 1000])("transcript payload keeps newest entries within count and 
       content: "x".repeat(length), timestamp: "2026-11-02T11:00:00Z",
     }, 12000).entry);
     for (const entry of entries) store.claim("100", "99", entry, Date.parse("2026-11-02T11:00:00Z"));
+    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which match?" }, Date.parse("2026-11-02T11:00:00Z"));
     await intake(dir, "old");
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {

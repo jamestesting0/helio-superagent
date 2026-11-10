@@ -22,7 +22,7 @@ function config(values: Record<string, string> = {}, lastOwnerPost?: (channel: s
   const cfg = filterConfig({
     DORI_DISCORD_OWNER_ID: OWNER, DORI_DISCORD_ALLOWED: `${NORMAL},${TRUSTED}`, DORI_DISCORD_NORMAL_CHANNELS: NORMAL,
     DORI_DISCORD_TRUSTED_CHANNELS: TRUSTED, DORI_DISCORD_REPORT_CHANNELS: NORMAL, ...values,
-  }, undefined, undefined, lastOwnerPost);
+  }, lastOwnerPost ? { lastOwnerPost } : {});
   cfg.botId = BOT;
   return cfg;
 }

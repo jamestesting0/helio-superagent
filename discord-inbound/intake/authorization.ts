@@ -5,10 +5,10 @@ import { type ApiChannel, type Rest, THREAD_PARENT_TYPES } from "../discord/rest
 import { policyValues } from "./runtime-policy.ts";
 
 /** Channel trust never grants sender authority or adds a channel to the allowlist. */
+export type IntakeCallbacks = Pick<FilterConfig, "awaitingAnswer" | "workingAnchor" | "lastOwnerPost">;
+
 export function filterConfig(
-  values: Readonly<Record<string, string | undefined>>, inConversation?: FilterConfig["inConversation"],
-  workingAnchor?: FilterConfig["workingAnchor"], lastOwnerPost?: FilterConfig["lastOwnerPost"],
-  recentlyTalked?: FilterConfig["recentlyTalked"],
+  values: Readonly<Record<string, string | undefined>>, callbacks: IntakeCallbacks = {},
 ): FilterConfig {
   const current = policyValues(values);
   const required = (name: string) => {
@@ -53,10 +53,7 @@ export function filterConfig(
     normalChannels,
     issueReportChannels: csv("DORI_DISCORD_REPORT_CHANNELS"),
     bugReportSource,
-    ...(inConversation ? { inConversation } : {}),
-    ...(workingAnchor ? { workingAnchor } : {}),
-    ...(lastOwnerPost ? { lastOwnerPost } : {}),
-    ...(recentlyTalked ? { recentlyTalked } : {}),
+    ...callbacks,
     answerForOwner: answerForOwner === "on",
     ownerPresentMs: Number(presentMinutes) * 60_000,
     ...(scopeCategory ? { scopeCategory } : {}),

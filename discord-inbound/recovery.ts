@@ -111,9 +111,7 @@ async function main(): Promise<void> {
     const token = process.env.DORI_DISCORD_TOKEN;
     if (!token) throw new TypeError("Current authorization requires DORI_DISCORD_TOKEN");
     const rest = cachedReads(discordRest(token));
-    const cfg = filterConfig(process.env, (channel, user) => store.isOpen(channel, user),
-      (channel, user, messageId) => store.workingAnchor(channel, user, messageId), undefined,
-        (channel, user) => store.talkedRecently(channel, user, Date.now()));
+    const cfg = filterConfig(process.env, store.intakeCallbacks());
     cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
     await validateChannelPolicy(cfg, rest, warn);
     for (const item of queue.pending("inbound")) {

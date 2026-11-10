@@ -147,3 +147,22 @@ test.each([true, false])("a normal-chat ping that replies to a bot embed carries
     expect(reads(result.stdout)).not.toContainEqual(expect.objectContaining({ kind: "ancestor" }));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("one irrelevant call dismisses a whole turn and leaves an unrecordable ID pending", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-irrelevant-turn-"));
+  try {
+    const intake = await run(dir);
+    expect(intake.exitCode).toBe(0);
+    const staged = records(intake.stdout).map(message => String(message.message_id));
+    expect(staged).toEqual(expect.arrayContaining(["10", "90"]));
+    const result = await run(dir, { script: "ack.ts", args: ["irrelevant", "inbound", "10,90,999", "Reviewed: unrelated chatter"] });
+    expect(result.stdout).toContain("ACK_IRRELEVANT stream=inbound message_id=10");
+    expect(result.stdout).toContain("ACK_IRRELEVANT stream=inbound message_id=90");
+    expect(result.stdout).toContain("ACK_WITHHELD 999:");
+    expect(result.exitCode).toBe(1);
+    const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+    try {
+      expect(["10", "90"].map(id => queue.status("inbound", id).disposition)).toEqual(["irrelevant", "irrelevant"]);
+    } finally { queue.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

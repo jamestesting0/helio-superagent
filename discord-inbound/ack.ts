@@ -64,10 +64,10 @@ if (!state || (stream !== "inbound" && stream !== "context") ||
       (name === "--section" && action === "show" && stream === "inbound" && sectionName))) ||
     (action === "pending" ? positional.length !== 2 :
       ids.length === 0 || ids.length > 10 || ids.some((value) => !/^\d{1,30}$/.test(value)) ||
-      ((!show || stream === "context") && ids.length !== 1) ||
+      ((!show || stream === "context") && action !== "irrelevant" && ids.length !== 1) ||
       positional.length !== (action === "irrelevant" ? 4 : 3)) ||
     (action === "irrelevant" && (!reason?.trim() || reason.length > 500))) {
-  console.error("Usage: ack pending inbound|context [--after ID] OR ack show inbound <ids> [--section NAME --offset N] OR ack show context <id> [--offset N] OR ack done|status inbound|context <id> OR ack accept|check|working inbound <id> OR ack irrelevant inbound <id> <reason>; requires DORI_STATE_DIR");
+  console.error("Usage: ack pending inbound|context [--after ID] OR ack show inbound <ids> [--section NAME --offset N] OR ack show context <id> [--offset N] OR ack done|status inbound|context <id> OR ack accept|check|working inbound <id> OR ack irrelevant inbound <id>[,<id>...] <reason>; requires DORI_STATE_DIR");
   process.exit(2);
 }
 
@@ -100,9 +100,7 @@ try {
     requireCurrentPolicy();
     if (!policy) policy = (async () => {
       if (!rest) throw new TypeError("Requires DORI_DISCORD_TOKEN for current authorization");
-      const cfg = filterConfig(process.env, (channel, user) => store.isOpen(channel, user),
-        (channel, user, messageId) => store.workingAnchor(channel, user, messageId), undefined,
-        (channel, user) => store.talkedRecently(channel, user, Date.now()));
+      const cfg = filterConfig(process.env, store.intakeCallbacks());
       cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
       const warnings: string[] = [];
       await validateChannelPolicy(cfg, rest, (message) => warnings.push(message));
@@ -275,23 +273,34 @@ try {
       (processed < pending.length ? ` next="ack pending ${stream} --after ${last}"` : ""));
   } else if (action === "status" && id) {
     console.log(JSON.stringify({ stream, message_id: id, ...queue.status(stream, id) }));
-  } else if (action === "irrelevant" && id && reason) {
-    const item = queue.pending("inbound").find((item) => item.id === id);
-    if (item) await authorized(item);
-    const result = queue.irrelevant(id, reason);
-    await cleanupAttachments(id, `${state}/attachments/${stream}`);
-    await finishWorking({ store, rest, now: Date.now(), warn }, [id]);
-    console.log(`ACK_IRRELEVANT stream=${stream} message_id=${id}`);
-    if (result.blocked) {
-      const blocked = result.blocked;
-      await settleBlock({ delivery: queue, conversations: store, rest, stateDir, warn }, blocked.user_id, result);
-      console.log(`AUTO_BLACKLISTED ${JSON.stringify({
-        user_id: blocked.user_id, reason: blocked.reason, evidence_message_id: blocked.evidence_message_id,
-        evidence_channel_id: blocked.evidence_channel_id, dismissed: result.dismissed.length,
-        strikes: await strikeLinks(queue.moderation.strikeEvidence(blocked.user_id),
-          async (channel) => rest ? (await rest<{ guild_id?: string }>(`/channels/${channel}`)).guild_id : undefined),
-        next: "ask the owner with helio question ask --audience owner --option Undo --option Keep, then helio blacklist asked USER_ID --question ID",
-      })}`);
+  } else if (action === "irrelevant" && reason) {
+    // One turn may be dismissed at once; each message is authorized and recorded on its own, and a failure stays pending.
+    for (const messageId of ids) {
+      let result: ReturnType<typeof queue.irrelevant>;
+      try {
+        const item = queue.pending("inbound").find((item) => item.id === messageId);
+        if (item) await authorized(item);
+        result = queue.irrelevant(messageId, reason);
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+        console.log(`ACK_WITHHELD ${messageId}: ${withheldReason(error)}`);
+        process.exitCode = 1;
+        continue;
+      }
+      await cleanupAttachments(messageId, `${state}/attachments/${stream}`);
+      await finishWorking({ store, rest, now: Date.now(), warn }, [messageId]);
+      console.log(`ACK_IRRELEVANT stream=${stream} message_id=${messageId}`);
+      if (result.blocked) {
+        const blocked = result.blocked;
+        await settleBlock({ delivery: queue, conversations: store, rest, stateDir, warn }, blocked.user_id, result);
+        console.log(`AUTO_BLACKLISTED ${JSON.stringify({
+          user_id: blocked.user_id, reason: blocked.reason, evidence_message_id: blocked.evidence_message_id,
+          evidence_channel_id: blocked.evidence_channel_id, dismissed: result.dismissed.length,
+          strikes: await strikeLinks(queue.moderation.strikeEvidence(blocked.user_id),
+            async (channel) => rest ? (await rest<{ guild_id?: string }>(`/channels/${channel}`)).guild_id : undefined),
+          next: "ask the owner with helio question ask --audience owner --option Undo --option Keep, then helio blacklist asked USER_ID --question ID",
+        })}`);
+      }
     }
   } else if (action === "done" && id) {
     queue.acknowledge(stream, id);

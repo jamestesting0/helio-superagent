@@ -18,9 +18,8 @@ export interface FilterConfig {
   readonly bugReportSource?: { readonly authorId: string; readonly channelId: string };
   readonly scopeCategory?: string;
   readonly ignoredChannels?: ReadonlySet<string>;
-  readonly inConversation?: (channelId: string, userId: string) => boolean;
-  /** An open conversation or one resolved within the 7-day reopen window. */
-  readonly recentlyTalked?: (channelId: string, userId: string) => boolean;
+  /** Helio's open question in this channel is waiting on this person. */
+  readonly awaitingAnswer?: (channelId: string, userId: string) => boolean;
   readonly workingAnchor?: (channelId: string, userId: string, messageId: string) => string | undefined;
   /** Admit server messages that mention the owner (not Helio), so Helio can answer for the owner. */
   readonly answerForOwner?: boolean;
@@ -68,9 +67,11 @@ export interface Inbound {
   /** Sent by the same person while Helio was preparing its reply to this message. */
   readonly addition_to?: string;
   attachments: string[];
+  /** Direct for DMs and explicit pings only; everything else, replies to Helio included, is reviewed. */
   readonly attention: "direct" | "review";
-  /** A top-level mention; attention also includes DMs and unresolved replies, so it cannot identify pings. */
+  /** An explicit `<@Helio>` in the text. A Discord reply-ping is not a ping. */
   readonly pinged?: true;
+  readonly replied_to_helio?: true;
   /** Mentions the owner, not Helio: Helio may answer for the owner; it never authorizes Helio actions. */
   readonly for_owner?: true;
 }
@@ -121,20 +122,17 @@ export async function classify(
 
   const channelPolicy: ChannelPolicy = msg.guild_id === undefined ? "trusted" :
     await insideAllowed(msg.channel_id, cfg.trustedChannels ?? new Set(), parentOf) ? "trusted" : "normal";
-  const { mentioned, additionTo, conversationFollowup, forOwner } = addressing(msg, cfg, channelPolicy, isBugReport);
-  // Open conversations and working windows admit only their owner's follow-ups in this exact channel.
-  if (channelPolicy === "normal" && !isBugReport && !mentioned && !conversationFollowup && !forOwner) {
+  const { mentioned, additionTo, repliesToHelio, followUp, forOwner } = addressing(msg, cfg, channelPolicy, isBugReport);
+  // Unpinged normal-chat input needs a reply to Helio, the person's own working window, or Helio's open question.
+  if (channelPolicy === "normal" && !isBugReport && !mentioned && !followUp && !forOwner) {
     onIneligible?.();
     return null;
   }
 
   const canReport = msg.guild_id !== undefined && cfg.issueReportChannels !== undefined && await insideAllowed(msg.channel_id, cfg.issueReportChannels, parentOf);
   const replyTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
-  // Unresolved replies and unknown bot identity must not silently lose a direct request.
-  const direct = msg.guild_id === undefined || cfg.botId === undefined ||
-    msg.mentions?.some((user) => user.id === cfg.botId) ||
-    msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`) ||
-    (replyTo !== undefined && (msg.referenced_message == null || msg.referenced_message.author.id === cfg.botId));
+  // Unknown bot identity must not silently lose a direct request.
+  const direct = msg.guild_id === undefined || cfg.botId === undefined || mentioned;
 
   return {
     channel_policy: channelPolicy,
@@ -150,8 +148,9 @@ export async function classify(
     reply_to: replyTo,
     ...(additionTo !== undefined ? { addition_to: additionTo } : {}),
     attachments: (msg.attachments ?? []).map((a) => a.url),
-    attention: isBugReport || conversationFollowup || forOwner ? "review" : direct ? "direct" : "review",
+    attention: isBugReport || forOwner ? "review" : direct ? "direct" : "review",
     ...(mentioned && !isBugReport ? { pinged: true as const } : {}),
+    ...(repliesToHelio && !isBugReport ? { replied_to_helio: true as const } : {}),
     ...(forOwner ? { for_owner: true as const } : {}),
   };
 }
@@ -160,20 +159,21 @@ const bugReport = (msg: IncomingMessage, cfg: FilterConfig): boolean => msg.auth
   msg.author.id === cfg.bugReportSource?.authorId && msg.channel_id === cfg.bugReportSource.channelId &&
   msg.guild_id !== undefined && cfg.allowed.has(msg.channel_id);
 
-/** How a message is addressed: a ping, a follow-up in its author's conversation or working window, or a message for the owner. */
+/**
+ * How a message is addressed. A ping is an explicit `<@Helio>` mention: Discord also lists a replied-to Helio in
+ * `mentions`, so a reply to Helio without the mention text is never a ping. Unpinged follow-ups are replies to Helio, the person's own
+ * working window, or an answer Helio's open question is waiting for.
+ */
 function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy, isBugReport: boolean) {
-  const mentioned = cfg.botId !== undefined && (
-    msg.mentions?.some((user) => user.id === cfg.botId) ||
-    msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`)
-  ) === true;
-  const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
-  // A reply to Helio's own message from someone it was talking with is addressed to Helio without a ping.
   const repliesToHelio = cfg.botId !== undefined && msg.message_reference?.type !== 1 && msg.referenced_message?.author.id === cfg.botId;
-  const conversationFollowup = channelPolicy === "normal" && !isBugReport && !mentioned &&
-    (additionTo !== undefined || cfg.inConversation?.(msg.channel_id, msg.author.id) === true ||
-      (repliesToHelio && cfg.recentlyTalked?.(msg.channel_id, msg.author.id) === true));
+  const mentioned = cfg.botId !== undefined &&
+    (msg.content.includes(`<@${cfg.botId}>`) || msg.content.includes(`<@!${cfg.botId}>`) ||
+      (!repliesToHelio && msg.mentions?.some((user) => user.id === cfg.botId) === true));
+  const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
+  const followUp = channelPolicy === "normal" && !isBugReport && !mentioned &&
+    (additionTo !== undefined || repliesToHelio || cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true);
   const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned);
-  return { mentioned, additionTo, conversationFollowup, forOwner };
+  return { mentioned, additionTo, repliesToHelio, followUp, forOwner };
 }
 
 /**
@@ -186,8 +186,8 @@ export function countsTowardCatchUp(msg: IncomingMessage, cfg: FilterConfig, cha
   if (msg.author.bot && !isBugReport) return false;
   if (!requestMessage(msg, isBugReport)) return false;
   if (channelPolicy === "trusted" || isBugReport || cfg.botId === undefined) return true;
-  const { mentioned, conversationFollowup, forOwner } = addressing(msg, cfg, channelPolicy, false);
-  return mentioned || conversationFollowup || forOwner;
+  const { mentioned, followUp, forOwner } = addressing(msg, cfg, channelPolicy, false);
+  return mentioned || followUp || forOwner;
 }
 
 // User mentions only: role and @everyone mentions are not in `mentions`. A message that also pings or

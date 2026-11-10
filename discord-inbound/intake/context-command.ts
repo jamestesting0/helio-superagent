@@ -103,9 +103,7 @@ export async function contextCommand(args: readonly string[]): Promise<number> {
     const source = queue.pending("inbound").find(item => item.id === rootId);
     if (!source) throw new RangeError("Source is not pending or accepted");
     const saved = object(JSON.parse(source.payload)), origin = object(saved.discord_origin);
-    const cfg = filterConfig(process.env, (channel, user) => store.isOpen(channel, user),
-      (channel, user, messageId) => store.workingAnchor(channel, user, messageId), undefined,
-      (channel, user) => store.talkedRecently(channel, user, Date.now()));
+    const cfg = filterConfig(process.env, store.intakeCallbacks());
     cfg.botId = (await rest<{ id: string }>("/users/@me")).id;
     await validateChannelPolicy(cfg, rest, () => undefined);
     signal.throwIfAborted();

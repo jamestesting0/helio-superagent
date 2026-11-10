@@ -19,9 +19,9 @@ async function store() {
   return { conversations, done: async () => { conversations.dispose(); await rm(dir, { recursive: true, force: true }); } };
 }
 
-const config = (recentlyTalked: (channel: string, user: string) => boolean) => {
+const config = (awaitingAnswer: (channel: string, user: string) => boolean) => {
   const cfg = filterConfig({ DORI_DISCORD_OWNER_ID: "1", DORI_DISCORD_ALLOWED: NORMAL, DORI_DISCORD_NORMAL_CHANNELS: NORMAL },
-    undefined, undefined, undefined, recentlyTalked);
+    { awaitingAnswer });
   cfg.botId = BOT;
   return cfg;
 };
@@ -31,11 +31,12 @@ const unpinged = (over: Partial<IncomingMessage> = {}): IncomingMessage => ({
 });
 const replyToHelio = { message_reference: { message_id: "1290000000000000001" }, referenced_message: { author: { id: BOT } } };
 
-test("an unpinged reply to Helio from someone it talked with this week reaches Helio for review", async () => {
-  const admitted = await classify(unpinged(replyToHelio), config(() => true), async () => undefined);
-  expect([admitted?.role, admitted?.attention]).toEqual(["STAFF_QUESTION", "review"]);
-  expect(await classify(unpinged(replyToHelio), config(() => false), async () => undefined)).toBeNull();
-  expect(await classify(unpinged(), config(() => true), async () => undefined)).toBeNull();
+test("a reply to Helio is read for review but is never a ping, and unthreaded chatter needs Helio's open question", async () => {
+  const reply = await classify(unpinged({ ...replyToHelio, mentions: [{ id: BOT }] }), config(() => false), async () => undefined);
+  expect([reply?.role, reply?.attention, reply?.pinged, reply?.replied_to_helio]).toEqual(["STAFF_QUESTION", "review", undefined, true]);
+  expect(await classify(unpinged(), config(() => false), async () => undefined)).toBeNull();
+  const answer = await classify(unpinged(), config(() => true), async () => undefined);
+  expect([answer?.attention, answer?.pinged]).toEqual(["review", undefined]);
 });
 
 test("structured conversation state is shown first and survives beyond the transcript window", async () => {

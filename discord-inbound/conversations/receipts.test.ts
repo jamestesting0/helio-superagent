@@ -77,7 +77,7 @@ test("a normal-chat addition is admitted for review and names its ping anchor", 
   await withStores(async (_delivery, store) => {
     const cfg = filterConfig({
       DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: normal, DORI_DISCORD_REPORT_CHANNELS: normal,
-    }, undefined, (channel, user, id) => store.workingAnchor(channel, user, id));
+    }, { workingAnchor: (channel, user, id) => store.workingAnchor(channel, user, id) });
     cfg.botId = "88";
     const anchor = idAt(T0);
     store.openWorking(normal, "66", anchor, T0);
