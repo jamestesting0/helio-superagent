@@ -104,6 +104,8 @@ class ExitCodeTests(unittest.TestCase):
                 return {'state': {'mode': 'ready', 'editing': False}, 'context_id': 'c'}
 
             def evaluate(_session, _ctx, expression, timeout='60s'):
+                if 'ids:lis()' in expression:
+                    return {'ids': [], 'before': 'old'}
                 if 'const base=new Set' in expression:
                     return {'state': 'pending', 'message_id': '9', 'thinking': True}
                 if 'const t="' in expression:
@@ -211,6 +213,8 @@ class StrictBrowser:
             return {'ok': True, 'result': script.split('const t="', 1)[1].split('"', 1)[0]}
         if 'const base=new Set' in script:
             return {'ok': True, 'result': json.dumps({'state': 'done', 'message_id': '9', 'author': 'Elo Beta', 'embeds': []})}
+        if 'ids:lis()' in script:
+            return {'ok': True, 'result': json.dumps({'ids': [], 'before': 'old'})}
         if 'map(fieldName)' in script:
             return {'ok': True, 'result': json.dumps(['Page number'])}
         if 'DataTransfer' in script:
@@ -282,6 +286,9 @@ class BrowserSkillContractTests(unittest.TestCase):
             self.assertEqual(browser.calls.count('click'), 1)
             code, out, browser = drive(args('form', field=['Page=5']))
             self.assertEqual((code, out['state'], browser.calls.count('fill')), (0, 'done', 1), out)
+            # The form edits the message whose button opened it, and that message's text was taken before submitting.
+            self.assertIn('target="9"', [x for x in browser.scripts if 'const base=new Set' in x][-1])
+            self.assertIn('const target="9"', [x for x in browser.scripts if 'ids:lis()' in x][-1])
             code, out, browser = drive(args('form', field=['Season=13']))
             self.assertEqual((code, browser.calls.count('fill')), (2, 0), out)
             self.assertIn('Page number', out['error'])

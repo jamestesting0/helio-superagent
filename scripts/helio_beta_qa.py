@@ -134,10 +134,10 @@ def page(body):
     return '(async()=>{' + PAGE + body + '})()'
 
 
-def wait_script(baseline, target, bot, timeout_ms):
+def wait_script(baseline, target, bot, timeout_ms, before=None):
     """Resolve with the answer to the last input: a new or edited Elo Beta message, a modal, or pending."""
     return page(f"""const base=new Set({json.dumps(baseline)}),target={json.dumps(target)},bot={json.dumps(bot)};
-const before=target&&li(target)?li(target).innerText:null;const end=Date.now()+{int(timeout_ms)};
+const before={json.dumps(before)}??(target&&li(target)?li(target).innerText:null);const end=Date.now()+{int(timeout_ms)};
 while(Date.now()<end){{const d=document.querySelector('[role=dialog]');
  if(d&&d.querySelector('input,textarea'))return JSON.stringify({{state:'modal',title:(d.querySelector('h1,h2,[id*=title]')||{{}}).innerText||'',
   fields:fields(d).map(fieldName)}});
@@ -151,8 +151,9 @@ return JSON.stringify({{state:'pending',...(last||{{}}),expected:bot,
  seen:lis().filter(l=>!base.has(l.id)).slice(-3).map(l=>({{id:mid(l),author:author(l),author_id:authorId(l)}}))}});""")
 
 
-def baseline_script():
-    return page("return JSON.stringify(lis().map(l=>l.id));")
+def baseline_script(target=None):
+    """Message IDs and the target's text, taken before an action so even an instant edit is seen as an answer."""
+    return page(f"const target={json.dumps(target)};return JSON.stringify({{ids:lis().map(l=>l.id),before:target&&li(target)?li(target).innerText:null}});")
 
 
 def state_dir(home):
@@ -313,7 +314,16 @@ def bot_identity(home):
 
 
 def answer(home, session, ctx, baseline, target, timeout):
-    return evaluate(session, ctx, wait_script(baseline, target, bot_identity(home), timeout * 1000), timeout=f'{timeout + 15}s')
+    return evaluate(session, ctx, wait_script(baseline['ids'], target, bot_identity(home), timeout * 1000, baseline['before']),
+                    timeout=f'{timeout + 15}s')
+
+
+def remember(home, profile, message):
+    """The message whose controls were used last; a form opened from it edits that message."""
+    sessions = load_sessions(home)
+    if message and profile in sessions:
+        sessions[profile]['last_message'] = message
+        save_sessions(home, sessions)
 
 
 def start(home, profile, channel):
@@ -445,13 +455,16 @@ return editorText();"""))
         hint = evaluate(session, ctx, page("return ([...document.querySelectorAll('[class*=error],[role=alert]')].map(e=>e.innerText).join(' ')||'').slice(0,300);"))
         raise Refused(f'QA_NOT_SENT Discord kept the command in the message box ({hint or left!r})')
     save_sessions(home, {**load_sessions(home), profile: entry})
-    return finish(home, answer(home, session, ctx, baseline, None, timeout), session, ctx, screenshot)
+    result = answer(home, session, ctx, baseline, None, timeout)
+    remember(home, profile, result.get('message_id'))
+    return finish(home, result, session, ctx, screenshot)
 
 
 def interact(home, profile, message, kind, label, option, timeout, screenshot):
     session = session_for(home, profile)['session']
     ctx, _ = sync(session)
-    baseline = evaluate(session, ctx, baseline_script())
+    baseline = evaluate(session, ctx, baseline_script(message))
+    remember(home, profile, message)
     if kind == 'button':
         tok = find(session, ctx, f"""const l=li({json.dumps(message)});const acc=l&&(l.querySelector('[id^="message-accessories-"]')||l);
 return mark(acc&&[...acc.querySelectorAll('button')].find(b=>(b.innerText||b.getAttribute('aria-label')||'').trim()==={json.dumps(label)}&&!b.disabled),t);""",
@@ -472,8 +485,9 @@ def _norm(text):
     return re.sub(r'[^a-z0-9]', '', (text or '').lower())
 
 
-def form(home, profile, fields, submit, timeout, screenshot):
-    session = session_for(home, profile)['session']
+def form(home, profile, fields, submit, timeout, screenshot, message=None):
+    entry = session_for(home, profile)
+    session, target = entry['session'], message or entry.get('last_message')
     ctx, _ = sync(session)
     names = evaluate(session, ctx, page("const d=document.querySelector('[role=dialog]');return JSON.stringify(d?fields(d).map(fieldName):[]);"))
     plan = []
@@ -487,11 +501,11 @@ def form(home, profile, fields, submit, timeout, screenshot):
     for index, value in plan:
         tok = find(session, ctx, f"const d=document.querySelector('[role=dialog]');return mark(d&&fields(d)[{index}],t);", f'form field {names[index]!r}')
         act('fill', session, ctx, tok, '--value', value)
-    baseline = evaluate(session, ctx, baseline_script())
+    baseline = evaluate(session, ctx, baseline_script(target))
     tok = find(session, ctx, f"""const d=document.querySelector('[role=dialog]');return mark(d&&[...d.querySelectorAll('button')].find(b=>b.innerText.trim()==={json.dumps(submit)}),t);""",
                f'form button {submit!r}')
     act('click', session, ctx, tok)
-    return finish(home, answer(home, session, ctx, baseline, None, timeout), session, ctx, screenshot)
+    return finish(home, answer(home, session, ctx, baseline, target, timeout), session, ctx, screenshot)
 
 
 def read(home, profile, message, screenshot):
@@ -562,7 +576,7 @@ def main(args, home=Path.home()):
             fields = [tuple(f.split('=', 1)) for f in args.field or [] if '=' in f]
             if not fields or len(fields) != len(args.field):
                 raise Refused('form needs --field "Label=value"')
-            return form(home, args.profile, fields, args.submit, args.timeout, args.screenshot)
+            return form(home, args.profile, fields, args.submit, args.timeout, args.screenshot, args.message)
         if args.action == 'read':
             return read(home, args.profile, args.message, args.screenshot)
         if args.action == 'where':
