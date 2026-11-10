@@ -168,10 +168,10 @@ class StrictBrowser:
     """BrowserSkill's cooperation rules: scripts and navigation need an unused observation from the latest sync,
     input invalidates observations, and the first script after navigating meets Discord's still-loading media."""
 
-    def __init__(self, qa, account_path, detected=True):
+    def __init__(self, qa, account_path, detected=True, clicks_to_fill=1):
         self.qa, self.path, self.issued, self.calls, self.syncs, self.media_loading = qa, account_path, set(), [], 0, False
         self.filled = self.sent = False
-        self.scripts, self.detected = [], detected
+        self.scripts, self.detected, self.clicks, self.clicks_to_fill = [], detected, 0, clicks_to_fill
 
     def __call__(self, *argv, timeout=60):
         self.calls.append(argv[0])
@@ -189,7 +189,8 @@ class StrictBrowser:
                 raise self.qa['Refused']('The media source changed; synchronize and replan', unexecuted=True)
         if argv[0] in ('click', 'press', 'fill', 'navigate'):
             self.issued.clear()
-            self.filled = self.filled or argv[0] == 'click'
+            self.clicks += argv[0] == 'click'
+            self.filled = self.clicks >= self.clicks_to_fill
             self.sent = self.sent or (argv[0] == 'press' and argv[1] == 'Enter')
             self.media_loading = argv[0] == 'navigate'
         if argv[:2] == ('session', 'list'):
@@ -215,7 +216,7 @@ class StrictBrowser:
         if 'if(o)return o.innerText.trim()' in script:
             return {'ok': True, 'result': 'Hitrate'}
         if 'x.includes(' in script:
-            return {'ok': True, 'result': '/leaderboard lb_type:'}
+            return {'ok': True, 'result': '/leaderboard lb_type:' if self.filled else ''}
         if 'if(!editorText())return' in script or 'return editorText();' in script:
             # An empty message box reads as '': before the mention is clicked and once the command is sent.
             return {'ok': True, 'result': '/leaderboard lb_type: Hitrate' if self.filled and not self.sent else ''}
@@ -225,7 +226,7 @@ class StrictBrowser:
 class BrowserSkillContractTests(unittest.TestCase):
     def drive(self, home, namespace, **patches):
         qa = runpy.run_path(str(SCRIPT))
-        browser = StrictBrowser(qa, '/channels/1033924790513311756/100', patches.pop('detected', True))
+        browser = StrictBrowser(qa, '/channels/1033924790513311756/100', patches.pop('detected', True), patches.pop('clicks_to_fill', 1))
         qa['main'].__globals__.update(_bsk_once=browser, bot_identity=lambda _home: {'id': '88', 'name': 'Elo Beta'}, subprocess=mock.Mock(
             run=mock.Mock(return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))), **patches)
         out = io.StringIO()
@@ -266,9 +267,14 @@ class BrowserSkillContractTests(unittest.TestCase):
             # Elo Beta's message not recognised on the page is caught before any command is sent.
             code, out, _ = drive(args('doctor'), detected=False, **api)
             self.assertEqual((code, out['state'], [row['id'] for row in out['wrong']]), (2, 'drift', ['9']), out)
-            code, out, browser = drive(args('run', 'leaderboard', opt=['lb_type=Hitrate']), schema=lambda *_a: {'leaderboard': LEADERBOARD}, **api)
+            leaderboard = {'schema': lambda *_a: {'leaderboard': LEADERBOARD}, **api}
+            # Discord ignored the first mention click; the second fills the box and the command is sent once.
+            code, out, browser = drive(args('run', 'leaderboard', opt=['lb_type=Hitrate']), clicks_to_fill=2, **leaderboard)
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
-            self.assertEqual(browser.calls.count('press'), 2)
+            self.assertEqual((browser.calls.count('click'), browser.calls.count('press')), (2, 2))
+            code, out, browser = drive(args('run', 'leaderboard', opt=['lb_type=Hitrate']), clicks_to_fill=9, **leaderboard)
+            self.assertEqual((code, browser.calls.count('click'), browser.calls.count('press')), (2, 3, 0), out)
+            self.assertIn('after 3 clicks', out['error'])
             code, out, browser = drive(args('click', message='9', button='Next'))
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
             self.assertEqual(browser.calls.count('click'), 1)

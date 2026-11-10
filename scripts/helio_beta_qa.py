@@ -394,15 +394,26 @@ def run(home, profile, command, opts, channel, timeout, screenshot):
     posted = json.loads((state_dir(home) / 'beta-command-mentions.json').read_text())[0]['message']
     bsk('wait-for-element', '--session', session, '--selector', f'li[id$="-{posted}"] [id^="message-content-"]', '--timeout', '20s')
     last = path.split()[-1]
-    tok = find(session, ctx, f"""const box=document.querySelector('li[id$="-{posted}"] [id^="message-content-"]');
+    finder = f"""const box=document.querySelector('li[id$="-{posted}"] [id^="message-content-"]');
 const spans=box?[...box.querySelectorAll('span,div')].filter(e=>!e.children.length&&e.innerText.trim().endsWith({json.dumps(last)})):[];
-return mark(spans[spans.length-1],t);""", 'the command mention')
-    act('click', session, ctx, tok)
-    m['delete_mentions'](token, home)
-    filled = evaluate(session, ctx, page(f"""const end=Date.now()+5000;while(Date.now()<end){{const x=editorText();
-if(x&&x.includes({json.dumps('/' + path)}))return x;await new Promise(r=>setTimeout(r,150));}}return editorText()||'';"""))
+return mark(spans[spans.length-1],t);"""
+    filling = page(f"""const end=Date.now()+4000;while(Date.now()<end){{const x=editorText();
+if(x&&x.includes({json.dumps('/' + path)}))return x;await new Promise(r=>setTimeout(r,150));}}return editorText()||'';""")
+    filled = ''
+    try:
+        # A mention click only fills this browser's message box; Discord can ignore a click made before it has
+        # loaded the command, so up to three clicks are safe and nothing is sent.
+        for _ in range(3):
+            act('click', session, ctx, find(session, ctx, finder, 'the command mention'))
+            filled = evaluate(session, ctx, filling)
+            if f'/{path}' in (filled or ''):
+                break
+    finally:
+        m['delete_mentions'](token, home)
     if f'/{path}' not in (filled or ''):
-        raise Refused(f'the mention did not fill /{path} (message box: {filled!r}); nothing was sent')
+        seen = evaluate(session, ctx, page("""const a=document.activeElement,d=document.querySelector('[role=dialog]');
+return JSON.stringify({focused:a?(a.getAttribute('role')||a.tagName):'',dialog:d?d.innerText.slice(0,200):'',editor:editorText()});"""))
+        raise Refused(f'the mention did not fill /{path} after 3 clicks (page: {json.dumps(seen, ensure_ascii=False)}); nothing was sent')
     paste = m['paste_expression']
     for step in plan:
         if not step['required']:
