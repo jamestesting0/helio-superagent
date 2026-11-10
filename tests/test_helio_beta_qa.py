@@ -337,6 +337,13 @@ class WaitScriptBehaviourTests(unittest.TestCase):
         out = self.wait(state, before='page 1/18', dialog=True)
         self.assertEqual((out['state'], out['message_id']), ('done', '9'))
 
+    def test_a_new_reply_outranks_a_change_to_the_message_whose_control_was_used(self):
+        state = {'texts': {'9': 'leaderboard'}, 'authors': {'9': '.Elo Beta\nAPP'}, 'dialog': False, 'after': 200,
+                 'later': {'texts': {'9': 'leaderboard (button busy)', '10': 'Only you can see this. Not your leaderboard'},
+                           'authors': {'9': '.Elo Beta\nAPP', '10': '.Elo Beta\nAPP'}}}
+        out = self.wait(state, before='leaderboard')
+        self.assertEqual((out['state'], out['message_id'], out['also']), ('done', '10', ['9']))
+
     def test_an_edit_made_before_the_wait_started_is_still_the_answer(self):
         state = {'texts': {'9': 'page 5/18'}, 'authors': {'9': '.Elo Beta\nAPP'}, 'dialog': False, 'after': 0, 'later': {}}
         self.assertEqual(self.wait(state, before='page 1/18')['state'], 'done')

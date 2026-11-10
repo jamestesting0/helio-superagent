@@ -144,7 +144,7 @@ while(Date.now()<end){{const d=document.querySelector('[role=dialog]');if(!d)gon
   fields:fields(d).map(fieldName)}});
  const fresh=lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view);
  const edited=target&&li(target)&&li(target).innerText!==before?[view(li(target))]:[];
- const done=[...edited,...fresh].filter(v=>!v.thinking);
+ const done=[...fresh,...edited].filter(v=>!v.thinking);
  if(done.length)return JSON.stringify({{state:done[0].failed?'failed':'done',...done[0],also:done.slice(1).map(v=>v.message_id)}});
  await new Promise(r=>setTimeout(r,250));}}
 const last=[...lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view)].pop()||(target&&li(target)?view(li(target)):null);
