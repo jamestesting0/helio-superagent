@@ -13,7 +13,7 @@
 Every call prints one JSON line. Exit 0: done (state done, failed or modal). Exit 2: refused before any input.
 Exit 3: input was sent but no answer was observed; never resend, follow up with `read`. Exit 4: a person holds the tab.
 """
-import contextlib, io, json, os, runpy, secrets, subprocess, time
+import contextlib, io, json, os, runpy, secrets, subprocess, time, traceback
 from pathlib import Path
 
 GUILD = '1033924790513311756'
@@ -102,7 +102,7 @@ def evaluate(session, ctx, expression, timeout='60s'):
     if isinstance(out, dict) and out.get('ok') is False:
         raise Refused(f"page script failed: {str(out.get('error') or out.get('message') or out)[:300]}")
     value = out.get('result', out.get('value', out)) if isinstance(out, dict) else out
-    return json.loads(value) if isinstance(value, str) and value[:1] in '{[' else value
+    return json.loads(value) if isinstance(value, str) and value.startswith(('{', '[')) else value
 
 
 # In-page helpers shared by every script: stable Discord hooks only (ids and roles, never hashed classes).
@@ -111,6 +111,8 @@ const lis=()=>[...document.querySelectorAll('li[id^="chat-messages-"]')];
 const li=id=>lis().find(l=>l.id.endsWith('-'+id));
 const mid=l=>l.id.split('-').pop();
 const author=l=>{for(let x=l;x;x=x.previousElementSibling){const n=x.querySelector&&x.querySelector('[id^="message-username-"]');if(n)return n.innerText.trim();}return '';};
+const authorId=l=>{for(let x=l;x;x=x.previousElementSibling){if(x.querySelector&&x.querySelector('[id^="message-username-"]')){const i=x.querySelector('img[src*="/avatars/"]');const m=i&&i.src.match(/avatars\/(\d+)\//);return m?m[1]:'';}}return '';};
+const isBot=(l,b)=>authorId(l)===b.id||author(l)===b.name;
 const view=l=>{const acc=l.querySelector('[id^="message-accessories-"]')||l;
  return {message_id:mid(l),author:author(l),ephemeral:/Only you can see this/.test(l.innerText),thinking:/is thinking/i.test(l.innerText),
   failed:/did not respond|interaction failed/i.test(l.innerText),text:(l.querySelector('[id^="message-content-"]')||{}).innerText||'',
@@ -132,12 +134,12 @@ const before=target&&li(target)?li(target).innerText:null;const end=Date.now()+{
 while(Date.now()<end){{const d=document.querySelector('[role=dialog]');
  if(d&&d.querySelector('input,textarea'))return JSON.stringify({{state:'modal',title:(d.querySelector('h1,h2,[id*=title]')||{{}}).innerText||'',
   fields:[...d.querySelectorAll('label')].map(l=>l.innerText.trim()).filter(Boolean)}});
- const fresh=lis().filter(l=>!base.has(l.id)&&author(l)===bot).map(view);
+ const fresh=lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view);
  const edited=target&&li(target)&&li(target).innerText!==before?[view(li(target))]:[];
  const done=[...edited,...fresh].filter(v=>!v.thinking);
  if(done.length)return JSON.stringify({{state:done[0].failed?'failed':'done',...done[0],also:done.slice(1).map(v=>v.message_id)}});
  await new Promise(r=>setTimeout(r,250));}}
-const last=[...lis().filter(l=>!base.has(l.id)&&author(l)===bot).map(view)].pop()||(target&&li(target)?view(li(target)):null);
+const last=[...lis().filter(l=>!base.has(l.id)&&isBot(l,bot)).map(view)].pop()||(target&&li(target)?view(li(target)):null);
 return JSON.stringify({{state:'pending',...(last||{{}})}});""")
 
 
@@ -293,14 +295,14 @@ def finish(home, result, session=None, ctx=None, screenshot=None):
     return 0
 
 
-def bot_name(home):
+def bot_identity(home):
     m, token = rest(home)
     me = m['call'](token, 'GET', '/users/@me')
-    return me.get('global_name') or me['username']
+    return {'id': me['id'], 'name': me.get('global_name') or me['username']}
 
 
 def answer(home, session, ctx, baseline, target, timeout):
-    return evaluate(session, ctx, wait_script(baseline, target, bot_name(home), timeout * 1000), timeout=f'{timeout + 15}s')
+    return evaluate(session, ctx, wait_script(baseline, target, bot_identity(home), timeout * 1000), timeout=f'{timeout + 15}s')
 
 
 def start(home, profile, channel):
@@ -461,8 +463,8 @@ const i=l&&(l.htmlFor&&document.getElementById(l.htmlFor)||l.parentElement.query
 def read(home, profile, message, screenshot):
     session = session_for(home, profile)['session']
     ctx, _ = sync(session)
-    bot = bot_name(home)
-    got = evaluate(session, ctx, page(f"""const l={f'li({json.dumps(message)})' if message else f'lis().filter(x=>author(x)==={json.dumps(bot)}).pop()'};
+    bot = bot_identity(home)
+    got = evaluate(session, ctx, page(f"""const l={f'li({json.dumps(message)})' if message else f'lis().filter(x=>isBot(x,{json.dumps(bot)})).pop()'};
 return JSON.stringify(l?{{state:'done',...view(l)}}:{{state:'missing'}});"""))
     if got.get('state') == 'missing':
         raise Refused('message not found in the loaded channel')
@@ -531,6 +533,10 @@ def main(args, home=Path.home()):
     except (Refused, Uncertain, HumanHold) as error:
         print(json.dumps({'state': type(error).__name__.lower(), 'error': str(error)}))
         return error.code
+    except Exception as error:  # may follow input, so it is uncertain: inspect with read, never resend
+        frame = traceback.extract_tb(error.__traceback__)[-1]
+        print(json.dumps({'state': 'error', 'error': f'{type(error).__name__}: {error}', 'at': f'{frame.name}:{frame.lineno}'}))
+        return 3
 
 
 def add_parser(sub):

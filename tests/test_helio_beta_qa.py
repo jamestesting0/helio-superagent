@@ -111,7 +111,7 @@ class ExitCodeTests(unittest.TestCase):
                 return []
 
             code, out = self.run_main(args('click', message='9', button='Next'), Path(home), _bsk_once=bsk, evaluate=evaluate,
-                                      bot_name=lambda _home: 'Elo Beta')
+                                      bot_identity=lambda _home: {'id': '88', 'name': 'Elo Beta'})
             self.assertEqual(code, 3)
             self.assertEqual(out['state'], 'uncertain')
             self.assertEqual(len(clicks), 1)
@@ -170,6 +170,7 @@ class StrictBrowser:
 
     def __init__(self, qa, account_path):
         self.qa, self.path, self.issued, self.calls, self.syncs, self.media_loading = qa, account_path, set(), [], 0, False
+        self.filled = self.sent = False
 
     def __call__(self, *argv, timeout=60):
         self.calls.append(argv[0])
@@ -187,6 +188,8 @@ class StrictBrowser:
                 raise self.qa['Refused']('The media source changed; synchronize and replan', unexecuted=True)
         if argv[0] in ('click', 'press', 'fill', 'navigate'):
             self.issued.clear()
+            self.filled = self.filled or argv[0] == 'click'
+            self.sent = self.sent or (argv[0] == 'press' and argv[1] == 'Enter')
             self.media_loading = argv[0] == 'navigate'
         if argv[:2] == ('session', 'list'):
             return []
@@ -201,27 +204,48 @@ class StrictBrowser:
             return {'ok': True, 'result': script.split('const t="', 1)[1].split('"', 1)[0]}
         if 'const base=new Set' in script:
             return {'ok': True, 'result': json.dumps({'state': 'done', 'message_id': '9', 'author': 'Elo Beta', 'embeds': []})}
+        if 'DataTransfer' in script:
+            return {'ok': True, 'result': 'PASTED'}
+        if 'if(o)return o.innerText.trim()' in script:
+            return {'ok': True, 'result': 'Hitrate'}
+        if 'x.includes(' in script:
+            return {'ok': True, 'result': '/leaderboard lb_type:'}
+        if 'if(!editorText())return' in script or 'return editorText();' in script:
+            # An empty message box reads as '': before the mention is clicked and once the command is sent.
+            return {'ok': True, 'result': '/leaderboard lb_type: Hitrate' if self.filled and not self.sent else ''}
         return {'ok': True, 'result': '[]'}
 
 
 class BrowserSkillContractTests(unittest.TestCase):
-    def drive(self, home, namespace):
+    def drive(self, home, namespace, **patches):
         qa = runpy.run_path(str(SCRIPT))
         browser = StrictBrowser(qa, '/channels/1033924790513311756/100')
-        qa['main'].__globals__.update(_bsk_once=browser, bot_name=lambda _home: 'Elo Beta', subprocess=mock.Mock(
-            run=mock.Mock(return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))))
+        qa['main'].__globals__.update(_bsk_once=browser, bot_identity=lambda _home: {'id': '88', 'name': 'Elo Beta'}, subprocess=mock.Mock(
+            run=mock.Mock(return_value=mock.Mock(returncode=0, stdout='ready', stderr=''))), **patches)
         out = io.StringIO()
         with redirect_stdout(out), mock.patch.dict('os.environ', {'HELIO_TEST_CHANNEL': '100', 'HELIO_TEST_CATEGORY': 'cat'}):
             code = qa['main'](namespace, home=home)
         return code, json.loads(out.getvalue().strip().splitlines()[-1]), browser
 
-    def test_start_then_click_follow_the_observation_rules_through_loading_media(self):
+    def test_start_run_and_click_follow_the_observation_rules_through_loading_media(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             (home / '.dori/elobot').mkdir(parents=True)
             (home / '.dori/elobot/qa-accounts.json').write_text(json.dumps({'qa-a': {'account': 'Dominik', 'browser': 'b1'}}))
             code, out, _ = self.drive(home, args('start'))
             self.assertEqual((code, out['state']), (0, 'ready'), out)
+            commands = runpy.run_path(str(SCRIPT.with_name('helio_beta_commands.py')))
+
+            def mention(_token, home_, _table, _test, _path, channel):
+                (home_ / '.dori/elobot/state/beta-command-mentions.json').write_text(json.dumps([{'channel': channel, 'message': '555'}]))
+
+            discord = {'call': lambda *_a: {'id': '88', 'username': 'Elo Beta'}, 'collect': lambda *_a: (None, {}),
+                       'placement': lambda *_a: {}, 'source_root': lambda: None, 'mention': mention, 'CommandsError': RuntimeError,
+                       'delete_mentions': lambda *_a: 1, 'paste_expression': commands['paste_expression']}
+            code, out, browser = self.drive(home, args('run', 'leaderboard', opt=['lb_type=Hitrate']), rest=lambda _home: (discord, 't'),
+                                            schema=lambda *_a: {'leaderboard': LEADERBOARD})
+            self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
+            self.assertEqual(browser.calls.count('press'), 2)
             code, out, browser = self.drive(home, args('click', message='9', button='Next'))
             self.assertEqual((code, out['state'], out['message_id']), (0, 'done', '9'), out)
             self.assertEqual(browser.calls.count('click'), 1)
@@ -230,7 +254,7 @@ class BrowserSkillContractTests(unittest.TestCase):
 class PageScriptTests(unittest.TestCase):
     def test_generated_page_scripts_parse(self):
         qa = runpy.run_path(str(SCRIPT))
-        scripts = [qa['baseline_script'](), qa['wait_script'](['a'], '9', 'Elo Beta', 1000)]
+        scripts = [qa['baseline_script'](), qa['wait_script'](['a'], '9', {'id': '88', 'name': 'Elo Beta'}, 1000)]
         for source in filter(None, scripts):
             result = subprocess.run(['bun', '-e', 'new Bun.Transpiler({loader:"js"}).transformSync(await Bun.stdin.text())'],
                                     input=source, capture_output=True, text=True, timeout=30)
