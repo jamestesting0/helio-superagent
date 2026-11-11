@@ -89,7 +89,7 @@ function textMime(value: string | null | undefined): boolean {
   return mime === "text/plain" || mime === "text/markdown" || mime === "text/x-markdown" || mime === "application/octet-stream";
 }
 
-function attachmentKind(item: Attachment): FileKind {
+function attachmentKind(item: Attachment): "image" | "text" {
   const name = item.filename;
   if (!name || name.length > 200 || name.startsWith(".") || UNSAFE_NAME.test(name)) {
     throw new ImageRejected("Unsupported or suspicious attachment filename");
@@ -100,16 +100,17 @@ function attachmentKind(item: Attachment): FileKind {
   if (kind !== "text" && kind !== "png" && kind !== "jpeg" && kind !== "webp" && kind !== "gif") {
     throw new ImageRejected("Unsupported attachment type", "unsupported-format");
   }
+  // Discord's event MIME and filename can disagree; actual raster types are checked after download.
   if (item.content_type != null &&
-      (kind === "text" ? !textMime(item.content_type) : mimeKind(item.content_type) !== kind)) {
-    throw new ImageRejected("Declared content type does not match attachment filename");
+      (kind === "text" ? !textMime(item.content_type) : mimeKind(item.content_type) === undefined)) {
+    throw new ImageRejected("Declared content type is not supported for this attachment");
   }
   if (item.size !== undefined &&
       (!Number.isSafeInteger(item.size) || item.size < 0 ||
         item.size > (kind === "text" ? MAX_TEXT_BYTES : MAX_IMAGE_BYTES))) {
     throw new ImageRejected("Invalid or oversized attachment");
   }
-  return kind;
+  return kind === "text" ? "text" : "image";
 }
 
 function attachmentUrl(item: Attachment): URL {
@@ -152,7 +153,7 @@ function messageDirectory(messageId: string, imageRoot: string): string {
   return join(resolve(imageRoot), "pending", messageId);
 }
 
-async function download(expected: FileKind | "image", url: URL): Promise<{ bytes: Buffer; kind: FileKind }> {
+async function download(expected: "text" | "image", url: URL): Promise<{ bytes: Buffer; kind: FileKind }> {
   const limit = expected === "text" ? MAX_TEXT_BYTES : MAX_IMAGE_BYTES;
   const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
   // CDN requests are deliberately separate from the authenticated Discord REST client.
@@ -162,7 +163,7 @@ async function download(expected: FileKind | "image", url: URL): Promise<{ bytes
     const mime = response.headers.get("content-type");
     const kind = expected === "image" ? mimeKind(mime) : expected;
     if (kind === undefined) throw new ImageRejected("HTTP content type is not a supported image");
-    if (kind === "text" ? !textMime(mime) : mimeKind(mime) !== kind) {
+    if (kind === "text" && !textMime(mime)) {
       throw new ImageRejected("HTTP content type does not match attachment filename");
     }
     const length = response.headers.get("content-length");

@@ -40,10 +40,13 @@ describe("Discord attachments", () => {
   afterAll(() => http.mockRestore());
 
   test.each([
-    ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"],
-    ["gif", "image/gif"], ["webp", "image/webp"],
-  ] as const)("decodes %s into private static PNG without event MIME", async (ext, mime) => {
-    const bytes = ext === "png" ? png : ext === "gif" ? gif : ext === "webp" ? webp : jpeg;
+    ["png", "image/png", undefined], ["jpg", "image/jpeg", undefined], ["jpeg", "image/jpeg", undefined],
+    ["gif", "image/gif", undefined], ["webp", "image/webp", undefined],
+    ["png", "image/png", "image/jpeg"],
+    ["png", "image/jpeg", "image/png"],
+    ["png", "image/jpeg", undefined],
+  ] as const)("decodes %s with HTTP %s and event MIME %s into private static PNG", async (ext, mime, declared) => {
+    const bytes = mime === "image/png" ? png : mime === "image/gif" ? gif : mime === "image/webp" ? webp : jpeg;
     http.mockImplementation(async (_url, init) => {
       expect(init?.redirect).toBe("error");
       expect(init?.credentials).toBe("omit");
@@ -54,12 +57,14 @@ describe("Discord attachments", () => {
     const result = await prepareAttachments([attachment({
       filename: `photo.${ext}`,
       url: `https://media.discordapp.net/attachments/123/456/photo.${ext}?ex=abc&hm=def`,
+      ...(declared === undefined ? {} : { content_type: declared }),
     })], "100", root);
     expect(result.blocked).toEqual([]);
     expect(result.files).toHaveLength(1);
     const file = result.files[0];
     if (!file) throw new Error("Expected image file");
     expect(file.kind).toBe("image");
+    expect(file).toMatchObject({ format: mime.slice("image/".length), width: 2, height: 2 });
     expect(file.name).toBe(`photo.${ext}`);
     expect((await stat(file.path)).mode & 0o777).toBe(0o600);
     expect(file.path.startsWith(join(root, "pending", "100") + "/")).toBe(true);
@@ -75,7 +80,7 @@ describe("Discord attachments", () => {
     { filename: "photo.exe" }, { filename: "photo.svg" }, { filename: "photo.zip" },
     { filename: "photo.html" }, { filename: "photo.exe.png" }, { filename: "../photo.png" },
     { filename: "photo\u202egnp.exe.png" }, { content_type: "text/plain" },
-    { content_type: "image/jpeg" }, { size: MAX_IMAGE_BYTES + 1 }, { size: -1 },
+    { content_type: "image/svg+xml" }, { size: MAX_IMAGE_BYTES + 1 }, { size: -1 },
     { url: "https://example.com/attachments/123/456/photo.png" },
     { url: "http://cdn.discordapp.com/attachments/123/456/photo.png" },
     { url: "https://user:pass@cdn.discordapp.com/attachments/123/456/photo.png" },
