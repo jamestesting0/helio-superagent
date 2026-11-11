@@ -8,7 +8,7 @@ import { Conversations } from "../conversations/conversations.ts";
 
 async function run(dir: string, options: {
   readonly trusted?: boolean; readonly unknown?: boolean; readonly script?: string; readonly args?: readonly string[];
-  readonly liveReply?: boolean; readonly replyParent?: boolean;
+  readonly liveReply?: boolean; readonly replyParent?: boolean; readonly replyImage?: boolean;
 } = {}) {
   const child = Bun.spawn([
     process.execPath, "--preload", join(import.meta.dir, "../fixtures/discord.ts"),
@@ -22,6 +22,7 @@ async function run(dir: string, options: {
       DORI_TEST_REPLIES: "1", DORI_TEST_PING_REPLY: "1", DORI_TEST_TRACE_READS: "1",
       DORI_TEST_FORWARDS: "1", DORI_TEST_UNKNOWN_BOT: options.unknown ? "1" : "",
       DORI_TEST_LIVE_REPLY: options.liveReply ? "1" : "",
+      DORI_TEST_REPLY_IMAGE: options.replyImage ? "1" : "",
       DORI_TEST_REFRESH: "", DORI_TEST_TRUSTED_DMS: "", DORI_TEST_NULL_PARENT: "", DORI_TEST_BUG_REPORTS: "", DORI_TEST_ARCHIVED: "",
     },
     stdout: "pipe", stderr: "pipe",
@@ -145,6 +146,34 @@ test.each([true, false])("a normal-chat ping that replies to a bot embed carries
       ["89", ["Final blocked", "Reason", "browser not connected"], ["[button: Retry]"]],
     ]);
     expect(reads(result.stdout)).not.toContainEqual(expect.objectContaining({ kind: "ancestor" }));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test.each([false, true])("a reply image reaches the reader through ack show and lives until the replying request is handled (trusted %s)", async (trusted) => {
+  const dir = await mkdtemp(join(tmpdir(), "dori-reply-image-"));
+  const options = { trusted, replyParent: true, replyImage: true, liveReply: true };
+  try {
+    const intake = await run(dir, options);
+    expect({ code: intake.exitCode, stderr: intake.stderr }).toEqual({ code: 0, stderr: "" });
+    if (!trusted) expect(reads(intake.stdout)).not.toContainEqual(expect.objectContaining({ kind: "ancestor" }));
+
+    const shown = await run(dir, { ...options, script: "ack.ts", args: ["show", "inbound", "90"] });
+    expect({ code: shown.exitCode, stderr: shown.stderr }).toEqual({ code: 0, stderr: "" });
+    const turn = JSON.parse(shown.stdout.split("\n").find(line => line.startsWith("ACK_TURN "))?.slice(9) ?? "{}");
+    const parent = turn.reply_chain.messages.find((entry: { message_id: string }) => entry.message_id === "89");
+    expect(parent.attachment_count).toBe(1);
+    expect(parent.blocked_attachments).toEqual([]);
+    expect(parent.attachments).toHaveLength(1);
+    const image = parent.attachments[0];
+    expect({ name: image.name, kind: image.kind, width: image.width, height: image.height })
+      .toEqual({ name: "photo.png", kind: "image", width: 1, height: 1 });
+    expect(image.path).toStartWith(join(dir, "attachments/inbound/pending/90") + "/");
+    const bytes = Buffer.from(await Bun.file(image.path).arrayBuffer());
+    expect(bytes.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+
+    const handled = await run(dir, { ...options, script: "ack.ts", args: ["done", "inbound", "90"] });
+    expect({ code: handled.exitCode, stderr: handled.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(await Bun.file(image.path).exists()).toBe(false);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

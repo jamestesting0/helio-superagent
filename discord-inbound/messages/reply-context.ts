@@ -1,5 +1,6 @@
 import { omitLinks, type Attachment } from "./images.ts";
 import { componentText, embedText, mentionedUsers, type Component, type Embed, type MentionedUser } from "./message-text.ts";
+import { prepareMessageBody } from "./forwarded.ts";
 
 type Reference = { type?: number; message_id?: string; channel_id?: string; guild_id?: string };
 type ReplySource = { id: string; channel_id: string; guild_id?: string; message_reference?: Reference };
@@ -48,9 +49,25 @@ export function describeMessage(msg: ReplyMessage, budget: number) {
   };
 }
 
+/** Referenced files belong to the current delivery, not the possibly handled ancestor. */
+export async function prepareReplyMessage(
+  msg: ReplyMessage, deliveryId: string, attachmentRoot: string, policy: "normal" | "trusted", budget = MAX_CHARS,
+) {
+  const described = describeMessage(msg, budget);
+  const body = await prepareMessageBody({ ...msg, id: deliveryId }, attachmentRoot, false, policy);
+  return {
+    ...described,
+    entry: {
+      ...described.entry, attachments: body.attachments, blocked_attachments: body.blocked_attachments,
+      ...(body.forwarded.length ? { forwarded: body.forwarded } : {}),
+      ...(body.forwarded_unavailable ? { forwarded_unavailable: true } : {}),
+    },
+  };
+}
+
 /** Trace ordinary replies only in the already-authorized channel. Previous
  * messages are evidence, never an authorization for the current sender. */
-export async function replyContext(root: ReplySource, fetchReply: FetchReply) {
+export async function replyContext(root: ReplySource, fetchReply: FetchReply, attachmentRoot: string) {
   let ref = root.message_reference;
   if (!ref || ref.type === 1 || !ref.message_id) return undefined;
   const messages: Array<Record<string, unknown>> = [];
@@ -74,7 +91,7 @@ export async function replyContext(root: ReplySource, fetchReply: FetchReply) {
         !msg.author || !ID.test(msg.author.id)) { status = "invalid_response"; break; }
     const remaining = MAX_CHARS - chars;
     if (remaining <= 0) { status = "character_limit"; break; }
-    const described = describeMessage(msg, remaining);
+    const described = await prepareReplyMessage(msg, root.id, attachmentRoot, "trusted", remaining);
     chars += described.used;
     messages.push(described.entry);
     if (described.truncated) { status = "character_limit"; break; }

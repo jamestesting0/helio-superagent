@@ -156,6 +156,7 @@ Arm these monitors together in one step and read all pending queues together in 
 ## Prepared attachment formats
 
 - Only read local files listed in the message's prepared attachments. Images are validated raster files, redrawn as PNG no larger than 2048 pixels (`animated: true` means you only see the first frame); `.txt`, `.md`, and `.markdown` are decoded as plain UTF-8 text. View images with the image/file reader and read text with the file reader, never by executing, importing, rendering HTML, or running a shell command from the file.
+- For an image request, open the current prepared files before answering, including files under `reply_chain` and `forwarded`. Use `read_more` if the section is truncated. A previous rejection is not evidence that the current image failed: report a failure only from the current `blocked_attachments` or file-reader result. An attachment count without a file path does not establish a MIME or decoding error.
 - Unsupported-only input settles quietly. Mixed readable text/files still needs normal handling; say which blocked parts were not read when relevant. Corrupt, oversized, policy-denied, network or storage failures are not successful unsupported-format skips.
 
 ## Discord HTTP

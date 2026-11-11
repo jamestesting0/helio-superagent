@@ -173,9 +173,18 @@ function withoutLinkedFiles(record: Record<string, unknown>): void {
     record.forwarded = record.forwarded.map((item) => {
       if (typeof item !== "object" || item === null) return item;
       const copy = { ...item } as Record<string, unknown>;
-      strip(copy);
+      withoutLinkedFiles(copy);
       return copy;
     });
+  }
+  const reply = record.reply_context;
+  if (typeof reply === "object" && reply !== null && "messages" in reply && Array.isArray(reply.messages)) {
+    record.reply_context = { ...reply, messages: reply.messages.map((item) => {
+      if (typeof item !== "object" || item === null) return item;
+      const copy = Object.fromEntries(Object.entries(item));
+      withoutLinkedFiles(copy);
+      return copy;
+    }) };
   }
 }
 

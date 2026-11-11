@@ -28,7 +28,7 @@ import { watchedChannels } from "./intake/watched-channels.ts";
 import { prepareMessageBody } from "./messages/forwarded.ts";
 import { checkImageSandbox } from "./messages/image-worker.ts";
 import { awaitsPreview, Previews, type PreviewEmbed } from "./messages/linked-files.ts";
-import { describeMessage, replyContext, type ReplyMessage } from "./messages/reply-context.ts";
+import { describeMessage, prepareReplyMessage, replyContext, type ReplyMessage } from "./messages/reply-context.ts";
 import { recordAnswer } from "./conversations/question-answer.ts";
 import { DiscordRestError, discordRest } from "./discord/rest.ts";
 import { TurnAssembler, type TurnMessage } from "./intake/turns.ts";
@@ -269,11 +269,13 @@ class MessageAuthorizationError extends Error {
 }
 
 // Normal chats: only the message the pinging person replied to, already in the event (no lookup, no deeper chain).
-function repliedTo(msg: IncomingMessage) {
+async function repliedTo(msg: IncomingMessage) {
   const parent = msg.referenced_message as ReplyMessage | null | undefined;
   if (msg.message_reference?.type === 1 || !parent || parent.channel_id !== msg.channel_id ||
+      parent.id !== msg.message_reference?.message_id || (parent.guild_id && parent.guild_id !== msg.guild_id) ||
       typeof parent.content !== "string" || !/^[0-9]+$/.test(parent.author?.id ?? "")) return undefined;
-  return { status: "parent_only", messages: [describeMessage(withoutBlocked(parent), 24_000).entry] };
+  const described = await prepareReplyMessage(withoutBlocked(parent), msg.id, `${stateDir}/attachments/inbound`, "normal");
+  return { status: "parent_only", messages: [described.entry] };
 }
 
 async function conversationContext(msg: IncomingMessage, inbound: Inbound) {
@@ -414,7 +416,8 @@ async function enrich(msg: IncomingMessage, inbound: Inbound, staged: Inbound & 
     await cleanupIgnored(delivery, stateDir, conversations);
     return;
   }
-  const reply_context = inbound.channel_policy === "trusted" ? await replyContext(msg, fetchReply) : repliedTo(msg);
+  const reply_context = inbound.channel_policy === "trusted" ?
+    await replyContext(msg, fetchReply, `${stateDir}/attachments/inbound`) : await repliedTo(msg);
   const conversation = await conversationContext(msg, inbound);
   const assembled = {
     ...staged, ...body, preparation_complete: true,

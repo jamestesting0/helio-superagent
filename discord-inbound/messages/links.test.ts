@@ -26,7 +26,7 @@ test("message, forwarded embed and reply text share inert repository references"
       id: "20", channel_id: "100", message_reference: { message_id: "1" },
     }, async () => ({
       id: "1", channel_id: "100", author: { id: "99", username: "owner" }, content: `${pull} ${issue}`,
-    }));
+    }), "/unused-without-attachments");
     expect(context?.messages[0]?.content).toBe("jamestesting0/elo-bot#42 (pull request) jamestesting0/elo-bot#17 (issue)");
   } finally {
     if (previous === undefined) delete process.env.HELIO_GITHUB_REPO;

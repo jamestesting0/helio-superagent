@@ -208,6 +208,7 @@ export function redactBlocked(value: unknown, blocked: (userId: string) => boole
   const record = Object.fromEntries(entries);
   const author = typeof record.author_id === "string" ? record.author_id : undefined;
   if (author === undefined || !blocked(author)) return record;
-  const { embed_text: _embeds, component_text: _components, attachments: _files, ...kept } = record;
+  const { embed_text: _embeds, component_text: _components, attachments: _files,
+    blocked_attachments: _blockedFiles, forwarded: _forwarded, ...kept } = record;
   return { ...kept, content: OMITTED };
 }

@@ -125,7 +125,7 @@ INBOUND_FILES = (
     "tests/stage-first.test.ts", "tests/gateway-message.test.ts", "tests/quiet-input.test.ts", "tests/reconciliation.test.ts",
     "tests/learning-context.test.ts", "tests/learning-recovery.test.ts", "tests/monitor-contract.test.ts", "tests/normal-flow.test.ts",
     "tests/policy-flow.test.ts", "tests/recovery-flow.test.ts", "tests/startup-recovery.test.ts",
-    "tests/turns-flow.test.ts",
+    "tests/turns-flow.test.ts", "tests/reply-media-replay.test.ts",
     # fixtures
     "fixtures/clock.ts", "fixtures/delivery-output.ts", "fixtures/discord-client.ts", "fixtures/discord-data.ts",
     "fixtures/discord.ts", "fixtures/now.ts", "fixtures/working.ts",
