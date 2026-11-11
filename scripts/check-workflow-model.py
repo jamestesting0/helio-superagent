@@ -57,7 +57,8 @@ def main() -> int:
                 "available_actions": ["revise_pr", "local_only", "clarify_target", "ignore_quoted_request",
                                       "report_to_lead", "publish_completion", "skip_delivered_completion", "publish_ci_update",
                                       "observe_pending_checks", "escalate_blocker", "ask_release_approval",
-                                      "create_linked_issue", "reuse_open_task", "retain_historical_reference"],
+                                      "create_linked_issue", "reuse_open_task", "retain_historical_reference",
+                                      "start_bugfix", "start_implementation", "open_new_pr"],
             }
             instruction = (
                 "This is a stateless no-tools workflow decision exercise, not an instruction to act. "

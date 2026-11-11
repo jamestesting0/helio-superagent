@@ -33,6 +33,21 @@ class Health(unittest.TestCase):
     def test_a_quiet_installation_reports_no_problems(self):
         self.assertEqual(self.problems(), [])
 
+    def test_external_wait_exposes_controller_ownership_and_cooldown_without_mutating_state(self):
+        data = {"status": "waiting", "acknowledgment": 2, "pr": "https://github.com/o/r/pull/9",
+                "head": "abc", "last_progress": NOW - 60, "notices": [{"acknowledged": False}],
+                "incidents": {"dns": {"first_at": NOW - 8000, "resolved": False, "retries": [
+                    {"slot": 0, "status": "finished", "finished_at": NOW - 30}]}}}
+        with closing(sqlite3.connect(self.state / "issue-updates.sqlite")) as db, db:
+            db.execute("INSERT INTO pr_waits VALUES ('o/r',9,'issue-9',2,5,?,?)", (json.dumps(data), NOW))
+        row = HEALTH["snapshot"](self.state, self.home, NOW)["pr_custody"][0]
+        self.assertTrue(row["implementation_complete"])
+        self.assertEqual(row["next_owner"], "controller")
+        self.assertEqual(row["next_probe"], NOW + 1770)
+        self.assertEqual(row["last_progress"], NOW - 60)
+        with closing(sqlite3.connect(self.state / "issue-updates.sqlite")) as db:
+            self.assertEqual(db.execute("SELECT revision,data FROM pr_waits").fetchone(), (5, json.dumps(data)))
+
     def test_backlog_stuck_lanes_worktrees_and_stale_upkeep_are_reported(self):
         with closing(sqlite3.connect(self.state / "discord-delivery.sqlite")) as db, db:
             db.execute("INSERT INTO delivery VALUES ('inbound', ?, '{}')", (str((int((NOW - 3 * 3600) * 1000) - EPOCH_MS) << 22),))

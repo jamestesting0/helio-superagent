@@ -13,6 +13,7 @@ case "${1:-}" in
   browser) shift; exec python3 "$HOME/helio-agent/scripts/helio-browser.py" "$@" ;;
   triage) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-triage.py" "$@" ;;
   autofix) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-autofix.py" "$@" ;;
+  bugfix) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-bugfix.py" "$@" ;;
   plan) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-plan.py" "$@" ;;
   work) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-plan.py" work "$@" ;;
   decide) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/helio-decide.py" "$@" ;;
@@ -34,5 +35,5 @@ case "${1:-}" in
   status) exec python3 "$HOME/helio-agent/scripts/helio-status.py" ;;
   permissions) printf '%s\n' "In the normal WSL shell, edit HELIO_TRUSTED_USERS, HELIO_REPORT_CHANNELS or HELIO_RELEASE_APPROVERS in ~/.config/helio/helio.env" "(comma-separated Discord IDs), run: helio update, then exit and relaunch the isolated workspace." ;;
   "") printf '%s\n' 'In Herdr, run: helio start (new) or helio resume (previous)'; exec herdr --session elobot ;;
-  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|triage|autofix|plan|work|pr|decide|issue|followups|conversation|recovery|blacklist|housekeeping|health|confirm|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
+  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|triage|autofix|bugfix|plan|work|pr|decide|issue|followups|conversation|recovery|blacklist|housekeeping|health|confirm|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
 esac

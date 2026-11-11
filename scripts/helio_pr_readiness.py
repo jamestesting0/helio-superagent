@@ -10,7 +10,7 @@ import subprocess
 from typing import Final, TypedDict
 
 FIELDS: Final = ("number,url,state,headRefName,headRefOid,baseRefName,baseRefOid,"
-                 "isCrossRepository,isDraft,mergeable,mergeStateStatus,statusCheckRollup")
+                 "isCrossRepository,isDraft,mergeable,mergeStateStatus,statusCheckRollup,closingIssuesReferences")
 Runner = Callable[[list[str]], str]
 
 
@@ -20,6 +20,12 @@ class Check(TypedDict, total=False):
     conclusion: str | None
     status: str
     state: str
+    detailsUrl: str
+    targetUrl: str
+
+
+class Reference(TypedDict):
+    number: int
 
 
 class Pull(TypedDict):
@@ -35,6 +41,11 @@ class Pull(TypedDict):
     mergeable: str
     mergeStateStatus: str
     statusCheckRollup: list[Check] | None
+    closingIssuesReferences: list[Reference]
+
+
+class DetailedPull(Pull, total=False):
+    body: str
 
 
 class Observation(TypedDict):
@@ -97,12 +108,41 @@ def check(repo: str, number: int, run: Runner) -> str:
     return f"{prefix} {json.dumps(observation)}"
 
 
-def watch(repo: str, run: Runner) -> list[str]:
+def canonical_branches(issue: int) -> tuple[str, str]:
+    return f"helio/issue-{issue}", f"helio/autofix-{issue}"
+
+
+def open_for_issue(pulls: list[dict], issue: int) -> list[dict]:
+    """Open canonical Helio PRs implementing this issue, by task branch or closing reference."""
+    return [pull for pull in pulls if pull["headRefName"].startswith("helio/") and not pull.get("isCrossRepository")
+            and (pull["headRefName"] in canonical_branches(issue)
+                 or any(ref.get("number") == issue for ref in pull.get("closingIssuesReferences") or []))]
+
+
+def for_issue(repo: str, issue: int, run: Runner) -> str:
+    """Readiness of the issue's PR; a merged canonical PR still counts as delivered work."""
+    pulls = json.loads(run(["gh", "pr", "list", "--repo", repo, "--state", "open", "--base", "main",
+                            "--limit", "10000", "--json", FIELDS]))
+    found = open_for_issue(pulls, issue)
+    if found:
+        prefix, observation = inspect(repo, {**found[0], "baseRefOid": current_main(repo, run)}, run)
+        return f"{prefix} {json.dumps(observation)}"
+    for branch in canonical_branches(issue):
+        merged = json.loads(run(["gh", "pr", "list", "--repo", repo, "--state", "merged", "--head", branch,
+                                 "--json", "number,url"]))
+        if merged:
+            return f"PR_MERGED {json.dumps({'issue': issue, 'number': merged[0]['number'], 'url': merged[0]['url']})}"
+    return f"PR_NONE {json.dumps({'issue': issue})}"
+
+
+def watch(repo: str, run: Runner, excluded: set[int] | None = None) -> list[str]:
     """Repeat unresolved observations; current GitHub state is the durable source."""
     try:
         pulls: list[Pull] = json.loads(run(["gh", "pr", "list", "--repo", repo, "--state", "open",
                                           "--base", "main", "--limit", "10000", "--json", FIELDS]))
         managed = [pull for pull in pulls if pull["headRefName"].startswith("helio/") and not pull["isCrossRepository"]]
+        if excluded:
+            managed = [pull for pull in managed if not any(open_for_issue([pull], issue) for issue in excluded)]
         if not managed:
             return []
         base = current_main(repo, run)

@@ -30,6 +30,19 @@ This directory is a Helio-owned fork of the upstream dori-mode skill (sisyphusla
 
 ## Code changes
 
+Managed phases carry an optional opaque descriptor through launch, queue and
+same-session resume. Deployments may configure read-only `beforeWake` and
+`beforeComplete` argv hooks; effects recheck the lane revision after the hook.
+`claim-done --expected-revision` reserves completion under the admission lock,
+excludes competing wakes and preserves that reservation through acknowledgement
+and settlement. A managed direct close requires the verified reservation.
+Pane-less objections preserve hibernation so a later authorized close can retry.
+Legacy lanes retain their existing protocol. Covered by `scripts/test/phase.test.ts`.
+Startup reservations record their process owner. `recover-start --expected-revision`
+recovers only an interrupted pre-process phase with a dead owner and no possible
+surviving pane/session resources. It preserves the generation and checkpoint;
+live owners and uncertain resources remain held without starting another agent.
+
 | File | Change | Why |
 |---|---|---|
 | `scripts/src/cli.ts`, `scripts/src/messenger/discord.ts` | `dori send discord --to user:ID` (or the owner ID) opens the DM channel first (`Discord.openDm`) | Discord rejects posting to a user ID as a channel (404 Unknown Channel), so DMs to the owner failed |
@@ -78,7 +91,7 @@ monitors rather than repeating setup or verification without changed evidence.
 | `scripts/src/lifecycle.ts`, `cli.ts` | `watch` also finishes `cleanup-pending` closes, hibernates verified idle lanes (`hibernateAfterMin`, authenticated ownership, recorded session, no open question) and drains the launch queue. |
 | `scripts/src/done-flow.ts` | A close whose tab survives records `cleanup-pending` instead of a closed lane with a live tab. |
 | `scripts/src/registry.ts` | Closed lanes move to `lanes/archive/`; hot loops read active records only. |
-| `scripts/src/reap.ts` | `stale` and `reap-worktrees`: worktrees go 3 days after the lane's PR settles, never with unpushed work or without a lane record. Replaces "never delete worktrees automatically" (owner decision). |
+| `scripts/src/reap.ts` | `stale` and `reap-worktrees`: worktrees go 3 days after the lane's PR settles, never with unpushed work or without a lane record. Replaces "never delete worktrees automatically" (owner decision). A Done line naming no PR falls back to the single PR whose head is the worktree's branch on its GitHub origin. |
 | `scripts/test/lifecycle.test.ts` | Cover the cap and queue, fail-closed admission, job identity, session wake, hibernation guards, cleanup-pending, the archive, stale review and the reaper. |
 
 - `dori abandon <key> --reason TEXT [--with-unpushed]` (`done-flow.ts`, `cli.ts`): the owner's way to retire a lane whose Done line can never pass. It shares the failed-launch retirement checks (no live agent in the pane; tab closed; worktree kept), refuses unpushed work unless `--with-unpushed`, records the receipt as abandoned with the reason, and never runs the thread-done hook. Covered by `scripts/test/lifecycle.test.ts`.

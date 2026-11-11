@@ -101,7 +101,8 @@ def run(home, action, update_launcher=False, profile=None):
   if name in documents: data=documents[name]
   elif name=='config.json':
    for k in ('agentCommand','defaultModel','launchKeywords','maxWorkers','hibernateAfterMin','runtimeConfigFile'): active[k]=source_config[k]
-   active.setdefault('hooks',{}).setdefault('inspectJobSource',source_config['hooks']['inspectJobSource'])
+   for hook in ('inspectJobSource','beforeWake','beforeComplete'):
+    active.setdefault('hooks',{}).setdefault(hook,source_config['hooks'][hook])
    data=(json.dumps(active,indent=2)+'\n').encode()
   elif name=='@launcher': data=(ROOT/'scripts/helio-wsl').read_bytes()
   elif name.startswith('@inbound/'): data=(ROOT/'discord-inbound'/name[9:]).read_bytes()

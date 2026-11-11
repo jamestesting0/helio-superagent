@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { lockRegistry } from "./registry-lock.ts";
+import type { PhaseDescriptor } from "./phase.ts";
 
 export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
 
@@ -14,8 +15,10 @@ export type Lane = {
   /** Explicit for new lanes; absence is retained only for readable legacy records. */
   readonly job?: string;
   readonly source?: string;
+  readonly phase?: PhaseDescriptor;
   readonly revision?: number;
   readonly launchState?: "reserved" | "brief-written" | "worktree-created" | "pane-created" | "started" | "unconfirmed" | "failed";
+  readonly launchOwner?: number;
   readonly failedAfter?: Lane["launchState"];
   readonly retiredAt?: string;
   readonly supersededBy?: string;

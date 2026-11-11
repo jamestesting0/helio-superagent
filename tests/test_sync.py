@@ -55,6 +55,15 @@ class SyncTests(unittest.TestCase):
   hooks=json.loads(path.read_text())['hooks']
   self.assertEqual(hooks.get('inspectJobSource'),['helio','recovery','source','{source}','--job','{job}'])
   self.assertEqual({k:v for k,v in hooks.items() if k!='inspectJobSource'},previous)
+ def test_update_adds_phase_effect_hooks_to_legacy_installation(self):
+  path=self.dst/'config.json'; config=json.loads(path.read_text())
+  config['hooks'].pop('beforeWake',None); config['hooks'].pop('beforeComplete',None)
+  path.write_text(json.dumps(config,indent=2)+'\n')
+  quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
+  hooks=json.loads(path.read_text())['hooks']
+  for name,effect in [('beforeWake','wake'),('beforeComplete','complete')]:
+   self.assertEqual(hooks[name],['helio','pr','phase','authorize','--lane','{key}','--effect',effect,
+                                 '--lane-revision','{revision}'])
  def test_install_writes_a_baseline_that_updates_cleanly(self):
   home=self.home/'fresh'; (home/'project').mkdir(parents=True)
   quiet(INSTALL['install'],home,True,home/'project')

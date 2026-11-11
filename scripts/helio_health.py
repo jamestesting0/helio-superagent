@@ -76,12 +76,38 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
     last = json.loads(last_file.read_text()) if last_file.exists() else None
     kept = ((last or {}).get("worktrees") or {}).get("kept") or []
     kept = [{"key": row, "reason": "not recorded; run housekeeping"} if isinstance(row, str) else row for row in kept]
+    custody = []
+    for repo, issue, job, generation, raw in _query(state / "issue-updates.sqlite",
+                                                   "SELECT repo,issue,job,generation,data FROM pr_waits"):
+        try:
+            data = json.loads(raw)
+            retries = [(incident, item) for incident in data["incidents"].values() for item in incident["retries"]]
+            probes = []
+            for incident in data["incidents"].values():
+                attempts = incident["retries"]
+                if not incident["resolved"] and len(attempts) < 3 and all(r["status"] == "finished" for r in attempts):
+                    probes.append(max(incident["first_at"] + (0, 1800, 7200)[len(attempts)],
+                                      (attempts[-1]["finished_at"] or now) + 1800 if attempts else 0))
+            status = data["status"]
+            custody.append({"repo": repo, "issue": issue, "job": job, "generation": generation,
+                            "state": status, "implementation_complete": data["acknowledgment"] == generation,
+                            "pr": data["pr"], "head": data["head"], "last_progress": data["last_progress"],
+                            "next_owner": "worker" if status in ("starting", "implementing", "repair", "diagnosis") else
+                            "requester" if status in ("held", "decision", "unknown") else "controller",
+                            "next_probe": min(probes) if probes else None,
+                            "attempts": [dict(item) for _, item in retries],
+                            "failure_fingerprints": list(data["incidents"]),
+                            "unacknowledged_events": sum(not n["acknowledged"] for n in data["notices"])})
+        except (ValueError, KeyError, TypeError):
+            custody.append({"repo": repo, "issue": issue, "job": job, "generation": generation,
+                            "state": "unknown", "next_owner": "requester"})
     return {
         "at": int(now),
         "oldest_pending_s": int(now - oldest_ms / 1000) if oldest_ms else None,
         "gaps": (_query(delivery, "SELECT count(*) FROM inbound_gaps WHERE acknowledged_at IS NULL") or [(0,)])[0][0],
         "lanes": lanes,
         "work_attention": work_attention,
+        "pr_custody": custody,
         "queued": len(json.loads(queue.read_text())) if queue.exists() else 0,
         "worktrees": {"count": len(worktrees), "bytes": sum(_size(path) for path in worktrees),
                       "kept": kept},
@@ -134,6 +160,8 @@ def main() -> int:
         print("HEALTH ok" if not found else "HEALTH problems: " + "; ".join(found))
         for row in health["work_attention"]:
             print("WORK_ATTENTION " + json.dumps(row))
+        for row in health["pr_custody"]:
+            print("PR_CUSTODY " + json.dumps(row))
     return 0
 
 

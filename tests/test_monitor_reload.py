@@ -239,11 +239,15 @@ class MonitorReloadTests(unittest.TestCase):
                 script.write_text(source)
                 (helpers / "helio_discord_text.py").write_text((ROOT / "scripts/helio_discord_text.py").read_text())
                 if name == "followups":
-                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py", "helio_github_posts.py", "helio_github_body.py", "helio_issue_format.py", "helio_pr_publication.py", "helio_pr_authority.py", "helio_pr_finalize.py"):
+                    for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py", "helio_github_posts.py", "helio_github_body.py", "helio_issue_format.py", "helio_pr_publication.py", "helio_pr_authority.py", "helio_pr_finalize.py",
+                                   "helio_task_lane.py", "helio_regression_proof.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
                     for helper in ("helio_followup_delivery.py", "helio_plan_publication.py",
                                    "helio_plan_request_cli.py", "helio_plan_requests.py", "helio_approval.py",
-                                   "helio_plan_source.py", "helio_runtime_policy.py"):
+                                   "helio_plan_source.py", "helio_runtime_policy.py",
+                                   "helio_pr_verification.py", "helio_pr_recovery_store.py", "helio_pr_recovery_ci.py",
+                                   "helio_pr_phase.py", "helio_pr_recovery_actions.py", "helio_pr_recovery.py",
+                                   "helio_pr_recovery_cli.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
                     for relative in ("delivery/plan-requests.sql",):
                         destination = self.home / "discord-inbound" / relative
@@ -252,7 +256,7 @@ class MonitorReloadTests(unittest.TestCase):
                     self.executable("dori", "#!/bin/sh\necho '[]'\n")
                 argv = [sys.executable, str(script)]
                 if name == "followups":
-                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*|*"pr list"*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
+                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*|*"pr list"*|*"issue list"*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
                     # One open topic subscription, created through the real conversation schema.
                     subprocess.run(["bun", str(ROOT / "discord-inbound/conversation.ts"), "migrate"],
                                    env=self.env, capture_output=True, check=True, timeout=60)

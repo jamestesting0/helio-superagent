@@ -19,6 +19,8 @@ START, END, HASH = (FORMAT[key] for key in ("START", "END", "HASH"))
 split, render, without_timestamp, only_status_refreshed = (FORMAT[key] for key in (
     "split", "render", "without_timestamp", "only_status_refreshed"))
 SYNC = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
+VERIFICATION = runpy.run_path(str(Path(__file__).with_name("helio_pr_verification.py")))
+PR_RECOVERY_STORE = runpy.run_path(str(Path(__file__).with_name("helio_pr_recovery_store.py")))
 
 
 class Refused(RuntimeError):
@@ -121,6 +123,8 @@ class Issues:
                     # Retention ages finished operations from here; ones finished before this column start their clock now.
                     db.execute("ALTER TABLE operations ADD COLUMN completed_at INTEGER")
                     db.execute("UPDATE operations SET completed_at=? WHERE completed IN (1,2)", (int(time.time()),))
+                VERIFICATION["migrate"](db)
+                PR_RECOVERY_STORE["migrate"](db)
                 for operation, change in db.execute("SELECT id,change FROM operations WHERE completed=0").fetchall():
                     if json.loads(change).get("reopen"):
                         db.execute("UPDATE operations SET completed=2,completed_at=? WHERE id=?", (int(time.time()), operation))

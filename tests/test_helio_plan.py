@@ -1,4 +1,5 @@
 """Opt-in issue plans: structured template, GitHub-held state, approval and the PR path."""
+import argparse
 import contextlib
 import copy
 import datetime
@@ -13,7 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from plan_fixture import stage_source
+from plan_fixture import stage_source, verified_suite
 
 ROOT = Path(__file__).resolve().parent.parent
 P = runpy.run_path(str(ROOT / "scripts/helio-plan.py"))
@@ -135,7 +136,7 @@ class PlanCase(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = P["main"](list(argv), gh=self.gh, discord=reader, now=now,
-                             suite=suite or (lambda project, head: 5))
+                             suite=suite or (lambda project, head: verified_suite()))
         return code, out.getvalue().strip()
 
     def post(self, plan=PLAN, now=POSTED, request=True, discord_fn=None, from_message=None):
@@ -468,6 +469,20 @@ class ApprovalTests(PlanCase):
         self.assertEqual(self.approve(later, later, referenced=announcement_of(1))[0], 1)
 
 
+class PrCheckCliTests(PlanCase):
+    def test_number_and_issue_modes_parse_through_the_cli_guards(self):
+        readiness = {"check": lambda repo, number, run: f"FOLLOWUP_PR_READY number={number}",
+                     "for_issue": lambda repo, issue, run: f"PR_NONE issue={issue}"}
+        real = runpy.run_path
+        with patch.dict(P["main"].__globals__["runpy"].__dict__,
+                        {"run_path": lambda path, *a, **k: readiness if path.endswith("helio_pr_readiness.py") else real(path, *a, **k)}):
+            self.assertEqual(self.run_cli("pr", "check", "--number", "22"), (0, "FOLLOWUP_PR_READY number=22"))
+            self.assertEqual(self.run_cli("pr", "check", "--issue", "21"), (0, "PR_NONE issue=21"))
+        for argv in (("pr", "check", "--number", "0"), ("pr", "check", "--issue", "0")):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.run_cli(*argv)
+
+
 class StateTests(PlanCase):
     def test_adopting_removed_questions_allows_approval_of_the_new_revision(self):
         self.post(plan={**PLAN, "open_questions": ["Keep the old deadline?"]})
@@ -739,7 +754,7 @@ class SubmitTests(PlanCase):
 
         def suite(project, head):
             (self.work / "a.txt").write_text("unverified edit\n")
-            return 5
+            return verified_suite()
 
         code, out = self.submit(suite=suite)
         self.assertEqual(code, 1, out)
@@ -828,7 +843,7 @@ class SubmitTests(PlanCase):
         self.git(shared, "commit", "-m", "advance main")
         self.git(shared, "push", "origin", "main")
         checked = []
-        code, out = self.submit(suite=lambda project, head: checked.append(head) or 5)
+        code, out = self.submit(suite=lambda project, head: checked.append(head) or verified_suite())
         self.assertEqual(code, 0, out)
         self.assertEqual((self.work / "base.txt").read_text(), "new main\n")
         self.assertEqual(checked, [self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12")])
@@ -843,14 +858,14 @@ class SubmitTests(PlanCase):
             self.git(shared, "add", "base.txt")
             self.git(shared, "commit", "-m", "owner update")
             self.git(shared, "push", "origin", "main")
-            return 5
+            return verified_suite()
 
         code, out = self.submit(suite=advance)
         self.assertEqual(code, 1, out)
         self.assertEqual(self.gh_fake.created_bodies, [])
         self.assertEqual(self.git(self.work, "ls-remote", "--heads", "origin", "helio/issue-12"), "")
         checked = []
-        code, out = self.submit(suite=lambda project, head: checked.append(head) or 5)
+        code, out = self.submit(suite=lambda project, head: checked.append(head) or verified_suite())
         self.assertEqual(code, 0, out)
         self.assertEqual((self.work / "base.txt").read_text(), "owner update\n")
         self.assertEqual(checked, [self.git(self.dir / "origin.git", "rev-parse", "helio/issue-12")])
@@ -927,7 +942,7 @@ class SubmitTests(PlanCase):
 
         def concurrent_update(project, head):
             self.git(other, "push", "origin", "helio/issue-12")
-            return 5
+            return verified_suite()
 
         code, out = self.submit(suite=concurrent_update)
         self.assertEqual(code, 1, out)
@@ -1204,6 +1219,82 @@ class SubmitTests(PlanCase):
         self.assertEqual(self.data()["approval"]["message"], "901")
         with contextlib.closing(sqlite3.connect(state / "discord-prompts.sqlite")) as db:
             self.assertEqual(db.execute("SELECT status FROM prompts").fetchone()[0], "used")
+
+    def test_requester_hold_stops_publication_until_a_newer_request_lifts_it(self):
+        self.setUp_result(direct=True)
+        code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                                 "--hold", "no-pr", discord_fn=discord(content="fix #12 but don't open a PR yet"))
+        self.assertIn("holds=no-pr", out)
+        code, out = self.submit()
+        self.assertEqual(code, 1, out)
+        self.assertIn("held by requester: no-pr", out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+        later = POSTED + datetime.timedelta(minutes=1)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "556", "--channel", "1",
+                     discord_fn=discord(content="make the pr"), now=later)
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"), now=later)
+        self.assertEqual(code, 0, out)
+
+    def test_a_later_hold_stops_an_approved_plan_from_publishing(self):
+        self.approved_plan()
+        later = POSTED + datetime.timedelta(hours=2)
+        code, out = self.run_cli("work", "authorize", "--issue", "12", "--message", "556", "--channel", "1", "--hold", "no-pr",
+                                 discord_fn=discord(content="fix #12 but don't open a PR yet", sent=later), now=later)
+        self.assertEqual(code, 0, out)
+        code, out = self.run_cli("pr", "submit", "--issue", "12", "--result-file", str(self.dir / "result.json"),
+                                 "--summary-file", str(self.dir / "summary.md"), now=later)
+        self.assertEqual(code, 1, out)
+        self.assertIn("held by requester: no-pr", out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+
+    def test_a_hold_recorded_while_the_suite_runs_stops_push_and_publication(self):
+        self.setUp_result(direct=True)
+        self.run_cli("work", "authorize", "--issue", "12", "--message", "555", "--channel", "1",
+                     discord_fn=discord(content="implement #12"))
+
+        def suite_with_late_hold(project, head):
+            P["WORK"]["record"](P["WORK"]["Authorization"](REPO, 12, "557", "1", OWNER, POSTED + datetime.timedelta(minutes=1),
+                                                           "f" * 64, "request", ("no-push", "no-pr")))
+            return verified_suite()
+
+        code, out = self.submit(suite=suite_with_late_hold)
+        self.assertEqual(code, 1, out)
+        self.assertIn("held by requester: no-push,no-pr", out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+        self.assertEqual(subprocess.run(["git", "ls-remote", "--heads", str(self.dir / "origin.git"), "refs/heads/helio/issue-12"],
+                                        capture_output=True, text=True).stdout, "")
+
+    def test_bug_report_authority_requires_a_regression_that_fails_on_main(self):
+        import sys
+        self.setUp_result(direct=True)
+        request = argparse.Namespace(issue=12, message="555", channel="1", now=POSTED, hold=None)
+        P["authorize_work"](request, self.gh, discord(content="the abort embed stays green")("555"), "bug-report")
+        self.work_message = discord(content="the abort embed stays green")
+        tests = self.work / "tests"
+        tests.mkdir()
+        (tests / "__init__.py").write_text("")
+        case = tests / "test_regression.py"
+        case.write_text("import unittest\nfrom pathlib import Path\nclass Regression(unittest.TestCase):\n"
+                        "    def test_task(self): self.assertTrue(Path('a.txt').exists())\n")
+        self.git(self.work, "add", "tests")
+        self.git(self.work, "commit", "-m", "insufficient regression")
+        shared = self.dir / "shared"
+        self.git(self.work, "worktree", "add", str(shared), "main")
+        (shared / ".venv/bin").mkdir(parents=True)
+        (shared / ".venv/bin/python").symlink_to(sys.executable)
+        with patch.dict(os.environ, {"HELIO_PROJECT": str(shared)}):
+            code, out = self.submit(suite=P["full_suite"])
+        self.assertEqual(code, 1, out)
+        self.assertIn("regression test that fails on main", out)
+        self.assertEqual(self.gh_fake.created_bodies, [])
+        case.write_text("import unittest\nfrom pathlib import Path\nclass Regression(unittest.TestCase):\n"
+                        "    def test_task(self): self.assertEqual(Path('a.txt').read_text(), 'two\\n')\n")
+        self.git(self.work, "add", "tests")
+        self.git(self.work, "commit", "-m", "prove the actual regression")
+        with patch.dict(os.environ, {"HELIO_PROJECT": str(shared)}):
+            code, out = self.submit(suite=P["full_suite"])
+        self.assertEqual(code, 0, out)
 
     def setUp_result(self, direct=False):
         result = {"scope": [{"status": "met", "evidence": "t"}] * 2,

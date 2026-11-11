@@ -70,6 +70,21 @@ class RetentionCoverage(Fixture):
 
 
 class RetentionRules(Fixture):
+    def test_custody_preserves_active_and_unacknowledged_state_and_bound_proof(self):
+        with self.db("issue-updates.sqlite") as db, db:
+            for issue, terminal, acknowledged in ((10, False, True), (11, True, False), (12, True, True)):
+                data = json.dumps({"terminal": terminal, "notices": [{"acknowledged": acknowledged}]})
+                db.execute("INSERT INTO pr_waits VALUES ('o/r',?,'job',1,1,?,?)",
+                           (issue, data, NOW - 200 * DAY))
+                db.execute("""INSERT INTO pr_verifications
+                    (id,repo,issue,head,base,branch,record,status,created_at,published_at)
+                    VALUES (?,'o/r',?,'head','base','branch','{}','published',?,?)""",
+                           (str(issue), issue, NOW - 200 * DAY, NOW - 200 * DAY))
+        HK["retention"](self.state, NOW, apply=True)
+        with self.db("issue-updates.sqlite") as db:
+            self.assertEqual(db.execute("SELECT issue FROM pr_waits ORDER BY issue").fetchall(), [(10,), (11,)])
+            self.assertEqual(db.execute("SELECT issue FROM pr_verifications ORDER BY issue").fetchall(), [(10,), (11,)])
+
     def test_planning_sources_retain_active_consent_and_expire_only_settled_receipts(self):
         with self.db("discord-delivery.sqlite") as db, db:
             for message, state, settled in (("1", "accepted", False), ("2", "posted", False),

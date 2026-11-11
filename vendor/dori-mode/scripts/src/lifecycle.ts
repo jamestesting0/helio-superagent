@@ -71,7 +71,9 @@ export const drainQueue = async (deps: FlowDeps): Promise<string[]> => {
         const lane = await deps.registry.read(entry.key);
         if (!lane || !["hibernated", "closed"].includes(statusOf(lane))) { await withLaunchLock(deps, () => dequeue(deps, entry.key)); continue; }
         startup = (await wakeLane(deps, lane, { ...(entry.briefText ? { briefText: entry.briefText } : {}), priority: entry.priority, note: "woken from the launch queue",
-          attempt: { title: entry.title, done: entry.done, ...(entry.thread ? { thread: entry.thread } : {}), ...(entry.model ? { model: entry.model } : {}) } })).startup;
+          ...(entry.phase ? { phase: entry.phase } : {}),
+          attempt: { title: entry.title, done: entry.done, ...(entry.thread ? { thread: entry.thread } : {}), ...(entry.model ? { model: entry.model } : {}),
+            ...(entry.phase ? { phase: entry.phase } : {}) } })).startup;
       } else {
         startup = (await launchLane(deps, { ...entry, job: entry.job!, brief: "" }, entry.briefText)).startup;
       }

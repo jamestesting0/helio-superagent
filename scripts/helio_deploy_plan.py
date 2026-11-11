@@ -16,6 +16,9 @@ KIT_RULES = (
     ("isolation/*.md", NONE),
     ("isolation/*", FULL),
     ("scripts/helio-followups.py", MONITORS),
+    ("scripts/helio_pr_recovery*.py", MONITORS),
+    ("scripts/helio_pr_phase.py", MONITORS),
+    ("scripts/helio_pr_verification.py", MONITORS),
     ("scripts/helio-questions.py", MONITORS),
     ("scripts/helio_runtime_policy.py", MONITORS),
     *(("scripts/" + helper, MONITORS) for helper in (

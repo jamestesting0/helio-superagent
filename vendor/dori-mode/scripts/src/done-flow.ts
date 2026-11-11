@@ -9,6 +9,9 @@ import { checkDone, type SignalIo } from "./signals.ts";
 import { monitorLine } from "./monitor.ts";
 import { completionFileChecks, recordCompletion } from "./completion.ts";
 import { reclaimLane } from "./reclaim.ts";
+import { withLaunchLock } from "./launch.ts";
+import { dequeue } from "./admission.ts";
+import { PhaseError } from "./phase.ts";
 
 export type FlowDeps = {
   readonly run: Runner;
@@ -24,11 +27,27 @@ const signalIo = (deps: FlowDeps, lane: Lane): SignalIo => ({ cwd: lane.cwd ?? d
 
 const windowMs = (deps: FlowDeps): number => deps.config.closeAfterMin * 60_000;
 
-export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string): Promise<string> => {
+export const claimDone = async (deps: FlowDeps, lane: Lane, evidence: string, expectedRevision?: number, phase?: Lane["phase"]): Promise<string> => {
   const at = iso(deps.clock);
-  await deps.registry.write(withStatus(lane, "done-claimed", evidence, at, { claim: { at, evidence, emitted: false } }));
-  if (lane.pane) {
-    await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] done claim recorded for ${lane.key}: the ${deps.config.closeAfterMin}-minute close window starts when the lead acknowledges it. Stay idle; an objection arrives here as [LEAD] not done.`);
+  const reserved = await withLaunchLock(deps, async () => {
+    if (expectedRevision !== undefined) {
+      const current = await deps.registry.read(lane.key);
+      if (!current || (current.revision ?? 0) !== expectedRevision) {
+        throw new PhaseError("Completion reservation lost to a newer lane revision; no Done effects started");
+      }
+    }
+    if (phase && (expectedRevision === undefined || !lane.phase || phase.owner !== lane.phase.owner ||
+        phase.version !== lane.phase.version || phase.generation < lane.phase.generation)) {
+      throw new PhaseError("Completion phase needs a monotonic descriptor and an exact revision reservation");
+    }
+    const claimed = withStatus(lane, "done-claimed", evidence, at, {
+      ...(phase ? { phase } : {}), claim: { at, evidence, emitted: false } });
+    await deps.registry.write(claimed);
+    if (lane.phase) await dequeue(deps, lane.key);
+    return claimed;
+  });
+  if (reserved.pane) {
+    await sendVerified(deps.run, deps.clock, reserved.pane, `[LEAD] done claim recorded for ${reserved.key}: the ${deps.config.closeAfterMin}-minute close window starts when the lead acknowledges it. Stay idle; an objection arrives here as [LEAD] not done.`);
   }
   return monitorLine(`LANE_DONE_CLAIMED ${lane.key} read="dori show ${lane.key}" ack="dori claim-ack ${lane.key}" preview=${JSON.stringify(evidence.slice(0, 200))}`);
 };
@@ -42,7 +61,8 @@ export const acknowledgeClaim = async (deps: FlowDeps, lane: Lane): Promise<stri
 
 export const objectDone = async (deps: FlowDeps, lane: Lane, reasons: readonly string[]): Promise<string> => {
   const at = iso(deps.clock);
-  await deps.registry.write(withStatus(lane, "not-done", reasons.join("; "), at, { objection: { at, reasons } }));
+  const status = lane.phase && !lane.pane ? "hibernated" : "not-done";
+  await deps.registry.write(withStatus(lane, status, reasons.join("; "), at, { objection: { at, reasons } }));
   if (lane.pane) await sendVerified(deps.run, deps.clock, lane.pane, `[LEAD] not done: ${reasons.join("; ")}; keep working, claim again when fixed`);
   return `LANE_NOT_DONE ${lane.key} ${reasons.join("; ")}`;
 };
@@ -162,6 +182,8 @@ const retire = async (deps: FlowDeps, lane: Lane, note: string, why: Record<stri
 };
 
 export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promise<{ readonly closed: boolean; readonly lines: string[] }> => {
+  if (lane.phase && statusOf(lane) !== "verified-done") return { closed: false,
+    lines: [`REFUSED ${lane.key}: managed completion requires the claim/ack/verified reservation`] };
   const exists = deps.exists ?? existsSync;
   const unsafe = lane.launchState === "failed" ? await failedLaunchWork(deps, lane) : await unpushedWork(deps, lane);
   if (unsafe.length) return { closed: false, lines: [`REFUSED ${lane.key}: ${unsafe.join("; ")}`] };
@@ -172,7 +194,13 @@ export const closeLane = async (deps: FlowDeps, lane: Lane, note: string): Promi
   const checks = await checkDone(lane.done, deps.run, signalIo(deps, lane));
   const lines = checks.map((c) => `SIGNAL ${c.ok ? "OK " : "NOT"} ${c.signal} -> ${c.detail}`);
   if (checks.some((c) => !c.ok)) return { closed: false, lines: [...lines, `REFUSED ${lane.key}: a Done signal is not live`] };
-  const completion = await recordCompletion(deps, lane, checks);
+  let completion: string;
+  try {
+    completion = await recordCompletion(deps, lane, checks);
+  } catch (error) {
+    if (!(error instanceof PhaseError)) throw error;
+    return { closed: false, lines: [...lines, `SIGNAL NOT phase authorization -> ${error.message}`] };
+  }
   const cleanup: string[] = [];
   const hook = deps.config.hooks.threadDone;
   if (hook && lane.thread !== "none") {

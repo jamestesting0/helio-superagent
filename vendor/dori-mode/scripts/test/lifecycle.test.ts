@@ -308,7 +308,7 @@ test("a reused pane cannot replace a recorded lane session during reclamation", 
   await s.deps.registry.write(lane("worker", { session: owned, pane: "w:p1", tab: "w:t1" }));
   const observation = spyOn(sessionState, "paneExecution").mockResolvedValue({
     status: "idle", session: foreign, id: "22222222-2222-4222-8222-222222222222", pid: 123,
-    since: new Date(T0).toISOString(), state: "waiting_background", version: "123:1", reason: "Passive monitors only",
+    since: new Date(T0).toISOString(), state: "waiting_background", version: "123:1", reason: "Passive monitors only", stopReady: true,
   });
   try {
     expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
@@ -346,7 +346,7 @@ test("a pending release holds when authenticated observation disappears and retr
   s.world.panes.push({ pane_id: "w:p1", workspace_id: "w", agent: "pi", agent_status: "idle" });
   await s.deps.registry.write(lane("worker", { session: checkpoint, pane: "w:p1", tab: "w:t1" }));
   const idle = { status: "idle", session: checkpoint, id: "owned", pid: 123,
-    since: new Date(T0).toISOString(), state: "waiting_background", version: "123:1", reason: "Passive monitors only" } as const;
+    since: new Date(T0).toISOString(), state: "waiting_background", version: "123:1", reason: "Passive monitors only", stopReady: true } as const;
   const observation = spyOn(sessionState, "paneExecution").mockResolvedValueOnce(idle).mockResolvedValue(undefined);
   try {
     expect((await reclaimLane(s.deps, "worker")).released).toBe(false);
@@ -390,7 +390,7 @@ test.each(["valid", "wrong-brief", "wrong-cwd", "newer-session", "wrong-id"])(
   await s.deps.registry.write(lane("legacy", { job: undefined, cwd: s.state.dir, pane: "w:p1", tab: "w:t1" }));
   const observation = spyOn(sessionState, "paneExecution").mockResolvedValue({
     status: "idle", session: checkpoint, id, pid: 123, since: new Date(T0).toISOString(),
-    state: "waiting_background", version: "123:1", reason: "Passive monitors only",
+    state: "waiting_background", version: "123:1", reason: "Passive monitors only", stopReady: true,
   });
   try {
     expect((await reclaimLane(s.deps, "legacy")).released).toBe(matches);
@@ -472,6 +472,34 @@ test("worktrees are removed only for closed lanes whose PR settled 3+ days ago w
   expect(applied.filter((row) => row.action === "removed").map((row) => row.key)).toEqual(["old"]);
   expect(removed).toEqual([join(root, "old")]);
   expect((await s.deps.registry.read("old"))?.worktreeRemoved).toMatchObject({ branch: "helio/old", head: "abc123", evidence: "https://github.com/acme/app/pull/11" });
+});
+
+test("a Done line without a PR number finds the PR from the worktree branch; zero or several PRs keep it", async () => {
+  const s = setup();
+  const root = join(s.state.dir, "worktrees");
+  const merged = { state: "MERGED", mergedAt: new Date(T0 - 4 * 24 * 3_600_000).toISOString() };
+  const branches: Record<string, string> = { "by-branch": "helio/issue-21", none: "helio/issue-30", several: "helio/issue-31" };
+  const listed: Record<string, { number: number }[]> = { "helio/issue-21": [{ number: 22 }], "helio/issue-30": [], "helio/issue-31": [{ number: 1 }, { number: 2 }] };
+  const inner = s.deps.run;
+  s.deps.run = async (argv, opts) => {
+    const key = (argv[2] ?? "").split("/").at(-1) ?? "";
+    if (argv[0] === "git" && argv.includes("--show-current")) return ok(`${branches[key] ?? ""}\n`);
+    if (argv[0] === "git" && argv.includes("get-url")) return ok("https://github.com/acme/app.git\n");
+    if (argv[0] === "gh" && argv[2] === "list") return ok(JSON.stringify(listed[argv[argv.indexOf("--head") + 1] ?? ""] ?? []));
+    if (argv[0] === "gh" && argv[2] === "view") return ok(JSON.stringify(argv[3] === "22" ? merged : {}));
+    if (argv[0] === "git" && argv.includes("status")) return ok("");
+    if (argv[0] === "git" && argv.includes("worktree") && argv.includes("list")) return ok("");
+    return inner(argv, opts);
+  };
+  const closedAt = new Date(T0).toISOString();
+  for (const key of ["by-branch", "none", "several"]) {
+    mkdirSync(join(root, key), { recursive: true });
+    await s.deps.registry.write(lane(key, { done: 'command ["helio","pr","check","--issue","21"] stdout~"^(FOLLOWUP_PR_READY|PR_MERGED) "', closedAt, cwd: join(root, key) }));
+  }
+  const rows = Object.fromEntries((await reapWorktrees(s.deps, false)).map((row) => [row.key, [row.action, row.reason]]));
+  expect(rows["by-branch"]).toEqual(["would_remove", "PR acme/app#22 merged 4 days ago; no uncommitted or unpushed work"]);
+  expect(rows.none?.[0]).toBe("kept");
+  expect(rows.several?.[0]).toBe("kept");
 });
 
 const hibernated = (s: ReturnType<typeof setup>, key: string, session: string) => {

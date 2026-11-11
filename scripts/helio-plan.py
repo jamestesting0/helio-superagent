@@ -25,7 +25,10 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import Callable, Protocol
+from typing import Callable, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from helio_pr_verification import Suite
 
 
 class DiscordReader(Protocol):
@@ -43,6 +46,10 @@ PLAN_SOURCE = runpy.run_path(str(HERE / "helio_plan_source.py"))
 PLAN_PUBLICATION = runpy.run_path(str(HERE / "helio_plan_publication.py"))
 FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
 DISCORD_TEXT = runpy.run_path(str(HERE / "helio_discord_text.py"))
+LANE = runpy.run_path(str(HERE / "helio_task_lane.py"))
+PROOF = runpy.run_path(str(HERE / "helio_regression_proof.py"))
+VERIFICATION = runpy.run_path(str(HERE / "helio_pr_verification.py"))
+PR_RECOVERY_CLI = runpy.run_path(str(HERE / "helio_pr_recovery_cli.py"))
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 MARKER = "<!-- helio-plan v1 -->"
 DATA = re.compile(r"<!-- helio-plan-data:([A-Za-z0-9+/=]+) -->\s*\Z")
@@ -396,19 +403,8 @@ def discord_message(message_id: str, channel: str | None = None, fingerprint: st
         raise Refused(str(error)) from None
 
 
-def full_suite(project: Path, head: str) -> int:
-    autofix = runpy.run_path(str(HERE / "helio-autofix.py"))
-    with tempfile.TemporaryDirectory(prefix="helio-pr-") as temporary:
-        tree, output = Path(temporary) / "tree", Path(temporary) / "result.json"
-        command(["git", "worktree", "add", "--detach", str(tree), head], cwd=project)
-        try:
-            command([str(project / ".venv/bin/python"), "-I", "-c", autofix["RUNNER"], str(tree), str(output)], cwd=tree)
-            counts = autofix["Counts"](**json.loads(output.read_text()))
-        finally:
-            command(["git", "worktree", "remove", "--force", str(tree)], cwd=project)
-    if not counts.passed():
-        raise Refused(f"full unit suite must pass: {counts}")
-    return counts.run
+def full_suite(project: Path, head: str) -> Suite:
+    return VERIFICATION["full_suite"](project, head)
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,7 +670,7 @@ def consume(prompt_id: str, now: datetime.datetime) -> None:
         db.execute("UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed'", (int(now.timestamp() * 1000), prompt_id))
 
 
-def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[str]:
+def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict, kind: str = "request") -> list[str]:
     if source["payload"].get("channel_id") != args.channel:
         raise Refused("work authorization channel does not match the live message")
     try:
@@ -685,17 +681,60 @@ def authorize_work(args: argparse.Namespace, gh: GitHub, source: dict) -> list[s
         raise Refused(str(error)) from None
     if gh.issue(args.issue).get("state") != "OPEN":
         raise Refused(f"issue #{args.issue} is not open")
+    holds = tuple(dict.fromkeys(getattr(args, "hold", None) or ()))
     recorded = WORK["record"](WORK["Authorization"](REPO, args.issue, args.message, args.channel, author, args.now,
-                                                  hashlib.sha256(source["live"]["content"].encode()).hexdigest()))
+                                                  hashlib.sha256(source["live"]["content"].encode()).hexdigest(), kind, holds))
+    held = f" holds={','.join(holds)}" if holds else ""
     if not recorded:
         return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} "
-                f"sender={author} creation=used update=existing-PR-only mechanics=commit,normal-push,PR; run helio pr submit to verify delivery"]
+                f"sender={author} creation=used update=existing-PR-only mechanics=commit,normal-push,PR{held}; run helio pr submit to verify delivery"]
     gh.run(["gh", "issue", "edit", str(args.issue), "--repo", gh.repo, "--remove-label", "needs-owner-review"])
     return [f"WORK_AUTHORIZED issue={args.issue} message={args.message} channel={args.channel} sender={author} "
-            "creation=available update=authorized-task mechanics=commit,normal-push,PR; no separate approval for those steps"]
+            f"creation=available update=authorized-task mechanics=commit,normal-push,PR{held}; no separate approval for those steps"]
 
 
-def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], int], discord: DiscordReader) -> list[str]:
+def work_authority(grant) -> str:
+    who = f"<@{grant.author}> in Discord message {grant.message} (channel {grant.channel})"
+    if grant.kind == "bug-report":
+        return (f"Bug reported by {who} and confirmed by Helio. The confirmed report is the requester's explicit request "
+                "to fix it, commit, push and open the PR. `helio pr submit` requires a regression test that fails on main.")
+    return f"Requested by {who}: this is the requester's explicit request to commit, push and open the PR for this issue."
+
+
+def start_work(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> list[str]:
+    """Record (or reuse) the work authority, then launch its lane with a rendered brief and PR-based Done."""
+    lines: list[str] = []
+    if not args.from_authorization:
+        if not (args.message and args.channel):
+            raise Refused("work start needs --message and --channel, or --from-authorization")
+        lines = authorize_work(args, gh, discord(args.message, args.channel))
+    try:
+        grant = WORK["available"](REPO, args.issue, args.now, include_used=True)
+    except WORK["Refused"] as error:
+        raise Refused(str(error)) from None
+    if args.from_authorization and grant.blocked:
+        raise Refused(f"issue #{args.issue} work is blocked ({grant.blocked}); a new request from the requester supersedes it")
+    issue = gh.issue(args.issue)
+    if issue.get("state") != "OPEN":
+        raise Refused(f"issue #{args.issue} is not open")
+    owner = os.environ.get("DORI_DISCORD_OWNER_ID", "")
+    task = LANE["Task"](REPO, args.issue, issue["title"], "work", work_authority(grant),
+                        f"discord:{grant.channel}:{grant.message}", "owner" if grant.author == owner else "normal",
+                        grant.holds, args.note_file.read_text() if args.note_file else "")
+    try:
+        key, launch = LANE["start"](task, Path(os.environ["HELIO_PROJECT"]).expanduser().resolve())
+    except RuntimeError as error:
+        raise Refused(f"lane launch failed: {error}; rerun helio work start --issue {args.issue} --from-authorization") from None
+    return lines + [f"WORK_STARTED issue={args.issue} key={key} holds={','.join(grant.holds) or 'none'} launch={launch}"]
+
+
+def block_work(args: argparse.Namespace) -> list[str]:
+    if not WORK["block"](REPO, args.issue, " ".join(args.reason.split())[:300], args.now):
+        raise Refused(f"issue #{args.issue} has no unfinished authorized or bug-fix work to block")
+    return [f"WORK_BLOCKED issue={args.issue} reason={json.dumps(' '.join(args.reason.split())[:300])}"]
+
+
+def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], Suite], discord: DiscordReader) -> list[str]:
     issue, comment_id, plan_url, body = gh.plan_comment(args.issue)
     found, data = state(args.issue, body)
     if found not in ("PLAN_APPROVED", "PLAN_NONE"):
@@ -721,6 +760,17 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
             if not ((implementation and implementation.issue in (previous, args.issue))
                     or linked.intersection({previous, args.issue})):
                 raise Refused("existing PR has no verified relationship to this follow-up or its closed predecessor")
+    def require_unheld() -> None:
+        # The requester's latest words govern every publication path, approved plans included, until publication.
+        try:
+            newest = WORK["available"](REPO, args.issue, datetime.datetime.now(datetime.timezone.utc) if args.now is None else max(
+                args.now, datetime.datetime.now(datetime.timezone.utc)))
+        except WORK["Refused"]:
+            return
+        if newest.holds:
+            raise Refused(f"held by requester: {','.join(newest.holds)}; report the verified work and wait for them")
+
+    require_unheld()
     authorization = None
     if found != "PLAN_APPROVED":
         try:
@@ -737,6 +787,7 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
                  **data["approval"], "target": f"{REPO}#{args.issue}", "revision": str(data["revision"]),
                  "posted_at": data["posted_at"], "state": str(state_dir)}
     def verify_request() -> None:
+        require_unheld()
         AUTHORITY["verify"](proof, discord)
     try:
         result = check_result(None if authorization else data, json.loads(args.result_file.read_text()))
@@ -757,7 +808,14 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     if git("merge-base", base, head) != base:
         git("merge", "--no-edit", "origin/main")
         head = git("rev-parse", "HEAD")
-    passed = suite(project, head)
+    verified = suite(project, head)
+    VERIFICATION["check_suite"](verified)
+    passed = verified["counts"]["run"]
+    if authorization and authorization.kind == "bug-report":
+        try:
+            verified = VERIFICATION["regression"](project, head, PROOF["changed_tests"](tree, base, head), verified, base=base)
+        except RuntimeError as error:
+            raise Refused(f"bug-report work needs a regression test that fails on main: {error}") from None
     if git("rev-parse", "HEAD") != head or git("status", "--porcelain"):
         raise Refused("task worktree changed during verification; verify its new head before submission")
     remote = git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
@@ -772,6 +830,14 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     latest = git("ls-remote", "--heads", "origin", "refs/heads/main")
     if not latest or latest.split()[0] != base:
         raise Refused("main advanced during verification; merge current main in the task tree and resubmit under the existing task authority")
+    store = ISSUES["Issues"](gh.repo, state_dir, command=gh.run)
+    scope = ISSUES["digest"](ISSUES["split"](current_issue.get("body") or "")[0])
+    verification = VERIFICATION["record"](store, {
+        "issue": args.issue, "branch": branch, "route": authorization.kind if authorization else "plan",
+        "head": head, "base": base, "authority": VERIFICATION["digest"](json.dumps(proof, sort_keys=True)),
+        "authority_proof": proof,
+        "scope": scope, "job": f"issue-{args.issue}", "generation": VERIFICATION["phase"](store, args.issue),
+    }, verified)
     if not remote or remote.split()[0] != head:
         git("push", "origin", f"{head}:refs/heads/{branch}")
     delivered = git("ls-remote", "--heads", "origin", f"refs/heads/{branch}")
@@ -785,9 +851,9 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     else:
         text = pr_body(args.issue, data, plan_url, result, summary, passed, args.report_file is not None,
                        f"https://github.com/{gh.repo}/issues/{previous}" if previous else "")
-    url = PUBLICATION["publish"](ISSUES["Issues"](gh.repo, state_dir, command=gh.run), args.issue, branch, head,
-        text, data["title"], proof, ISSUES["digest"](ISSUES["split"](current_issue.get("body") or "")[0]),
-        existing, args.adopt_body, plan_body=current_body if not authorization else "", authorize=verify_request)
+    url = PUBLICATION["publish"](store, args.issue, branch, head, text, data["title"], proof, scope,
+        existing, args.adopt_body, plan_body=current_body if not authorization else "", authorize=verify_request,
+        verification=verification)
     pull = json.loads(gh.run(["gh", "pr", "view", url, "--repo", gh.repo, "--json",
                              "state,headRefOid,headRefName,baseRefName"]))
     if (pull.get("state"), pull.get("headRefOid"), pull.get("headRefName"), pull.get("baseRefName")) != (
@@ -796,11 +862,11 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], in
     latest = git("ls-remote", "--heads", "origin", "refs/heads/main")
     if not latest or latest.split()[0] != base:
         raise Refused("main advanced during PR publication; update this same PR and verify its new head before reporting delivery")
-    return [f"PLAN_PR {url}"]
+    return [f"PLAN_PR {url}" + (f" verification={verification}" if VERIFICATION["phase"](store, args.issue) is not None else "")]
 
 
 def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: DiscordReader = discord_message,
-         suite: Callable[[Path, str], int] = full_suite, now: datetime.datetime | None = None) -> int:
+         suite: Callable[[Path, str], Suite] = full_suite, now: datetime.datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     REQUEST_CLI["register"](commands)
@@ -821,13 +887,29 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         if name == "show":
             sub.add_argument("--json", action="store_true")
     commands.add_parser("list")
-    work = commands.add_parser("work").add_subparsers(dest="work_command", required=True).add_parser("authorize")
+    work_commands = commands.add_parser("work").add_subparsers(dest="work_command", required=True)
+    work = work_commands.add_parser("authorize")
     work.add_argument("--issue", type=int, required=True)
     work.add_argument("--message", required=True)
     work.add_argument("--channel", required=True)
+    starter = work_commands.add_parser("start")
+    starter.add_argument("--issue", type=int, required=True)
+    starter.add_argument("--message")
+    starter.add_argument("--channel")
+    starter.add_argument("--from-authorization", action="store_true",
+                         help="relaunch from the newest recorded authorization without a new source")
+    starter.add_argument("--note-file", type=Path, help="task context for the lane; never authority or holds")
+    for parser_with_holds in (work, starter):
+        parser_with_holds.add_argument("--hold", action="append", choices=WORK["HOLDS"],
+                                       help="only when the requester's own words ask for it")
+    blocker = work_commands.add_parser("block")
+    blocker.add_argument("--issue", type=int, required=True)
+    blocker.add_argument("--reason", required=True)
     prs = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True)
-    inspection = prs.add_parser("check")
-    inspection.add_argument("--number", type=int, required=True)
+    PR_RECOVERY_CLI["register"](prs)
+    inspection = prs.add_parser("check").add_mutually_exclusive_group(required=True)
+    inspection.add_argument("--number", type=int)
+    inspection.add_argument("--issue", type=int, help="the issue's canonical PR; prints PR_MERGED or PR_NONE when none is open")
     pr = prs.add_parser("submit")
     pr.add_argument("--issue", type=int, required=True)
     pr.add_argument("--result-file", type=Path, required=True)
@@ -837,7 +919,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     pr.add_argument("--adopt-body")
     pr.add_argument("--worktree", type=Path, help="task worktree in the canonical repository; otherwise discovered automatically")
     args = parser.parse_args(argv)
-    if getattr(args, "issue", 1) < 1:
+    if getattr(args, "issue", None) is not None and args.issue < 1:
         parser.error("--issue must be positive")
     gh = gh or GitHub(REPO)
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -847,10 +929,16 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         if getattr(args, "issue", None) and args.command not in ("pr", "work"):
             stack.enter_context(PLAN_PUBLICATION["scope"](
                 gh.repo, args.issue, serialize=args.command != "request" or args.request_action == "cancel"))
+        if args.command == "pr" and args.pr_command in ("wait", "phase"):
+            state_dir = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
+            return PR_RECOVERY_CLI["execute"](args, ISSUES["Issues"](gh.repo, state_dir, command=gh.run), gh.run)
         if args.command == "pr" and args.pr_command == "check":
+            readiness = runpy.run_path(str(HERE / "helio_pr_readiness.py"))
+            if args.issue is not None:
+                print(readiness["for_issue"](gh.repo, args.issue, gh.run))
+                return 0
             if args.number < 1:
                 parser.error("--number must be positive")
-            readiness = runpy.run_path(str(HERE / "helio_pr_readiness.py"))
             print(readiness["check"](gh.repo, args.number, gh.run))
             return 0
         if args.command == "adopt":
@@ -866,6 +954,10 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
             lines = approve(args, gh, discord, now)
         elif args.command == "pr":
             lines = submit(args, gh, suite, discord)
+        elif args.command == "work" and args.work_command == "start":
+            lines = start_work(args, gh, discord)
+        elif args.command == "work" and args.work_command == "block":
+            lines = block_work(args)
         elif args.command == "work":
             lines = authorize_work(args, gh, discord(args.message, args.channel))
         elif args.command == "list":
@@ -898,7 +990,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         pending = error.uncertain or ISSUES["SYNC"]["failure_kind"](str(error)) == "transport"
         print(f"{'PLAN_PENDING' if pending else 'PLAN_REFUSED'} {error}".replace("\n", " "))
         return 2 if pending else 1
-    except (Refused, WORK["Refused"], FOLLOWUP["Refused"], REQUEST_CLI["REQUESTS"]["Refused"], ValueError) as error:
+    except (Refused, VERIFICATION["Refused"], WORK["Refused"], FOLLOWUP["Refused"], REQUEST_CLI["REQUESTS"]["Refused"], ValueError) as error:
         print(f"PLAN_REFUSED {error}".replace("\n", " "))
         return 1
     except (RuntimeError, OSError, sqlite3.Error, subprocess.SubprocessError) as error:
@@ -913,7 +1005,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
             sync["schedule"](gh.repo, args.issue)
         except (OSError, sqlite3.Error) as error:
             print(f"ISSUE_SYNC_PENDING issue={args.issue}: {type(error).__name__}; run helio issue sync")
-    ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_ADOPTED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "PLAN_REQUEST", "WORK_AUTHORIZED", "{")
+    ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_ADOPTED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "PLAN_REQUEST",
+          "WORK_AUTHORIZED", "WORK_STARTED", "WORK_BLOCKED", "{")
     return 0 if lines and lines[0].startswith(ok) else 1
 
 

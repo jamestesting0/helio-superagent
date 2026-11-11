@@ -18,6 +18,7 @@ LINK = runpy.run_path(str(Path(__file__).with_name("helio_issue_link.py")))
 AUTHORITY = runpy.run_path(str(Path(__file__).with_name("helio_pr_authority.py")))
 FINALIZE = runpy.run_path(str(Path(__file__).with_name("helio_pr_finalize.py")))
 SYNC = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
+VERIFICATION = runpy.run_path(str(Path(__file__).with_name("helio_pr_verification.py")))
 
 
 class Refused(ValueError):
@@ -106,6 +107,8 @@ def write_error(db: sqlite3.Connection, operation: str, error: RuntimeError | OS
 
 def finish(store: Store, db: sqlite3.Connection, operation: str, change: dict,
            authorize: Callable[[], None] | None = None) -> str:
+    if change.get("verification") is not None:
+        VERIFICATION["bound"](db, store.repo, change)
     before, after, attempted, completed = db.execute(
         "SELECT before_body,after_body,written,completed FROM operations WHERE id=?", (operation,)).fetchone()
     if completed == 2:
@@ -177,6 +180,8 @@ def finish(store: Store, db: sqlite3.Connection, operation: str, change: dict,
         FINALIZE["finish"](store.repo, store.command, change, pull, permitted)
     except (RuntimeError, OSError) as error:
         raise Refused(SYNC["safe_detail"](str(error)), "pr_finalize", True) from error
+    if change.get("verification") is not None:
+        VERIFICATION["published"](db, store.repo, operation, change, pull)
     db.execute("UPDATE operations SET written=1,completed=1,completed_at=? WHERE id=?",
                (int(time.time()), operation)); db.commit()
     SYNC["publication_complete"](store.state, store.repo, change["issue"])
@@ -185,10 +190,13 @@ def finish(store: Store, db: sqlite3.Connection, operation: str, change: dict,
 
 def publish(store: Store, issue: int, branch: str, head: str, generated: str, title: str,
             authority: dict, scope: str, existing: str | None = None, adopt: str | None = None,
-            labels: tuple[str, ...] = (), plan_body: str = "", authorize: Callable[[], None] | None = None) -> str:
+            labels: tuple[str, ...] = (), plan_body: str = "", authorize: Callable[[], None] | None = None,
+            verification: str | None = None) -> str:
     change = {"kind": "pr", "issue": issue, "branch": branch, "head": head, "generated": generated,
               "title": title, "url": existing, "adopt": adopt, "labels": list(labels), "authority": authority,
               "scope": scope, "plan_body": plan_body, "create": existing is None}
+    if verification is not None:
+        change["verification"] = verification
     with store.operations() as db:
         for operation, raw in db.execute("SELECT id,change FROM operations WHERE repo=? AND completed=0 ORDER BY rowid",
                                           (store.repo,)).fetchall():

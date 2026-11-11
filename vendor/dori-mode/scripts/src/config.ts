@@ -8,6 +8,8 @@ export type Hooks = {
   readonly threadDone?: ArgvTemplate;
   readonly transcribe?: ArgvTemplate;
   readonly inspectJobSource?: ArgvTemplate;
+  readonly beforeWake?: ArgvTemplate;
+  readonly beforeComplete?: ArgvTemplate;
 };
 
 export type GuardThresholds = {

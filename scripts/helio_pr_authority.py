@@ -89,7 +89,19 @@ def publication(change: dict, command: Callable[..., str], repo: str, authorize:
             raise Refused("Automatic-fix cap is occupied; the bot will retry when capacity returns.")
     if change.get("plan_body") and not any(item.get("body") == change["plan_body"] for item in issue.get("comments", [])):
         raise Refused("The approved plan changed; the bot must review the current task.")
+    require_unheld(repo, change["issue"])
     if authorize:
         authorize()
     else:
         verify(change["authority"])
+
+
+def require_unheld(repo: str, issue: int) -> None:
+    """Every publication path, background recovery included, honours the requester's latest recorded hold."""
+    work = runpy.run_path(str(Path(__file__).with_name("helio-work.py")))
+    try:
+        newest = work["available"](repo, issue, datetime.datetime.now(datetime.timezone.utc))
+    except work["Refused"]:
+        return
+    if newest.holds:
+        raise Refused(f"Held by the requester ({','.join(newest.holds)}); publish only after a newer request lifts it.")

@@ -31,6 +31,8 @@ import { Discord, discordPresence } from "./messenger/discord.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { reclaimLane } from "./reclaim.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
+import { parsePhase } from "./phase.ts";
+import { recoverStart } from "./startup-recovery.ts";
 
 const USAGE = `dori <command> [options]
 
@@ -40,7 +42,7 @@ const USAGE = `dori <command> [options]
   adopt  <key> --job J --pane ID --title T --brief FILE --done "..." [--source REF] [--thread REF]
   job-id --repository owner/repo --channel ID --source ORIGINAL_MESSAGE_ID
   sync   [--write]                     registry vs live panes; read-only unless --write
-  claim-done [<key>] --evidence TEXT  key defaults to the lane registered for $HERDR_PANE_ID
+  claim-done [<key>] --evidence TEXT [--expected-revision N]  key defaults to the lane registered for $HERDR_PANE_ID
   show <key>                          full lane evidence, claim, history and receipt (read-only)
   claim-ack <key>                     acknowledge receipt and start the 5-minute close window
   object-done <key> --reason TEXT [--reason TEXT ...]
@@ -50,7 +52,8 @@ const USAGE = `dori <command> [options]
   reconcile preview --manifest FILE --job issue-N --repository OWNER/REPO [--failed KEY] [--replacement KEY]
   reconcile apply --manifest FILE     recheck exact records/resources; no public messages
   pause  <key> [--note TEXT]           the owner said wait: goal paused (read back), running turn stopped, no nudges; exit 3 if unconfirmed
-  resume <key> [--note TEXT] [--brief FILE]   undo pause; or wake a hibernated or closed lane in its recorded session
+  resume <key> [--note TEXT] [--brief FILE] [--phase JSON]   undo pause; or wake a hibernated or closed lane in its recorded session
+  launch/resume --phase JSON           opaque owner/version/generation; requires effect-time authority hooks
   stale [--hours N] [--json]           lanes paused, not done, failed or awaiting cleanup for N hours (default 24)
   reap-worktrees [--apply] [--json]    remove worktrees of closed lanes whose PR settled 3+ days ago and that hold no unpushed work
   reclaim <key>                       checkpoint an owned idle session and release its slot; retain unfinished work and all files
@@ -86,6 +89,7 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, "with-unpushed": { type: "boolean" }, loop: { type: "string" },
     job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" }, verify: { type: "boolean" }, stop: { type: "boolean" },
     source: { type: "string" }, repository: { type: "string" }, channel: { type: "string" },
+    phase: { type: "string" }, "expected-revision": { type: "string" },
     manifest: { type: "string" }, failed: { type: "string" }, replacement: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" }, ping: { type: "string" },
   },
@@ -106,11 +110,14 @@ const lane = async (k: string | undefined) => {
 };
 
 try {
+  const phase = opt("phase") === undefined ? undefined : parsePhase(JSON.parse(need("phase")));
+  if (phase && !["launch", "resume", "claim-done"].includes(command)) die("--phase is only valid for launch, resume or claim-done");
   switch (command) {
     case "launch": {
       const priority = opt("priority") ?? "normal";
       if (priority !== "owner" && priority !== "normal") die("--priority must be owner or normal");
-      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd"), job: need("job"), source: opt("source"), priority: priority as "owner" | "normal" });
+      const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd"), job: need("job"), source: opt("source"), priority: priority as "owner" | "normal",
+        ...(phase ? { phase } : {}) });
       if (r.lane) console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(/^(STARTUP_OK|LAUNCH_QUEUED|LANE_WOKEN)/.test(r.startup) ? 0 : 3);
@@ -136,9 +143,12 @@ try {
       console.log(flags.values.write ? "WROTE session ids" : "READ_ONLY");
       break;
     }
-    case "claim-done":
-      console.log(await claimDone(deps, await lane(key), need("evidence")));
+    case "claim-done": {
+      const expected = opt("expected-revision") === undefined ? undefined : Number(need("expected-revision"));
+      if (expected !== undefined && (!Number.isSafeInteger(expected) || expected < 0)) die("--expected-revision must be a nonnegative integer");
+      console.log(await claimDone(deps, await lane(key), need("evidence"), expected, phase));
       break;
+    }
     case "completion":
       console.log(`COMPLETION_RECORDED ${await recordCompletion(deps, await lane(key))}`);
       break;
@@ -186,6 +196,10 @@ try {
       process.exitCode = result.released ? 0 : 2;
       break;
     }
+    case "recover-start":
+      console.log(await recoverStart(deps, key ?? die("recover-start needs a lane key"),
+        Number(opt("expected-revision") ?? die("--expected-revision is required"))));
+      break;
     case "close": {
       const current = await lane(key ?? die("close needs a lane key"));
       if (flags.values.verify && current.launchState !== "failed" &&
@@ -201,7 +215,8 @@ try {
       if (!found) die(`no registered lane "${key}"`);
       if (found && ["hibernated", "closed"].includes(statusOf(found))) {
         const brief = opt("brief");
-        const r = await wakeLane(deps, found, { ...(brief ? { briefText: await Bun.file(brief).text() } : {}), note: opt("note") ?? "woken by the lead" });
+        const r = await wakeLane(deps, found, { ...(brief ? { briefText: await Bun.file(brief).text() } : {}), note: opt("note") ?? "woken by the lead",
+          ...(phase ? { phase } : {}) });
         console.log(r.startup);
         break;
       }

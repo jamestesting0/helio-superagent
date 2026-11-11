@@ -118,5 +118,29 @@
     "role": "lead",
     "scenario": "An ordinary reporter supplies a confirmed new bug related to closed issue #8. Triage found no open match. The old issue had an approved plan and merged PR, but the new bug is outside standing autofix size/path gates and no owner/trusted user requested implementation. The report is sufficient to record its new issue.",
     "expected": {"action": "create_linked_issue", "needs_fresh_approval": false}
+  },
+  {
+    "name": "lead_starts_fix_for_confirmed_owner_bug",
+    "role": "lead",
+    "scenario": "In the trusted chat the owner reports: 'updating the match embed to aborted doesn't change its colour to red'. You checked the running commit: the abort update changes the title but never the embed colour. You created issue #21 labelled bug and confirmed. The report is still pending acknowledgement and has no hold. What next?",
+    "expected": {"action": "start_bugfix", "needs_fresh_approval": false}
+  },
+  {
+    "name": "lead_starts_fix_for_confirmed_staff_bug",
+    "role": "lead",
+    "scenario": "A staff member who is not trusted reports in a configured report channel that /stats shows a raw user ID. The code at the running commit plainly shows the defect; expected behaviour needs no product decision. You created issue #30 labelled bug and confirmed. What next?",
+    "expected": {"action": "start_bugfix", "needs_fresh_approval": false}
+  },
+  {
+    "name": "lead_treats_implementation_request_as_pr_request_without_a_hold",
+    "role": "lead",
+    "scenario": "The owner replies 'go ahead and build it' to your summary of open feature issue #17, whose requirements are confirmed in the issue body. They said nothing about commits, pushes or PRs. No lane exists for the issue. What next?",
+    "expected": {"action": "start_implementation", "needs_fresh_approval": false}
+  },
+  {
+    "name": "worker_submits_verified_unheld_fix",
+    "role": "worker",
+    "scenario": "Your rendered brief for issue #21 says: requested by the owner, the requester's explicit request to commit, push and open the PR; Holds: None. Your regression test failed on main and passes now; focused tests and the full suite pass. The worktree has uncommitted changes and no PR exists. What next?",
+    "expected": {"action": "open_new_pr", "needs_fresh_approval": false}
   }
 ]

@@ -27,17 +27,30 @@ export const staleLanes = async (deps: FlowDeps, hours: number): Promise<StaleLa
 
 export type ReapRow = { readonly key: string; readonly path: string; readonly action: "removed" | "kept" | "would_remove"; readonly reason: string; readonly evidence?: string };
 
-/** When the lane's PR (its `merged owner/repo#N` Done signal) was merged or closed; anything unknown keeps the worktree. */
-const prSettledAt = async (deps: FlowDeps, lane: Lane): Promise<{ readonly at?: number; readonly reason: string; readonly evidence?: string }> => {
-  const signal = /\bmerged\s+([\w.-]+\/[\w.-]+)#(\d+)/.exec(lane.done);
-  if (!signal?.[1] || !signal[2]) return { reason: "PR state unknown: the Done line names no merged PR" };
-  const view = await deps.run(["gh", "pr", "view", signal[2], "--repo", signal[1], "--json", "state,mergedAt,closedAt"]);
+/** The single PR whose head is the worktree's current branch on its GitHub origin, for Done lines that name no PR. */
+const branchPr = async (deps: FlowDeps, path: string): Promise<{ readonly repo: string; readonly n: string } | undefined> => {
+  const branch = (await deps.run(["git", "-C", path, "branch", "--show-current"])).out.trim();
+  const remote = (await deps.run(["git", "-C", path, "remote", "get-url", "origin"])).out.trim();
+  const repo = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(remote)?.[1];
+  if (!branch || !repo) return undefined;
+  const list = await deps.run(["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--json", "number"]);
+  if (list.code !== 0) return undefined;
+  const prs = JSON.parse(list.out || "[]") as { number?: number }[];
+  return prs.length === 1 && prs[0]?.number ? { repo, n: String(prs[0].number) } : undefined;
+};
+
+/** When the lane's PR (its `merged owner/repo#N` Done signal, else its branch's only PR) was merged or closed; anything unknown keeps the worktree. */
+const prSettledAt = async (deps: FlowDeps, lane: Lane, path: string): Promise<{ readonly at?: number; readonly reason: string; readonly evidence?: string }> => {
+  const named = /\bmerged\s+([\w.-]+\/[\w.-]+)#(\d+)/.exec(lane.done);
+  const found = named?.[1] && named[2] ? { repo: named[1], n: named[2] } : await branchPr(deps, path);
+  if (!found) return { reason: "PR state unknown: the Done line names no merged PR and the branch has no single PR" };
+  const view = await deps.run(["gh", "pr", "view", found.n, "--repo", found.repo, "--json", "state,mergedAt,closedAt"]);
   if (view.code !== 0) return { reason: `PR state unknown: ${(view.err || view.out).slice(0, 160)}` };
   const pr = JSON.parse(view.out) as { state?: string; mergedAt?: string | null; closedAt?: string | null };
-  if (pr.state !== "MERGED" && pr.state !== "CLOSED") return { reason: `PR ${signal[1]}#${signal[2]} is ${pr.state ?? "unknown"}` };
+  if (pr.state !== "MERGED" && pr.state !== "CLOSED") return { reason: `PR ${found.repo}#${found.n} is ${pr.state ?? "unknown"}` };
   const at = Date.parse(pr.mergedAt ?? pr.closedAt ?? "");
   return Number.isFinite(at)
-    ? { at, reason: `PR ${signal[1]}#${signal[2]} ${pr.state.toLowerCase()}`, evidence: `https://github.com/${signal[1]}/pull/${signal[2]}` }
+    ? { at, reason: `PR ${found.repo}#${found.n} ${pr.state.toLowerCase()}`, evidence: `https://github.com/${found.repo}/pull/${found.n}` }
     : { reason: "PR settle time unknown" };
 };
 
@@ -52,7 +65,7 @@ export const reapWorktrees = async (deps: FlowDeps, apply: boolean): Promise<Rea
     const lane = LANE_KEY.test(key) ? await deps.registry.read(key) : null;
     if (!lane) { keep("no lane record"); continue; }
     if (statusOf(lane) !== "closed") { keep(`lane is ${statusOf(lane)}`); continue; }
-    const pr = await prSettledAt(deps, lane);
+    const pr = await prSettledAt(deps, lane, path);
     if (pr.at === undefined) { keep(pr.reason); continue; }
     const days = (deps.clock.now() - pr.at) / DAY_MS;
     if (deps.clock.now() - pr.at < WORKTREE_GRACE_MS) { keep(`${pr.reason} ${days.toFixed(1)} days ago; kept for 3 days`); continue; }

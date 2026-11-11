@@ -7,9 +7,15 @@ stay historical; new work uses a linked new issue. Authorize and plan the new
 number from the current request, never from a completed issue's old approval.
 
 An owner's or trusted user's request to implement an issue ("implement #8", "proceed" or "yes"
-replying to your proposal to implement it) is one decision covering the work and its PR. Record it
-immediately: `helio work authorize --issue N --message M --channel C`. On `WORK_AUTHORIZED` launch
-the lane; it removes `needs-owner-review`. The receipt survives intake acknowledgement, restarts
+replying to your proposal to implement it) is one decision covering the work and its PR. Record and
+launch it immediately: `helio work start --issue N --message M --channel C [--note-file F]`. It removes
+`needs-owner-review` and launches the lane with a rendered phase brief. The job's Done is the PR
+being ready or merged; a managed worker phase ends at verified custody handoff.
+Add `--hold no-pr|no-push|no-commit` only when the requester's own words ask for it; a held
+lane verifies locally and waits, and a later clear request ("make the PR") recorded with
+`helio work authorize` lifts it. `helio work start --issue N --from-authorization` relaunches from the
+recorded request (backstop events, failed launches). A genuine blocker: `helio work block --issue N
+--reason TEXT`, then one question to whoever can decide; a newer request supersedes the block. The receipt survives intake acknowledgement, restarts
 and elapsed implementation time. Its creation receipt is marked used after verified PR creation;
 that does not revoke authorized updates to the same PR. Never ask separately for the commits
 and ordinary pushes needed to implement or revise the requested work.
@@ -46,6 +52,28 @@ holds still need resolution. A real denial, conflict or changed source is a
 fact to diagnose, not a reason to invent a missing approval.
 
 ## PR recovery and readiness
+
+New jobs admitted with `HELIO_PR_CUSTODY=on` carry a phase descriptor. Follow
+their generated brief: create the exact active phase goal, acknowledge it with
+`helio pr phase start --issue N --generation G`, implement, then submit.
+Submission owns the full integration suite and returns a verification ID.
+Transfer waiting with `helio pr wait --issue N --generation G --verification ID`;
+check `helio pr phase check --issue N --generation G` before completing that
+worker goal. `PHASE_HANDED_OFF` finishes the phase while CI remains pending.
+The controller safely releases the worker, observes CI, schedules bounded
+infrastructure recovery, and resumes the same session with a fresh generation
+only for actionable repair. Workers never rerun CI, wait for CI, claim job
+completion or close the lane after handoff.
+
+`FOLLOWUP_PR_CUSTODY` is a durable internal event. Read its `read` command,
+reconcile its current generation/status, then acknowledge its event with the
+supplied `ack` command. Acknowledgement records delivery, not completion or new
+authority. `helio health --json` exposes custody, next owner/probe and last
+meaningful progress. Repeat observations do not warrant repeat announcements.
+An unavailable lead leaves events pending. Admission off affects new jobs;
+existing custody continues, including pending repair and settlement. Rollback
+keeps the new handlers until all managed work settles or custody is explicitly
+transferred.
 
 An authorized task includes routine repair until its PR is usable. Fetch main
 on launch/resume and before submission; the isolated checkout does not inherit
@@ -155,7 +183,8 @@ Lane brief (include the approved fields from `helio plan show --issue N --json`)
    updates and verifies the actual remote, PR head and latest main. An existing PR is updated when necessary;
    its URL alone is not success. Failed or uncertain creation does not spend authority before
    read-back establishes the PR and intended head. Do not create a duplicate to recover.
-6. Run `helio pr check --number PR_NUMBER` using the published PR's number; resolve failed checks/conflicts before claiming
+6. For a managed phase, follow the custody handoff above and finish its exact worker goal.
+   For a legacy lane, run `helio pr check --number PR_NUMBER` using the published PR's number; resolve failed checks/conflicts before claiming
    readiness. Pending CI may be reported accurately while its watcher stays active.
    Return the result, verified head/base, checks and evidence paths privately to the lead, then claim
    done. The lead sends the routed completion once; do not also send it through evidence.ts.

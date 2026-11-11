@@ -51,6 +51,8 @@
   },
   "hooks": {
     "inspectJobSource": ["helio", "recovery", "source", "{source}", "--job", "{job}"],
+    "beforeWake": ["helio", "pr", "phase", "authorize", "--lane", "{key}", "--effect", "wake", "--lane-revision", "{revision}"],
+    "beforeComplete": ["helio", "pr", "phase", "authorize", "--lane", "{key}", "--effect", "complete", "--lane-revision", "{revision}"],
     "threadReply": [
       "bun",
       "{{HOME}}/.dori/elobot/thread-target.ts",

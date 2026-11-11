@@ -166,10 +166,99 @@ def check(db: sqlite3.Connection, include_announced: bool, observation: dict | N
     return 1 if failed else 0
 
 
-def check_prs() -> None:
+def check_prs(custody_seen: set[str] | None = None) -> None:
     readiness = runpy.run_path(str(Path(__file__).with_name("helio_pr_readiness.py")))
-    for line in readiness["watch"](REPO, run):
+    recovery = runpy.run_path(str(Path(__file__).with_name("helio_pr_recovery.py")))
+    issues = runpy.run_path(str(Path(__file__).with_name("helio_issues.py")))
+    store = issues["Issues"](REPO, STATE, command=lambda argv, _stdin=None: run(argv))
+    for line in recovery["watch"](store, run, custody_seen if custody_seen is not None else set()):
         print(line, flush=True)
+    for line in readiness["watch"](REPO, run, set(recovery["S"]["issues"](store))):
+        print(line, flush=True)
+
+
+ACTIVE_LANE = frozenset(("working", "paused", "done-claimed", "not-done"))
+SETTLE = datetime.timedelta(minutes=20)
+
+
+def check_work(now: datetime.datetime | None = None) -> None:
+    """Report authorized or started issue work that has no PR and no active lane, and unstarted confirmed bugs."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    work = runpy.run_path(str(Path(__file__).with_name("helio-work.py")))
+    readiness = runpy.run_path(str(Path(__file__).with_name("helio_pr_readiness.py")))
+    lanes = runpy.run_path(str(Path(__file__).with_name("helio_task_lane.py")))
+    try:
+        grants, fixes = work["pending_work"](REPO)
+        known, cutoff = work["known_issues"](REPO), work["cutoff"]()
+        pulls = json.loads(run(["gh", "pr", "list", "--repo", REPO, "--state", "open", "--base", "main", "--limit", "10000",
+                                "--json", "url,headRefName,isCrossRepository,closingIssuesReferences,labels"]))
+        bugs = json.loads(run(["gh", "issue", "list", "--repo", REPO, "--state", "open", "--label", "bug", "--label", "confirmed",
+                               "--limit", "200", "--json", "number,createdAt"]))
+    except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
+        print(f"FOLLOWUP_WARN work backstop unavailable: {error}".replace("\n", " ")[:1000], flush=True)
+        return
+    try:
+        open_bugs = {int(bug["number"]) for bug in bugs}
+        _due_work(now, work, readiness, lanes, grants, fixes, known, cutoff, pulls, bugs, open_bugs)
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError) as error:
+        print(f"FOLLOWUP_WARN work backstop unavailable: {type(error).__name__}: {error}".replace("\n", " ")[:1000], flush=True)
+
+
+def _due_work(now, work, readiness, lanes, grants, fixes, known, cutoff, pulls, bugs, open_bugs) -> None:
+    live: set[tuple[int, str]] = set()
+
+    def emit(issue: int, kind: str, state: str, fields: dict) -> None:
+        live.add((issue, kind))
+        if work["should_emit"](REPO, issue, kind, state, now):
+            print(f"{kind} {json.dumps({'issue': issue, **fields})}"[:1000], flush=True)
+
+    def idle_lane(issue: int) -> tuple[str | None, str] | None:
+        lane = lanes["lane_for_job"](STATE, f"issue-{issue}")
+        if lane and lane["status"] in ACTIVE_LANE:
+            return None
+        return (lane["key"], lane["status"]) if lane else (None, "none")
+
+    def is_open(issue: int) -> bool:
+        if issue in open_bugs:
+            return True
+        try:
+            return json.loads(run(["gh", "issue", "view", str(issue), "--repo", REPO, "--json", "state"]))["state"] == "OPEN"
+        except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            print(f"FOLLOWUP_WARN issue={issue} state unavailable: {error}".replace("\n", " ")[:1000], flush=True)
+            return False
+
+    handled: set[int] = set()
+    for grant in grants:
+        handled.add(grant.issue)
+        if grant.holds or grant.blocked or now - grant.recorded_at < SETTLE or readiness["open_for_issue"](pulls, grant.issue):
+            continue
+        lane = idle_lane(grant.issue)
+        if lane and is_open(grant.issue):
+            emit(grant.issue, "FOLLOWUP_PR_DUE", f"{lane[0]}:{lane[1]}", {"lane": lane[0], "status": lane[1],
+                                                                        "reason": "authorized work has no PR and no active lane",
+                                                        "resume": f"helio work start --issue {grant.issue} --from-authorization"})
+    autofix_open = sum(any(label["name"] == "helio-autofix" for label in pull.get("labels") or []) for pull in pulls)
+    for fix in fixes:
+        issue = fix["issue"]
+        handled.add(issue)
+        if readiness["open_for_issue"](pulls, issue) or issue in {grant.issue for grant in grants}:
+            continue
+        if fix["status"] == "queued":
+            if autofix_open < int(os.environ.get("HELIO_AUTOFIX_MAX_OPEN", "3")) and is_open(issue):
+                emit(issue, "FOLLOWUP_BUGFIX_DUE", "capacity", {"reason": "capacity", "resume": f"helio bugfix start --issue {issue}"})
+            continue
+        lane = idle_lane(issue)
+        if lane and now - datetime.datetime.fromisoformat(fix["updated_at"]) >= SETTLE and is_open(issue):
+            emit(issue, "FOLLOWUP_PR_DUE", f"{lane[0]}:{lane[1]}", {"lane": lane[0], "status": lane[1],
+                                                                  "reason": "started bug fix has no PR and no active lane",
+                                                 "resume": f"helio bugfix start --issue {issue}"})
+    for bug in bugs:
+        issue = bug["number"]
+        created = datetime.datetime.fromisoformat(bug["createdAt"].replace("Z", "+00:00"))
+        if issue in known or issue in handled or created < cutoff or readiness["open_for_issue"](pulls, issue):
+            continue
+        emit(issue, "FOLLOWUP_BUGFIX_DUE", "no-record", {"reason": "no-record", "resume": f"helio bugfix start --issue {issue}"})
+    work["settle_events"](REPO, live)
 
 
 def daily_upkeep(housekeeping: dict) -> None:
@@ -276,6 +365,7 @@ def main() -> int:
         if check_seconds <= 0:
             parser.error("HELIO_STAMP_CHECK_SECONDS must be positive")
         first = True
+        custody_seen: set[str] = set()
         observer = runpy.run_path(str(Path(__file__).with_name("helio_observations.py")))
         decisions = runpy.run_path(str(Path(__file__).with_name("helio_decision_upkeep.py")))
         issue_sync = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
@@ -289,7 +379,8 @@ def main() -> int:
                 print(f"FOLLOWUP_WARN decision upkeep unavailable: {type(error).__name__}", flush=True)
             observation = observer["poll"](db, lambda: json.loads(run(["helio", "release", "inspect"])))
             check(db, include_announced=first, observation=observation)
-            check_prs()
+            check_prs(custody_seen)
+            check_work()
             plans = runpy.run_path(str(Path(__file__).with_name("helio-plan.py")))
             recovered = plans["PLAN_PUBLICATION"]["watch"](REPO, plans["GitHub"](REPO))
             if recovered:

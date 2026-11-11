@@ -15,7 +15,10 @@ class DeployPlanTests(unittest.TestCase):
         self.assertEqual((result["needs"], result["monitors_changed"]), ("none", False))
 
     def test_monitor_code_restarts_monitors_only(self):
-        helpers = ["helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_observations.py", "helio_decision_upkeep.py", "helio_issue_sync.py"]
+        helpers = ["helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_observations.py",
+                   "helio_decision_upkeep.py", "helio_issue_sync.py", "helio_pr_recovery.py",
+                   "helio_pr_recovery_actions.py", "helio_pr_recovery_ci.py", "helio_pr_recovery_store.py",
+                   "helio_pr_phase.py", "helio_pr_verification.py"]
         cases = [(["scripts/" + name], []) for name in helpers]
         for kit, installed in cases + [(["scripts/helio-followups.py"], []), ([], ["@inbound/inbound.ts"]), ([], ["context"])]:
             with self.subTest(kit=kit, installed=installed):

@@ -6,6 +6,7 @@ import { sampleHost } from "./host-guard.ts";
 import { listPanes } from "./panes.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { canLaunch } from "./routing.ts";
+import type { PhaseDescriptor } from "./phase.ts";
 
 export type Priority = "owner" | "normal";
 
@@ -13,6 +14,7 @@ export type QueuedLaunch = {
   readonly key: string;
   readonly job?: string;
   readonly source?: string;
+  readonly phase?: PhaseDescriptor;
   readonly title: string;
   readonly done: string;
   readonly thread?: string;

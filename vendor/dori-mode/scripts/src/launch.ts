@@ -12,6 +12,7 @@ import { iso } from "./run.ts";
 import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
 import { doneSyntaxErrors } from "./signals.ts";
 import { completionContractProblem, independentDoneSignals } from "./completion.ts";
+import { authorizePhase, type PhaseDescriptor } from "./phase.ts";
 
 export type LaunchInput = {
   readonly key: string;
@@ -24,6 +25,7 @@ export type LaunchInput = {
   readonly job: string;
   readonly source?: string;
   readonly priority?: Priority;
+  readonly phase?: PhaseDescriptor;
 };
 
 export type LaunchResult = { readonly lane?: Lane; readonly startup: string };
@@ -63,8 +65,13 @@ export const footer = (lane: Lane, leadPane: string): string => [
   `- Key: ${lane.key}. Work thread: ${lane.thread}.`,
   `- Done = ${lane.done}. The lane closes only when every signal reads back live.`,
   "- Human questions go through Discord, never the terminal question tool. Follow the question workflow in work-policy.md; persist and send the question, start an answer monitor, and continue independent work.",
-  `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
-  `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
+  ...(lane.phase ? [
+    `- Worker phase: ${lane.phase.owner} version ${lane.phase.version}, generation ${lane.phase.generation}.`,
+    "- Follow the brief's phase-start and durable handoff protocol. Its controller owns lane completion; do not run dori claim-done for a worker-phase handoff.",
+  ] : [
+    `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
+    `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
+  ]),
   "",
 ].join("\n");
 
@@ -77,7 +84,8 @@ export const adoptLane = async (deps: FlowDeps, input: LaunchInput & { readonly 
   const queued = (await readQueue(deps)).find(entry => entry.job === input.job);
   if (sameJob || queued) throw new LaunchError(`LANE_EXISTS key=${sameJob?.key ?? queued!.key}: use the registered job`);
   const lane: Lane = { key: input.key, job: input.job, source: input.source ?? input.thread ?? `brief:${input.brief}`,
-    title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, openedAt: iso(deps.clock) };
+    title: input.title, thread: input.thread ?? "none", pane: input.pane, brief: input.brief, done: input.done, cwd: input.cwd ?? deps.config.defaultCwd, openedAt: iso(deps.clock),
+    ...(input.phase ? { phase: input.phase } : {}) };
   await deps.registry.write(lane);
   return lane;
   });
@@ -143,15 +151,16 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   const cwd = isolated ? join(deps.config.stateDir, "worktrees", input.key) : sourceCwd;
   const generated = join(deps.config.stateDir, "briefs", `${input.key}.md`);
   const at = iso(deps.clock);
-  const prompt = `${deps.config.launchKeywords}. Before work, start a persistent monitor for helio question watch --lane ${input.key} with filter ^QUESTION; do not use terminal question tools. Read and execute the lane brief at ${generated} in full. You are the ${input.key} lane; report as the brief's footer says.`;
+  const prompt = `${deps.config.launchKeywords}. ${input.phase ? `Read the brief before creating a goal. Your only worker goal is its exact phase ${input.phase.generation} objective; lane Done is the controller's criterion. ` : ""}Before work, start a persistent monitor for helio question watch --lane ${input.key} with filter ^QUESTION; do not use terminal question tools. Read and execute the lane brief at ${generated} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const argv = fill(deps.config.agentCommand, { model, prompt });
   // Like the lead, an omo worker is started with a session id chosen and recorded first, so it can always be resumed.
   const omo = omoIndex(argv);
   const session = omo >= 0 ? randomUUID() : undefined;
   if (session) argv.splice(omo + 1, 0, "--session-id", session);
   const source = input.source ?? input.thread ?? `brief-sha256:${new Bun.CryptoHasher("sha256").update(briefText).digest("hex")}`;
-  const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model,
-    job, source, ...(isolated ? { worktrees: [cwd] } : {}), ...(session ? { session, sessionVia: "assigned" } : {}) };
+  const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model, launchOwner: process.pid,
+    job, source, ...(input.phase ? { phase: input.phase } : {}),
+    ...(isolated ? { worktrees: [cwd] } : {}), ...(session ? { session, sessionVia: "assigned" } : {}) };
   // Job identity is decided under the same lock as the reservation, so two launches cannot both find the job free.
   const admitted = await withLaunchLock(deps, async () => {
     const sameJob = (await deps.registry.listAll()).filter((lane) => lane.job === job);
@@ -184,7 +193,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     if (problem) throw new LaunchError(problem);
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
-      const position = await enqueue(deps, { key: input.key, job, source, title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at });
+      const position = await enqueue(deps, { key: input.key, job, source, title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at,
+        ...(input.phase ? { phase: input.phase } : {}) });
       return { kind: "queued" as const, queued: true as const, position, reasons };
     }
     const draft: Lane = existing
@@ -199,7 +209,8 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   if (admitted.kind === "retry") return launchLane(deps, { ...input, key: admitted.retryAs }, briefText);
   if (admitted.kind === "wake") {
     const attempt = { title: input.title, done: input.done, ...(input.thread ? { thread: input.thread } : {}), ...(input.model ? { model: input.model } : {}) };
-    return wakeLane(deps, admitted.wake, { briefText, priority: input.priority, note: `reopened for job ${job}`, attempt });
+    return wakeLane(deps, admitted.wake, { briefText, priority: input.priority, note: `reopened for job ${job}`, attempt,
+      ...(input.phase ? { phase: input.phase } : {}) });
   }
   if (admitted.queued) return { startup: queuedLine(input.key, admitted.position, admitted.reasons) };
   let lane = admitted.draft;
@@ -229,6 +240,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     }
     const opened = await openTab(deps, cwd, input.key);
     lane = { ...lane, ...opened, launchState: "pane-created" }; await deps.registry.write(lane);
+    await authorizePhase(deps, lane, "beforeWake");
     const launched = await deps.run(["herdr", "pane", "run", opened.pane, argv.map(quoteForPane).join(" ")]);
     if (launched.code !== 0) throw new LaunchError(`herdr pane run failed: ${launched.err || launched.out}`);
     lane = { ...lane, launchState: "started" }; await deps.registry.write(lane);
@@ -299,9 +311,9 @@ const restoreArchived = (deps: FlowDeps, session: string): string | undefined =>
 
 /** Resumes a hibernated or closed lane's recorded session in a new tab; it counts against the worker cap like a launch. */
 /** What a new launch for a resumed job changes: its own completion criterion and metadata, never the session or worktree. */
-export type Attempt = { readonly title: string; readonly done: string; readonly thread?: string; readonly model?: string };
+export type Attempt = { readonly title: string; readonly done: string; readonly thread?: string; readonly model?: string; readonly phase?: PhaseDescriptor };
 
-export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly briefText?: string; readonly priority?: Priority; readonly note: string; readonly attempt?: Attempt }): Promise<LaunchResult> => {
+export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly briefText?: string; readonly priority?: Priority; readonly note: string; readonly attempt?: Attempt; readonly phase?: PhaseDescriptor }): Promise<LaunchResult> => {
   if (!lane.job || lane.retiredAt || lane.supersededBy) throw new LaunchError("Lane needs a verified active job binding before resume");
   if (options.attempt) {
     validateShape({ ...lane, ...options.attempt, job: lane.job });
@@ -324,13 +336,16 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
       const next = options.attempt;
-      const position = await enqueue(deps, { key: lane.key, ...(lane.job ? { job: lane.job } : {}), title: next?.title ?? current.title, done: next?.done ?? current.done, thread: next?.thread ?? current.thread, ...((next?.model ?? current.model) ? { model: next?.model ?? current.model } : {}), briefText: options.briefText ?? "", priority: options.priority ?? "normal", queuedAt: at, wake: true });
+      const phase = options.phase ?? next?.phase ?? current.phase;
+      const position = await enqueue(deps, { key: lane.key, ...(lane.job ? { job: lane.job } : {}), title: next?.title ?? current.title, done: next?.done ?? current.done, thread: next?.thread ?? current.thread, ...((next?.model ?? current.model) ? { model: next?.model ?? current.model } : {}), briefText: options.briefText ?? "", priority: options.priority ?? "normal", queuedAt: at, wake: true,
+        ...(phase ? { phase } : {}) });
       return { queued: true as const, position, reasons };
     }
     const next = options.attempt;
     const changedDone = next && next.done !== current.done ? `; previous Done: ${current.done}` : "";
     const adopted = next ? { title: next.title, done: next.done, thread: next.thread ?? current.thread, ...((next.model ?? current.model) ? { model: next.model ?? current.model } : {}) } : {};
-    const reserved = withStatus(current, "working", options.note + changedDone, at, { ...adopted, closedAt: undefined, launchState: "reserved", launchError: undefined, pane: undefined, tab: undefined, idleSince: undefined, lastReplyAt: deps.clock.now() });
+    const phase = options.phase ?? next?.phase ?? current.phase;
+    const reserved = withStatus(current, "working", options.note + changedDone, at, { ...adopted, ...(phase ? { phase } : {}), closedAt: undefined, launchState: "reserved", launchOwner: process.pid, launchError: undefined, pane: undefined, tab: undefined, idleSince: undefined, lastReplyAt: deps.clock.now() });
     await deps.registry.write(reserved);
     await dequeue(deps, lane.key);
     return { queued: false as const, reserved };
@@ -343,8 +358,9 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
     if (!existsSync(cwd)) await addWorktree(deps, deps.config.defaultCwd, cwd, woke.key);
     const opened = await openTab(deps, cwd, woke.key);
     woke = { ...woke, ...opened, launchState: "pane-created" }; await deps.registry.write(woke);
+    await authorizePhase(deps, woke, "beforeWake");
     const prompt = options.briefText
-      ? `You are the ${woke.key} lane again. Read and execute the new brief at ${woke.brief} in full; report as its footer says.`
+      ? `You are the ${woke.key} lane again. Read and execute the new brief at ${woke.brief} in full; ${woke.phase ? `establish its exact generation ${woke.phase.generation} goal and phase-start acknowledgment before editing. A completed prior goal is not this phase. ` : ""}report as its footer says.`
       : `You are the ${woke.key} lane, resumed after a pause for inactivity. Continue where you left off; report as your brief's footer says.`;
     const argv = fill(deps.config.agentCommand, { model: woke.model ?? deps.config.defaultModel, prompt });
     const omo = omoIndex(argv);

@@ -120,6 +120,19 @@ RULES: tuple[Rule, ...] = (
           f"DELETE FROM plan_publications WHERE state IN ('confirmed','cancelled') AND completed_at < :now_s - {RECEIPT_DAYS * DAY_S}")),
     Rule("issue-updates.sqlite", "followup_creations", "receipt",
          "Creation identities prevent duplicate follow-up issues; confirmed and uncertain outcomes stay recoverable."),
+    Rule("issue-updates.sqlite", "pr_waits", "receipt",
+         "Active custody and unacknowledged events stay; terminal acknowledged records expire after 180 days.",
+         (f"""DELETE FROM pr_waits WHERE updated_at < :now_s - {RECEIPT_DAYS * DAY_S}
+             AND CASE WHEN json_valid(data) THEN json_extract(data,'$.terminal')=1
+             AND json_type(data,'$.notices')='array'
+             AND NOT EXISTS (SELECT 1 FROM json_each(data,'$.notices')
+                             WHERE json_extract(value,'$.acknowledged') IS NOT 1) ELSE 0 END""",)),
+    Rule("issue-updates.sqlite", "pr_verifications", "receipt",
+         "Published proof stays with custody; unfinished publication and uncertain effects never expire.",
+         (f"""DELETE FROM pr_verifications WHERE status='published' AND published_at < :now_s - {RECEIPT_DAYS * DAY_S}
+             AND NOT EXISTS (SELECT 1 FROM pr_waits w WHERE w.repo=pr_verifications.repo AND w.issue=pr_verifications.issue)
+             AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.completed=0 AND
+                 CASE WHEN json_valid(o.change) THEN json_extract(o.change,'$.verification')=pr_verifications.id ELSE 1 END)""",)),
     Rule("issue-updates.sqlite", "meta", "singleton", "The milestone baseline."),
     Rule("decisions.sqlite", "decisions", "derived", "Ended guidance is kept 180 days; active guidance stays.",
          (f"DELETE FROM decisions WHERE status != 'active' AND coalesce(invalid_at, created_at) < :now_s - {DERIVED_DAYS * DAY_S}",)),
@@ -132,6 +145,12 @@ RULES: tuple[Rule, ...] = (
     Rule("reply-sends.sqlite", "reply_settlements", "receipt", "Final settlement identities prevent duplicate local fulfillment after restart."),
     Rule("work-authorizations.sqlite", "authorizations", "receipt", "Unfinished work is retained; used authorizations are kept 180 days.",
          ("DELETE FROM authorizations WHERE used=1 AND recorded_at < :receipt_iso",)),
+    Rule("work-authorizations.sqlite", "bugfixes", "receipt",
+         "Bug-fix routing records prevent duplicate fix lanes; kept 180 days after their last change.",
+         ("DELETE FROM bugfixes WHERE updated_at < :receipt_iso",)),
+    Rule("work-authorizations.sqlite", "work_events", "derived", "Backstop notice state is kept 30 days.",
+         ("DELETE FROM work_events WHERE emitted_at < :raw_iso",)),
+    Rule("work-authorizations.sqlite", "meta", "singleton", "The bug-fix backstop cutoff."),
 )
 
 

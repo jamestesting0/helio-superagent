@@ -69,6 +69,17 @@ class HelioConfigTests(unittest.TestCase):
         self.assertIn("HELIO_MAX_WORKERS", issues)
         self.assertIn("HELIO_HIBERNATE_AFTER_MIN", issues)
 
+    def test_pr_custody_is_off_by_default_and_changes_current_admission_snapshot(self):
+        recovery = runpy.run_path(str(ROOT / "scripts/helio_pr_recovery.py"))
+        path = self.home / ".dori/elobot/policy/lane-settings.json"
+        path.parent.mkdir(parents=True)
+        for flag, expected in (("off", False), ("on", True), ("off", False)):
+            files = CONFIG["generate"]({**SECRETS, "HELIO_PR_CUSTODY": flag}, self.home)
+            path.write_bytes(files["policy/lane-settings.json"][0])
+            self.assertEqual(recovery["admitted"](self.home), expected)
+        self.assertFalse(json.loads(CONFIG["generate"](SECRETS, self.home)["policy/lane-settings.json"][0])["prCustody"])
+        self.assertIn("HELIO_PR_CUSTODY", " ".join(CONFIG["problems"]({**SECRETS, "HELIO_PR_CUSTODY": "yes"})))
+
     def test_render_writes_private_files_and_is_idempotent(self):
         self.write_settings(HELIO_TRUSTED_USERS="11111,22222")
         with redirect_stdout(StringIO()):

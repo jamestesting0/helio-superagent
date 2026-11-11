@@ -4,6 +4,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import type { FlowDeps } from "./done-flow.ts";
 import type { Lane } from "./registry.ts";
 import { checkDone, parseSignal, splitDone, type Check } from "./signals.ts";
+import { statusOf } from "./registry.ts";
+import { authorizePhase, PhaseError } from "./phase.ts";
 
 const acceptanceHash = (lane: Lane) => new Bun.CryptoHasher("sha256").update(lane.done).digest("hex");
 export const completionPath = (deps: FlowDeps, lane: Lane): string => join(deps.config.stateDir, "completions", `${lane.key}.json`);
@@ -36,6 +38,9 @@ async function revision(deps: FlowDeps, lane: Lane): Promise<string | null> {
 
 /** Records already-live checks, or runs the independent criteria when explicitly requested by the worker. */
 export async function recordCompletion(deps: FlowDeps, lane: Lane, verified?: readonly Check[]): Promise<string> {
+  if (lane.phase && statusOf(lane) !== "verified-done") {
+    throw new PhaseError("A managed completion artifact requires the verified reservation");
+  }
   const problem = completionContractProblem(deps, lane);
   if (problem) throw new CompletionError(problem);
   const independent = independentDoneSignals(lane.done);
@@ -47,6 +52,7 @@ export async function recordCompletion(deps: FlowDeps, lane: Lane, verified?: re
   if (!verified && (!lane.job || !lane.source || !head)) {
     throw new CompletionError("A completion file requires a bound job, source and readable Git revision");
   }
+  await authorizePhase(deps, lane, "beforeComplete");
   const path = completionPath(deps, lane);
   const directory = join(deps.config.stateDir, "completions");
   await mkdir(directory, { recursive: true, mode: 0o700 });

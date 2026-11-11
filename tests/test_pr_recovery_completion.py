@@ -40,6 +40,24 @@ class CompletionTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT completed FROM operations").fetchall(), [(1,)])
         self.assertEqual(self.task.github.creates, 1)
 
+    def test_background_recovery_waits_while_the_requester_holds_publication(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        grant = WORK["Authorization"]("o/r", 7, "12345", "23456", "34567", now - datetime.timedelta(seconds=2), source_hash="f" * 64)
+        WORK["record"](grant)
+        self.task.proof = {"message": grant.message, "channel": grant.channel, "author": grant.author,
+                           "source_hash": grant.source_hash}
+        self.task.github.lose_create = "before"
+        with self.assertRaises(fixtures.P["Refused"]):
+            fixtures.P["publish"](self.task.store, 7, "helio/autofix-7", self.task.github.head, self.task.body(),
+                "Fix regression", self.task.proof, fixtures.M["digest"](self.task.github.issue["body"]), authorize=lambda: None)
+        WORK["record"](WORK["Authorization"]("o/r", 7, "12346", "23456", "34567", now - datetime.timedelta(seconds=1),
+                                             "e" * 64, "request", ("no-pr",)))
+        restarted = fixtures.M["Issues"]("o/r", self.task.state, command=self.task.github.command)
+        with self.assertRaisesRegex(ValueError, "Held by the requester"):
+            restarted.publications(7)
+        self.assertEqual(self.task.github.creates, 1)
+        self.assertEqual(WORK["available"]("o/r", 7, now).holds, ("no-pr",))
+
     def test_noop_delivery_spends_a_new_creation_receipt_without_another_pr_or_edit(self):
         self.task.publish()
         now = datetime.datetime.now(datetime.timezone.utc)
