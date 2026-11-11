@@ -59,6 +59,8 @@ export interface IncomingMessage extends MessageBody {
 /** Who a message structurally addresses, read from its raw text and the message it replies to. */
 export interface AddressingFacts {
   readonly text_mention_ids: readonly string[];
+  /** IDs mentioned only inside quotes; also excludes Discord's resolved-mention fallback. */
+  readonly quoted_mention_ids?: readonly string[];
   readonly leading_mention_id: string | null;
   readonly names_helio: boolean;
   readonly parent_mention_ids: readonly string[];
@@ -66,12 +68,28 @@ export interface AddressingFacts {
 
 const mentionIds = (text: string | undefined) => [...(text ?? "").matchAll(/<@!?(\d+)>/g)].flatMap(match => match[1] ? [match[1]] : []);
 
+function unquotedText(text: string | undefined): string {
+  const lines: string[] = [];
+  for (const line of (text ?? "").split(/\r?\n/)) {
+    if (/^[\t ]*>>>[\t ]/.test(line)) break;
+    if (!/^[\t ]*>[\t ]/.test(line)) lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function quotedMentionIds(text: string | undefined): readonly string[] {
+  const unquoted = new Set(mentionIds(unquotedText(text)));
+  return [...new Set(mentionIds(text))].filter(id => !unquoted.has(id));
+}
+
 export function addressingFacts(msg: Pick<IncomingMessage, "content" | "message_reference" | "referenced_message">): AddressingFacts {
+  const content = unquotedText(msg.content);
   return {
-    text_mention_ids: [...new Set(mentionIds(msg.content))],
-    leading_mention_id: /^\s*<@!?(\d+)>/.exec(msg.content)?.[1] ?? null,
-    names_helio: /\bhelio\b/i.test(msg.content),
-    parent_mention_ids: msg.message_reference?.type === 1 ? [] : [...new Set(mentionIds(msg.referenced_message?.content))],
+    text_mention_ids: [...new Set(mentionIds(content))],
+    quoted_mention_ids: quotedMentionIds(msg.content),
+    leading_mention_id: /^\s*<@!?(\d+)>/.exec(content)?.[1] ?? null,
+    names_helio: /\bhelio\b/i.test(content),
+    parent_mention_ids: msg.message_reference?.type === 1 ? [] : [...new Set(mentionIds(unquotedText(msg.referenced_message?.content)))],
   };
 }
 
@@ -130,6 +148,7 @@ export async function classify(
   onIneligible?: () => void,
 ): Promise<Inbound | null> {
   if (msg.author.id === cfg.botId || msg.webhook_id !== undefined) return null;
+  if (msg.guild_id !== undefined && !cfg.botId) return null;
 
   const isBugReport = bugReport(msg, cfg);
   if (msg.author.id === cfg.bugReportSource?.authorId && !isBugReport) return null;
@@ -148,22 +167,16 @@ export async function classify(
 
   const channelPolicy: ChannelPolicy = msg.guild_id === undefined ? "trusted" :
     await insideAllowed(msg.channel_id, cfg.trustedChannels ?? new Set(), parentOf) ? "trusted" : "normal";
-  const { mentioned, additionTo, repliesToHelio, followUp, forOwner, addressee } = addressing(msg, cfg, channelPolicy, isBugReport);
-  // Two people talking to each other in the trusted chat are not talking to Helio.
-  if (channelPolicy === "trusted" && cfg.botId !== undefined && msg.guild_id !== undefined && !isBugReport && !forOwner && addressee === "other") {
-    onIneligible?.();
-    return null;
-  }
-  // Unpinged normal-chat input needs a reply to Helio, the person's own working window, or Helio's open question.
-  if (channelPolicy === "normal" && !isBugReport && !mentioned && !followUp && !forOwner) {
+  const { mentioned, additionTo, repliesToHelio, followUp, forOwner, addressee } = addressing(msg, cfg, isBugReport);
+  // Channel trust changes response obligations and evidence access, not whether guild chatter addresses Helio.
+  if (msg.guild_id !== undefined && !isBugReport && !mentioned && !followUp && !forOwner) {
     onIneligible?.();
     return null;
   }
 
   const canReport = msg.guild_id !== undefined && cfg.issueReportChannels !== undefined && await insideAllowed(msg.channel_id, cfg.issueReportChannels, parentOf);
   const replyTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
-  // Unknown bot identity must not silently lose a direct request.
-  const direct = msg.guild_id === undefined || cfg.botId === undefined || mentioned;
+  const direct = msg.guild_id === undefined || mentioned;
 
   return {
     channel_policy: channelPolicy,
@@ -196,19 +209,20 @@ const bugReport = (msg: IncomingMessage, cfg: FilterConfig): boolean => msg.auth
  * `mentions`, so a reply to Helio without the mention text is never a ping. Unpinged follow-ups are replies to Helio or into a topic, the person's own
  * working window, or an answer Helio's open question is waiting for.
  */
-function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy, isBugReport: boolean) {
+function addressing(msg: IncomingMessage, cfg: FilterConfig, isBugReport: boolean) {
   const facts = msg.addressing ?? addressingFacts(msg);
+  const quotedMentions = facts.quoted_mention_ids ?? quotedMentionIds(msg.content);
   const repliesToHelio = cfg.botId !== undefined && msg.message_reference?.type !== 1 && msg.referenced_message?.author.id === cfg.botId;
   // A ping is a mention written in the text. Discord also lists a replied-to author in `mentions`, so that list
   // counts only for a message that replies to nothing.
-  const mentioned = cfg.botId !== undefined && (facts.text_mention_ids.includes(cfg.botId) ||
+  const mentioned = cfg.botId !== undefined && !quotedMentions.includes(cfg.botId) && (facts.text_mention_ids.includes(cfg.botId) ||
     (msg.message_reference === undefined && msg.mentions?.some((user) => user.id === cfg.botId) === true));
   const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
   const repliedTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
-  const followUp = channelPolicy === "normal" && !isBugReport && !mentioned &&
+  const followUp = !isBugReport && !mentioned &&
     (additionTo !== undefined || repliesToHelio || cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true ||
       (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true));
-  const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned);
+  const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned, quotedMentions);
   const parent = repliedTo !== undefined ? msg.referenced_message : undefined;
   const parentPingedHelio = cfg.botId !== undefined && facts.parent_mention_ids.includes(cfg.botId);
   const toHelio = mentioned || repliesToHelio || parentPingedHelio || additionTo !== undefined || facts.names_helio ||
@@ -221,25 +235,26 @@ function addressing(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: Chan
 
 /**
  * Whether catch-up counts a message against its per-channel cap: what classify would admit, judged without
- * channel lookups (the caller knows the channel's policy). Chatter that classify drops never pushes a request out of reach.
+ * channel lookups. Chatter that classify drops never pushes a request out of reach.
  */
-export function countsTowardCatchUp(msg: IncomingMessage, cfg: FilterConfig, channelPolicy: ChannelPolicy): boolean {
+export function countsTowardCatchUp(msg: IncomingMessage, cfg: FilterConfig): boolean {
   if (msg.author.id === cfg.botId || msg.webhook_id !== undefined) return false;
+  if (msg.guild_id !== undefined && !cfg.botId) return false;
   const isBugReport = bugReport(msg, cfg);
   if (msg.author.bot && !isBugReport) return false;
   if (!requestMessage(msg, isBugReport)) return false;
-  if (isBugReport || cfg.botId === undefined) return true;
-  const { mentioned, followUp, forOwner, addressee } = addressing(msg, cfg, channelPolicy, false);
-  if (channelPolicy === "trusted") return addressee !== "other" || forOwner;
+  if (isBugReport || msg.guild_id === undefined) return true;
+  const { mentioned, followUp, forOwner } = addressing(msg, cfg, false);
   return mentioned || followUp || forOwner;
 }
 
 // User mentions only: role and @everyone mentions are not in `mentions`. A message that also pings or
 // replies to Helio is addressed to Helio instead.
-function forTheOwner(msg: IncomingMessage, cfg: FilterConfig, pingsHelio: boolean): boolean {
+function forTheOwner(msg: IncomingMessage, cfg: FilterConfig, pingsHelio: boolean, quotedMentions: readonly string[]): boolean {
   if (cfg.answerForOwner !== true || pingsHelio) return false;
   if (msg.referenced_message?.author.id !== undefined && msg.referenced_message.author.id === cfg.botId) return false;
   const owner = cfg.ownerId;
+  if (quotedMentions.includes(owner)) return false;
   if (!msg.mentions?.some((user) => user.id === owner) && !msg.content.includes(`<@${owner}>`) &&
       !msg.content.includes(`<@!${owner}>`)) return false;
   const last = cfg.lastOwnerPost?.(msg.channel_id);

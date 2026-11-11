@@ -180,7 +180,7 @@ test("an authorized reply reaches plan feedback through the running intake watch
     s.sent(id, "89", now);
   } finally { s.close(); }
   const child = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "../fixtures/discord.ts"), join(import.meta.dir, "../inbound.ts")], {
-    env: { ...process.env, DORI_TEST_REPLIES: "1", DORI_DISCORD_ALLOWED: "100", DORI_DISCORD_TRUSTED_CHANNELS: "100",
+    env: { ...process.env, DORI_TEST_REPLIES: "1", DORI_TEST_REPLY_PARENT: "1", DORI_DISCORD_ALLOWED: "100", DORI_DISCORD_TRUSTED_CHANNELS: "100",
       DORI_DISCORD_NORMAL_CHANNELS: "", DORI_DISCORD_REPORT_CHANNELS: "", DORI_DISCORD_BUG_REPORT_SOURCE: undefined },
     stdout: "pipe", stderr: "pipe", stdin: "ignore",
   });

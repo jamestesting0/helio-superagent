@@ -74,9 +74,9 @@ test("current channel and sender configuration replaces stale queued labels on w
     const photo = original.attachments[0].path;
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
-      const previous = queue.pending("inbound").find((item) => item.id === "11");
+      const previous = queue.pending("inbound").find((item) => item.id === "10");
       if (!previous) throw new Error("Missing staged fixture");
-      queue.refresh("11", previous.payload, JSON.stringify({
+      queue.refresh("10", previous.payload, JSON.stringify({
         ...JSON.parse(previous.payload), author_id: "77", role: "TRUSTED_REQUEST",
         scope: "trusted-pr-merge-restart", channel_policy: "trusted",
       }));
@@ -91,7 +91,7 @@ test("current channel and sender configuration replaces stale queued labels on w
     const pending = await invoke(dir, "ack.ts", { args: ["pending", "inbound"], trustedChannels: "100" });
     expect({ exitCode: pending.exitCode, stderr: pending.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(inbound(pending.stdout).map((message) => [message.channel_policy, message.role, message.author_id]))
-      .toEqual([["trusted", "OWNER_REQUEST", "99"], ["trusted", "OWNER_REQUEST", "99"]]);
+      .toEqual([["trusted", "OWNER_REQUEST", "99"]]);
     const retired = await invoke(dir, "ack.ts", { args: ["irrelevant", "inbound", "10", "Unrelated normal-channel ping"] });
     expect({ exitCode: retired.exitCode, stderr: retired.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(retired.stdout).toBe("ACK_IRRELEVANT stream=inbound message_id=10\n");
@@ -113,7 +113,7 @@ test("allowlist and trusted DM revocations withhold old queued requests without 
     expect(inbound(pending.stdout).map((message) => message.message_id)).toEqual(["12", "30"]);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
-      expect(queue.pending("inbound").map((item) => item.id)).toEqual(["10", "11", "12", "30", "31", "33"]);
+      expect(queue.pending("inbound").map((item) => item.id)).toEqual(["10", "12", "30", "31", "33"]);
       expect(queue.status("inbound", "31").disposition).toBe("pending");
     } finally { queue.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -258,7 +258,7 @@ test("watcher and ack refuse old pending work, clean its files, and preserve acc
   const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
   try {
     const old = JSON.stringify({
-      message_id: "10", channel_id: "100", author_id: "99", content: "old request",
+      message_id: "10", channel_id: "100", author_id: "99", content: "<@88> old request",
       sent_at: "2026-10-30T11:59:59Z", attention: "direct",
       role: "OWNER_REQUEST", scope: "may-request-work", channel_policy: "normal",
     });
@@ -267,7 +267,7 @@ test("watcher and ack refuse old pending work, clean its files, and preserve acc
       ...JSON.parse(old), message_id: "11", preparation_complete: true,
       discord_origin: authorizationMetadata({
         id: "11", type: 0, channel_id: "100", guild_id: "300", author: { id: "99", username: "owner" },
-        content: "old request", timestamp: "2026-10-30T11:59:59Z",
+        content: "<@88> old request", timestamp: "2026-10-30T11:59:59Z",
       }),
     }));
     queue.accept("11", Date.parse("2026-10-30T12:00:00Z"));
@@ -301,7 +301,7 @@ test("first-run and newly added channels backfill active and archived threads wi
     const first = await invoke(dir, "inbound.ts", { archived: true, trustedChannels: "100" });
     expect({ exitCode: first.exitCode, stderr: first.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(inbound(first.stdout).map((message) => [message.message_id, message.channel_id, message.backlog]))
-      .toEqual([["10", "100", true], ["11", "100", true], ["20", "103", true]]);
+      .toEqual([["10", "100", true], ["20", "103", true]]);
     const warnings = first.stdout.split("\n").filter((line) => line.startsWith("INBOUND_WARN "));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("parent=100 path=/channels/100/users/@me/threads/archived/private");

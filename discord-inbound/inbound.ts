@@ -462,9 +462,8 @@ async function catchUp(): Promise<number> {
     try {
       const after = lastSeen.get(channel.id);
       // The cap counts only what classify would admit, so a busy channel's chatter cannot push a request out of reach.
-      const policy = channel.guildId === undefined || await insideAllowed(channel.id, cfg.trustedChannels ?? new Set(), parentOf) ? "trusted" : "normal";
       const backlog = await fetchBacklog(fetchPage, channel.id, after, Date.now(),
-        { ...CAPS, counts: (msg) => !blockedAuthor(msg.author.id) && countsTowardCatchUp({ ...msg, guild_id: channel.guildId }, cfg, policy) });
+        { ...CAPS, counts: (msg) => !blockedAuthor(msg.author.id) && countsTowardCatchUp({ ...msg, guild_id: channel.guildId }, cfg) });
       const { messages, truncated } = backlog;
       if (truncated) console.log(`INBOUND_BACKLOG_TRUNCATED channel=${channel.id} kept=${messages.length}`);
       const skipped = await skippedThrough(fetchPage, channel.id, backlog);

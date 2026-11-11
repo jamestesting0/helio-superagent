@@ -9,7 +9,11 @@ export const turnMessages = [1000, 1001, 1002, 1003].map((id) => ({
 export const messages = [11, 10].map((id) => ({
   id: String(id), type: 0, channel_id: "100", guild_id: "300",
   author: { id: "99", username: "owner" }, content: `message ${id}`,
-  mentions: id === 10 ? [{ id: "88" }] : [],
+  mentions: id === 10 || process.env.DORI_TEST_ADDRESSED_INPUT === "ping" ? [{ id: "88" }] : [],
+  ...(id === 11 && process.env.DORI_TEST_ADDRESSED_INPUT === "reply" ? {
+    message_reference: { message_id: "89", channel_id: "100", guild_id: "300" },
+    referenced_message: { author: { id: "88" } },
+  } : {}),
   // Existing scenarios represent separate requests, not one burst.
   timestamp: new Date(now - (id === 10 ? 122_000 : 61_000)).toISOString(),
   attachments: id === 10 ? [{
@@ -44,7 +48,7 @@ export const dmMessages = Object.fromEntries(Object.entries(directMessages).map(
 ]));
 export const forwarded = {
   id: "21", type: 0, channel_id: "100", guild_id: "300",
-  author: { id: "77", username: "staff" }, content: "",
+  author: { id: "77", username: "staff" }, content: process.env.DORI_TEST_ADDRESSED_INPUT ? "<@88>" : "",
   timestamp: new Date(now).toISOString(),
   message_reference: { type: 1, message_id: "900", channel_id: "999", guild_id: "998" },
   message_snapshots: [{
@@ -79,7 +83,7 @@ export const replyParents:Record<string,object>={
      url: "https://cdn.discordapp.com/attachments/100/500/photo.png", content_type: "image/jpeg" }] } : {})},
  "88":{id:"88",channel_id:"100",guild_id:"300",author:{id:"99",username:"owner"},content:"Run the Final test",timestamp:new Date(now-2000).toISOString()},
 };
-export const replyEvent = process.env.DORI_TEST_REPLY_PARENT === "1" ? {
+export const replyEvent = process.env.DORI_TEST_REPLY_PARENT === "1" || process.env.DORI_TEST_ADDRESSED_INPUT ? {
   ...replyFollowup,
   referenced_message: { ...replyParents["89"], content: "", embeds: [{ type: "rich", title: "Final blocked", fields: [{ name: "Reason", value: "browser not connected" }] }],
     components: [{ type: 1, components: [{ type: 2, label: "Retry" }] }] },

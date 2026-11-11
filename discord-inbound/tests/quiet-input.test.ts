@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Delivery } from "../delivery/delivery.ts";
 
-test("unsupported-only input settles quietly while short human text survives and system events never stage", async () => {
+test("unsupported-only DM input settles quietly while short human text survives and system events never stage", async () => {
   const state = await mkdtemp(join(tmpdir(), "helio-quiet-input-"));
   onTestFinished(() => rm(state, { recursive: true, force: true }));
   await Bun.write(join(state, "discord-inbound.json"), JSON.stringify({ "104": "950", "200": "950" }));
@@ -20,7 +20,7 @@ globalThis.fetch = Object.assign(async (input, init) => {
 }, {preconnect: fixtureFetch.preconnect});
 Listener.prototype.start = async function () {
   this.emit("connected", {user: {id: "88", username: "Helio"}, sessionId: "test"});
-  const base = {type: "MESSAGE_CREATE", message_type: 0, channel_id: "104", guild_id: "300",
+  const base = {type: "MESSAGE_CREATE", message_type: 0, channel_id: "200",
     timestamp: new Date(Date.now()).toISOString(), author: {id: "99", username: "owner"}};
   this.emit("message_create", {...base, id: "951", content: "", attachments: [
     {filename: "notes.zip", url: "https://cdn.discordapp.com/attachments/1/2/notes.zip"}]});

@@ -71,19 +71,21 @@ test("prepared but unclaimed normal input preserves the outstanding question acr
   } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("normal history and live non-pings never stage or prepare attachments/forwards, and ping replies never read ancestors", async () => {
+test.each([false, true])("history and live non-pings never stage or prepare attachments/forwards (trusted %s)", async trusted => {
   const dir = await mkdtemp(join(tmpdir(), "dori-normal-gate-"));
   try {
-    const result = await run(dir);
+    const result = await run(dir, { trusted });
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
-    expect(records(result.stdout).map((message) => [message.message_id, message.channel_policy, message.reply_context]))
-      .toEqual([["10", "normal", undefined], ["90", "normal", undefined]]);
+    expect(records(result.stdout).map((message) => [message.message_id, message.channel_policy]))
+      .toEqual([["10", trusted ? "trusted" : "normal"], ["90", trusted ? "trusted" : "normal"]]);
     const later = records(result.stdout).find(message => message.message_id === "90");
     expect(later?.conversation).toMatchObject({
       context_status: "cached",
       recent: expect.arrayContaining([expect.objectContaining({ message_id: "11" })]),
     });
-    expect(reads(result.stdout)).toEqual([{ kind: "attachment", file: "photo.png" }]);
+    expect(reads(result.stdout).filter(read => typeof read === "object" && read !== null && "kind" in read && read.kind === "attachment"))
+      .toEqual([{ kind: "attachment", file: "photo.png" }]);
+    if (!trusted) expect(reads(result.stdout)).not.toContainEqual(expect.objectContaining({ kind: "ancestor" }));
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
       expect(queue.pending("inbound").map((item) => item.id)).toEqual(["10", "90"]);
@@ -91,7 +93,7 @@ test("normal history and live non-pings never stage or prepare attachments/forwa
       expect(queue.contains("inbound", "21")).toBe(false);
       expect(queue.contains("inbound", "22")).toBe(false);
       const before = queue.pending("inbound");
-      const context = await run(dir, { script: "ack.ts", args: ["context", "inbound", "90"] });
+      const context = await run(dir, { trusted, script: "ack.ts", args: ["context", "inbound", "90"] });
       expect({ code: context.exitCode, stderr: context.stderr, evidence: context.stdout }).toMatchObject({ code: 0, stderr: "" });
       const evidence = JSON.parse(context.stdout.split("\n").find(line =>
         line.startsWith("ACK_EVIDENCE "))?.slice("ACK_EVIDENCE ".length) ?? "{}").context_evidence;
@@ -104,7 +106,7 @@ test("normal history and live non-pings never stage or prepare attachments/forwa
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("legacy non-pings and unknown identity are withheld on both replay paths without losing pending, and a now-normal reply keeps only its parent", async () => {
+test("unknown identity is withheld without losing pending, and a now-normal reply keeps only its parent", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dori-normal-replay-"));
   try {
     const first = await run(dir, { trusted: true, liveReply: true });
@@ -130,7 +132,7 @@ test("legacy non-pings and unknown identity are withheld on both replay paths wi
     expect(reads(known.stdout)).toEqual([]);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
-      expect(queue.pending("inbound").map((item) => item.id)).toEqual(["10", "11", "21", "22", "90"]);
+      expect(queue.pending("inbound").map((item) => item.id)).toEqual(["10", "90"]);
     } finally { queue.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

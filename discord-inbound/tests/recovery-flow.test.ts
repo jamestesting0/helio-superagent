@@ -20,6 +20,7 @@ async function invoke(dir: string, settings: {
       ...process.env, DORI_STATE_DIR: dir, DORI_DISCORD_TOKEN: "test", DORI_DISCORD_OWNER_ID: "99",
       DORI_DISCORD_ALLOWED: settings.allowed ?? "100", DORI_DISCORD_TRUSTED_CHANNELS: settings.trusted ?? "100",
       DORI_DISCORD_NORMAL_CHANNELS: settings.normal ?? "", DORI_DISCORD_TRUSTED_IDS: "",
+      DORI_TEST_ADDRESSED_INPUT: (settings.trusted ?? "100") === "100" ? "ping" : "",
       DORI_DISCORD_REPORT_CHANNELS: "", DORI_DISCORD_BUG_REPORT_SOURCE: undefined,
       DORI_TEST_PREPARE_FAILURE: settings.prepareFailure ? "1" : "",
       DORI_TEST_AUTH_FAILURE: settings.authorizationFailure ? "1" : "",

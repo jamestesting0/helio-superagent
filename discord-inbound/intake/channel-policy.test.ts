@@ -142,9 +142,9 @@ test.each([
   expect(await classify({ ...message, ...ping }, { ...cfg, botId: undefined }, parentOf)).toBeNull();
 });
 
-test("unknown bot identity leaves trusted chat and identity-authorized DMs unaffected", async () => {
+test("unknown bot identity withholds guild chatter while identity-authorized DMs remain available", async () => {
   const unknown = { ...cfg, botId: undefined };
-  expect((await classify({ ...message, content: "untagged", mentions: [], channel_id: helper }, unknown, parentOf))?.channel_policy).toBe("trusted");
+  expect(await classify({ ...message, content: "untagged", mentions: [], channel_id: helper }, unknown, parentOf)).toBeNull();
   for (const id of ["99", "77"]) {
     const dm = await classify({ ...message, guild_id: undefined, content: "untagged", mentions: [], author: { id, username: "human" } }, unknown, parentOf);
     expect(dm?.channel_policy).toBe("trusted");
@@ -224,13 +224,14 @@ test.each([
     referenced_message: { author: { id: "77" } } }, attention: "review", addressee: "helio" },
   { name: "a reply below a colleague's Helio ping", over: { content: "same here", message_reference: { message_id: "5" },
     referenced_message: { author: { id: "77" }, content: "<@88> queue stuck" } }, attention: "review", addressee: "helio" },
-])("replay keeps how $name was addressed", async ({ over, attention, addressee }) => {
+])("replay keeps how $name in a tracked topic was addressed", async ({ over, attention, addressee }) => {
+  const config = { ...cfg, topicMessage: (id: string) => id === "5" };
   const original: IncomingMessage = { ...message, channel_id: helper, mentions: [], ...over };
-  const inbound = await classify(original, cfg, parentOf);
+  const inbound = await classify(original, config, parentOf);
   expect([inbound?.attention, inbound?.addressee]).toEqual([attention, addressee]);
   // The stored text has links rewritten, so replay must rely on the facts verified at intake.
   const payload = JSON.stringify({ ...inbound, content: "rewritten", preparation_complete: true, discord_origin: authorizationMetadata(original) });
   const rest = async <T>(): Promise<T> => ({ id: helper, guild_id: "300", type: 0 } as T);
-  const replayed = await reauthorize(payload, cfg, rest);
+  const replayed = await reauthorize(payload, config, rest);
   expect([replayed?.attention, replayed?.addressee]).toEqual([attention, addressee]);
 });

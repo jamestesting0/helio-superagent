@@ -165,7 +165,7 @@ test("reminders begin at five minutes, exclude accepted and working items, and s
 test("inbound schedules the pending reminder separately from ten-minute reaction upkeep", async () => {
   const dir = await mkdtemp(join(tmpdir(), "reminder-timer-"));
   try {
-    const { stdout } = await invoke(dir, [], { DORI_TEST_PENDING_TIMER: "1" });
+    const { stdout } = await invoke(dir, [], { DORI_TEST_PENDING_TIMER: "1", DORI_TEST_ADDRESSED_INPUT: "reply" });
     expect(stdout.split("\n").filter((line) => line.startsWith("TEST_INTERVAL ")).sort())
       .toEqual(["TEST_INTERVAL 15000", "TEST_INTERVAL 300000", "TEST_INTERVAL 600000"]);
     expect(stdout.split("\n").filter((line) => line.startsWith("INBOUND_PENDING ")))

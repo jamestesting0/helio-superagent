@@ -192,7 +192,8 @@ function validFacts(value: unknown): value is AddressingFacts {
   if (typeof value !== "object" || value === null) return false;
   const facts = value as Record<string, unknown>;
   const ids = (list: unknown) => Array.isArray(list) && list.every(id => typeof id === "string" && /^\d+$/.test(id));
-  return ids(facts.text_mention_ids) && ids(facts.parent_mention_ids) && typeof facts.names_helio === "boolean" &&
+  return ids(facts.text_mention_ids) && (facts.quoted_mention_ids === undefined || ids(facts.quoted_mention_ids)) &&
+    ids(facts.parent_mention_ids) && typeof facts.names_helio === "boolean" &&
     (facts.leading_mention_id === null || (typeof facts.leading_mention_id === "string" && /^\d+$/.test(facts.leading_mention_id)));
 }
 
@@ -253,8 +254,10 @@ export async function reauthorize(payload: string, cfg: FilterConfig, rest: Rest
     mentions: origin.mention_ids.map((id) => ({ id })),
     message_reference: origin.reply_to === null ? undefined : { message_id: origin.reply_to },
     referenced_message: origin.reply_author_id === null ? null : { author: { id: origin.reply_author_id } },
-    // Records staged before addressing facts existed fall back to their stored text.
-    addressing: "addressing" in origin && validFacts(origin.addressing) ? origin.addressing :
+    // Derive legacy quote exclusions before classification discards the retained text.
+    addressing: "addressing" in origin && validFacts(origin.addressing) ?
+      { ...origin.addressing, quoted_mention_ids: origin.addressing.quoted_mention_ids ??
+        addressingFacts({ content: saved.content }).quoted_mention_ids } :
       addressingFacts({ content: saved.content, message_reference: origin.reply_to === null ? undefined : { message_id: origin.reply_to } }),
   }, cfg, lookup);
   if (!current) return null;

@@ -73,10 +73,11 @@ test("unclaimed messages and reply guard rows never anchor additions, while a cl
   });
 });
 
-test("a normal-chat addition is admitted for review and names its ping anchor", async () => {
+test.each([false, true])("an addition is admitted for review and names its ping anchor (trusted %s)", async trusted => {
   await withStores(async (_delivery, store) => {
     const cfg = filterConfig({
       DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: normal, DORI_DISCORD_REPORT_CHANNELS: normal,
+      DORI_DISCORD_TRUSTED_CHANNELS: trusted ? normal : "",
     }, { workingAnchor: (channel, user, id) => store.workingAnchor(channel, user, id) });
     cfg.botId = "88";
     const anchor = idAt(T0);

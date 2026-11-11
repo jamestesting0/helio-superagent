@@ -28,11 +28,11 @@ test("recovery CLI retains unavailable work, records review and resets it on the
   };
   try {
     const payload = JSON.stringify({
-      message_id: "11", channel_id: "100", author_id: "99", content: "help", preparation_complete: true,
+      message_id: "11", channel_id: "100", author_id: "99", content: "<@88> help", preparation_complete: true,
       sent_at: "2026-11-02T12:00:00Z", role: "OWNER_REQUEST", scope: "may-request-work",
       attention: "direct", channel_policy: "trusted",
       discord_origin: authorizationMetadata({ id: "11", type: 0, channel_id: "100", guild_id: "300",
-        author: { id: "99", username: "owner" }, content: "help", timestamp: "2026-11-02T12:00:00Z" }),
+        author: { id: "99", username: "owner" }, content: "<@88> help", timestamp: "2026-11-02T12:00:00Z" }),
     });
     queue.stage("inbound", "11", payload);
     queue.accept("11", Date.parse("2026-11-02T12:00:00Z"));

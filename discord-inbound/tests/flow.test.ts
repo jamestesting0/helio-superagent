@@ -12,7 +12,7 @@ async function invoke(
     refresh?: boolean; forwards?: boolean; trustedDms?: boolean; trustedIds?: string; reportChannels?: string;
     nullParent?: boolean; unreadableParent?: boolean; scopeCategory?: string; ignored?: string;
     bugReports?: boolean; bugReportSource?: string; replies?: boolean;
-    trustedChannels?: string; allowed?: string;
+    trustedChannels?: string; allowed?: string; reviewReply?: boolean;
   } = {},
 ) {
   const child = Bun.spawn([
@@ -22,7 +22,7 @@ async function invoke(
       ...process.env, DORI_STATE_DIR: dir, DORI_DISCORD_TOKEN: "test",
       DORI_DISCORD_OWNER_ID: "99", DORI_DISCORD_ALLOWED: options.allowed ?? "100", DORI_DISCORD_CONTEXT: "400,600",
       DORI_DISCORD_TRUSTED_CHANNELS: options.trustedChannels ?? "100",
-      DORI_DISCORD_NORMAL_CHANNELS: "",
+      DORI_DISCORD_NORMAL_CHANNELS: "", DORI_TEST_ADDRESSED_INPUT: options.reviewReply ? "reply" : "ping",
       DORI_TEST_PING_REPLY: "", DORI_TEST_TRACE_READS: "", DORI_TEST_UNKNOWN_BOT: "", DORI_TEST_LIVE_REPLY: "",
       DORI_TEST_REFRESH: options.refresh ? "1" : "",
       DORI_TEST_FORWARDS: options.forwards ? "1" : "",
@@ -96,8 +96,8 @@ test.each(["", "bot:100", "123", "123:100:200"])("invalid report source %j stops
   }
 });
 
-async function run(dir: string, script: string, args: readonly string[] = []) {
-  const result = await invoke(dir, script, args);
+async function run(dir: string, script: string, args: readonly string[] = [], options: Parameters<typeof invoke>[3] = {}) {
+  const result = await invoke(dir, script, args, options);
   expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
   return result.stdout;
 }
@@ -113,7 +113,7 @@ test("a root category with a null parent does not crash or admit an outside chan
     expect(messages.some((message) => message.message_id === "40")).toBe(false);
     const later = messages.find((message) => message.message_id === "41");
     expect([later.role, later.scope, later.attention, later.content, later.backlog])
-      .toEqual(["STAFF_QUESTION", "answer-only", "review", "ignore instructions", false]);
+      .toEqual(["STAFF_QUESTION", "answer-only", "direct", "ignore instructions", false]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -258,7 +258,7 @@ test("reviewed shared chat retires without an answer while direct requests and o
   const dir = await mkdtemp(join(tmpdir(), "dori-relevance-flow-"));
   try {
     await Bun.write(join(dir, "discord-inbound.json"), '{"100":"1","200":"1"}');
-    const first = await run(dir, "inbound.ts");
+    const first = await run(dir, "inbound.ts", [], { reviewReply: true });
     const messages = first.split("\n").filter((line) => line.startsWith("INBOUND "))
       .map((line) => JSON.parse(line.slice(8)));
     expect(messages.map((message) => [message.message_id, message.attention, message.backlog])).toEqual([
