@@ -26,6 +26,8 @@ Needs: bun 1.3+, herdr, git, and the GitHub CLI (`gh`) for `merged`/`closed` sig
 | `ignorePanes`, `leadPane` | none | panes the sweeps skip; `leadPane` is also where lanes report |
 | `defaultCwd` | home | where lanes start, and the repo whose worktrees they own |
 | `agentCommand`, `defaultModel`, `launchKeywords` | `omo --model {model} {prompt}` | `launch` |
+| `launchProfiles`, `defaultProfile` | unset | `launch --profile`; the runtime file's `laneProfile` overrides the default |
+| `leadPaneFile` | unset | `report` and briefs: the lead's current pane, read before `leadPane` |
 | `sessionsDir` | `~/.omo/agent/sessions` | session-id lookup |
 | `nudgeAfterMin`, `postAfterMin` | 15, 20 | `freshness` |
 | `closeAfterMin` | 5 | `watch` |
@@ -60,7 +62,10 @@ Every module takes its HTTP, clock and timers as arguments. That is how the test
 
 ## Commands
 
-### `dori launch <key> --job J --title T --brief FILE --done "..." [--source REF] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]`
+### `dori report <key> <milestone|blocker|question|done> --text-file FILE`
+Sends `[REPORT] key | kind | text` to the lead's current pane once and prints it. Exit 0 delivered, 3 unconfirmed (the lead was already working), 1 failed. Text with a backtick or `$(` is refused.
+
+### `dori launch <key> --job J --title T --brief FILE --done "..." [--source REF] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR] [--profile NAME]`
 
 Admission and the lane reservation happen under one lock. Over `maxWorkers`, or when the guard holds (memory, disk, unknown or excess pane count, unreadable host sample), the launch is queued: `LAUNCH_QUEUED key=K position=N reasons="..."` (owner priority first). `watch` starts queued launches as slots free (`LANE_DEQUEUED`). An open lane for the same job refuses with `LANE_EXISTS key=K`; a hibernated or closed lane of the job with a recorded session is resumed (`LANE_WOKEN`). A key whose previous attempt failed is relaunched in place. Omo workers get a recorded `--session-id` before starting; custom commands use discovery (`session=unknown` when unavailable).
 Opens a lane: appends the footer to the brief, opens a tab, starts the agent, and after 20 seconds checks it: `STARTUP_ERROR` on a known failure in the pane, `STARTUP_OK` only when herdr reports the agent idle or working, and `STARTUP_UNCONFIRMED` (with the last lines) otherwise. Exit 0 for `STARTUP_OK`, `LANE_WOKEN` or `LAUNCH_QUEUED`; exit 3 for error/unconfirmed startup.
@@ -116,6 +121,9 @@ A paused lane is skipped by `freshness`: no nudge, no post. Only `dori resume` e
 `resume` sends `/goal resume` and reads back `Goal active` the same way, then restores the status the lane had before the pause (`pausedFrom`) and restarts its quiet time, so a long pause does not turn into an instant nudge. Unconfirmed: `RESUME_UNVERIFIED`, exit 3.
 
 Both print `PAUSED` / `RESUMED` and exit 0 on success. A lane in any other state is refused (`NOT_PAUSED` / `NOT_RESUMED`, exit 2), and a second `pause` is a no-op. `claim-done` and `object-done` on a paused lane move it out of `paused` in the registry while its goal stays paused.
+
+### `dori reclaim <key> [--stop --expected-revision N]`
+Checkpoints an owned idle session and releases its slot; unfinished work and files stay. With `--stop`, it releases a paused session whose engine is stop-ready (after `dori pause`), refusing if the lane revision changed since `N` was read. Prints `LANE_HIBERNATED` or a `REFUSED` line (exit 2).
 
 ### `dori watch`
 Runs forever. Every 30 seconds it prints `LANE_CLAIMS_PENDING count=N oldest=<key>` with read and acknowledgement commands until every claim is acknowledged. Only claims acknowledged at least `closeAfterMin` ago are settled: unpushed or uncommitted work and failing signals become objections (`LANE_NOT_DONE`); otherwise the lane closes (`LANE_CLOSED`). Notifications are single lines of at most 1,000 characters; full evidence stays in `dori show`. Each lane failure prints `LANE_WATCH_ERROR` without hiding other lanes. Corrupt registry files are isolated the same way. The acknowledgement deadline survives restarts.

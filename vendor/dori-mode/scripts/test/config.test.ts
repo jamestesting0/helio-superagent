@@ -41,3 +41,17 @@ test("atomic live worker settings replace old limits without changing unrelated 
   expect(changed).toMatchObject({ maxWorkers: 3, hibernateAfterMin: 0, runtimeRevision: "second", closeAfterMin: 5 });
   expect(changed.guard.diskFreeMinGb).toBe(50);
 });
+
+test("live lane settings choose the default launch profile, and the recorded lead pane outranks the static one", async () => {
+  const live = join(state.dir, "lane-settings.json");
+  const pane = join(state.dir, "lead-pane");
+  const path = join(state.dir, "profiles.json");
+  writeFileSync(live, JSON.stringify({ maxWorkers: 2, hibernateAfterMin: 30, laneProfile: "direct" }));
+  writeFileSync(pane, "w9:p4\n");
+  writeFileSync(path, JSON.stringify({ leadPane: "w1:p1", leadPaneFile: pane, runtimeConfigFile: live, defaultProfile: "thorough",
+    launchProfiles: { thorough: "ulw set goal and work", direct: "" } }));
+  const c = await loadConfig(path, "/home/ana");
+  expect([c.defaultProfile, c.leadPane]).toEqual(["direct", "w9:p4"]);
+  writeFileSync(live, JSON.stringify({ maxWorkers: 2, hibernateAfterMin: 30, laneProfile: "thorough" }));
+  expect((await loadConfig(path, "/home/ana")).defaultProfile).toBe("thorough");
+});

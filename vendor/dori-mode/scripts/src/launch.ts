@@ -3,7 +3,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, re
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { capacityReasons, dequeue, enqueue, livePaneIds, readQueue, type Priority } from "./admission.ts";
-import { fill } from "./config.ts";
+import { fill, profileKeywords } from "./config.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { readScreen, statusLookup } from "./panes.ts";
 import { lockRegistry } from "./registry-lock.ts";
@@ -26,6 +26,7 @@ export type LaunchInput = {
   readonly source?: string;
   readonly priority?: Priority;
   readonly phase?: PhaseDescriptor;
+  readonly profile?: string;
 };
 
 export type LaunchResult = { readonly lane?: Lane; readonly startup: string };
@@ -59,7 +60,7 @@ export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promis
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
 };
 
-export const footer = (lane: Lane, leadPane: string): string => [
+export const footer = (lane: Lane): string => [
   "",
   "## Lane footer (written by dori launch)",
   `- Key: ${lane.key}. Work thread: ${lane.thread}.`,
@@ -68,8 +69,9 @@ export const footer = (lane: Lane, leadPane: string): string => [
   ...(lane.phase ? [
     `- Worker phase: ${lane.phase.owner} version ${lane.phase.version}, generation ${lane.phase.generation}.`,
     "- Follow the brief's phase-start and durable handoff protocol. Its controller owns lane completion; do not run dori claim-done for a worker-phase handoff.",
+    `- A blocker goes to the lead with: dori report ${lane.key} blocker --text-file FILE. The custody handoff is the completion report; send no separate done report.`,
   ] : [
-    `- Report to the lead at each milestone: [REPORT] ${lane.key} | <milestone|blocker|question|done> | <what, with links>, sent to pane ${leadPane || "(lead pane)"} as an argv array, never a shell string.`,
+    `- Report to the lead at each milestone with: dori report ${lane.key} <milestone|blocker|question|done> --text-file FILE (what, with links). It finds the lead's current pane itself.`,
     `- When done: dori claim-done ${lane.key} --evidence "<merge SHA, closed issue, version>". See references/done-protocol.md.`,
   ]),
   "",
@@ -105,7 +107,7 @@ const queuedLine = (key: string, position: number, reasons: readonly string[]): 
 
 const writeBrief = async (deps: FlowDeps, lane: Lane, text: string): Promise<void> => {
   mkdirSync(join(deps.config.stateDir, "briefs"), { recursive: true, mode: 0o700 });
-  await writeFile(lane.brief, `${text.replace(/\s*$/, "")}\n${footer(lane, deps.config.leadPane)}`, { mode: 0o600 });
+  await writeFile(lane.brief, `${text.replace(/\s*$/, "")}\n${footer(lane)}`, { mode: 0o600 });
 };
 
 const addWorktree = async (deps: FlowDeps, sourceCwd: string, cwd: string, key: string): Promise<void> => {
@@ -151,7 +153,10 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   const cwd = isolated ? join(deps.config.stateDir, "worktrees", input.key) : sourceCwd;
   const generated = join(deps.config.stateDir, "briefs", `${input.key}.md`);
   const at = iso(deps.clock);
-  const prompt = `${deps.config.launchKeywords}. ${input.phase ? `Read the brief before creating a goal. Your only worker goal is its exact phase ${input.phase.generation} objective; lane Done is the controller's criterion. ` : ""}Before work, start a persistent monitor for helio question watch --lane ${input.key} with filter ^QUESTION; do not use terminal question tools. Read and execute the lane brief at ${generated} in full. You are the ${input.key} lane; report as the brief's footer says.`;
+  const keywords = profileKeywords(deps.config, input.profile);
+  if (keywords === undefined) throw new LaunchError(`unknown launch profile "${input.profile ?? deps.config.defaultProfile ?? ""}"`);
+  const profile = deps.config.launchProfiles ? input.profile ?? deps.config.defaultProfile : undefined;
+  const prompt = `${keywords ? `${keywords}. ` : ""}${input.phase ? `Read the brief before creating a goal. Your only worker goal is its exact phase ${input.phase.generation} objective; lane Done is the controller's criterion. ` : ""}Before work, start a persistent monitor for helio question watch --lane ${input.key} with filter ^QUESTION; do not use terminal question tools. Read and execute the lane brief at ${generated} in full. You are the ${input.key} lane; report as the brief's footer says.`;
   const argv = fill(deps.config.agentCommand, { model, prompt });
   // Like the lead, an omo worker is started with a session id chosen and recorded first, so it can always be resumed.
   const omo = omoIndex(argv);
@@ -159,7 +164,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
   if (session) argv.splice(omo + 1, 0, "--session-id", session);
   const source = input.source ?? input.thread ?? `brief-sha256:${new Bun.CryptoHasher("sha256").update(briefText).digest("hex")}`;
   const fields = { title: input.title, thread: input.thread ?? "none", brief: generated, done: input.done, cwd, model, launchOwner: process.pid,
-    job, source, ...(input.phase ? { phase: input.phase } : {}),
+    job, source, ...(input.phase ? { phase: input.phase } : {}), ...(profile ? { profile } : {}),
     ...(isolated ? { worktrees: [cwd] } : {}), ...(session ? { session, sessionVia: "assigned" } : {}) };
   // Job identity is decided under the same lock as the reservation, so two launches cannot both find the job free.
   const admitted = await withLaunchLock(deps, async () => {
@@ -194,7 +199,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, queuedBrief
     const reasons = await capacityReasons(deps);
     if (reasons.length) {
       const position = await enqueue(deps, { key: input.key, job, source, title: input.title, done: input.done, thread: input.thread, model: input.model, cwd: input.cwd, briefText, priority: input.priority ?? "normal", queuedAt: at,
-        ...(input.phase ? { phase: input.phase } : {}) });
+        ...(input.phase ? { phase: input.phase } : {}), ...(profile ? { profile } : {}) });
       return { kind: "queued" as const, queued: true as const, position, reasons };
     }
     const draft: Lane = existing
@@ -360,8 +365,8 @@ export const wakeLane = async (deps: FlowDeps, lane: Lane, options: { readonly b
     woke = { ...woke, ...opened, launchState: "pane-created" }; await deps.registry.write(woke);
     await authorizePhase(deps, woke, "beforeWake");
     const prompt = options.briefText
-      ? `You are the ${woke.key} lane again. Read and execute the new brief at ${woke.brief} in full; ${woke.phase ? `establish its exact generation ${woke.phase.generation} goal and phase-start acknowledgment before editing. A completed prior goal is not this phase. ` : ""}report as its footer says.`
-      : `You are the ${woke.key} lane, resumed after a pause for inactivity. Continue where you left off; report as your brief's footer says.`;
+      ? `You are the ${woke.key} lane again. Read and execute the new brief at ${woke.brief} in full; ${woke.phase ? `establish its exact generation ${woke.phase.generation} goal and phase-start acknowledgment before editing. A completed prior goal is not this phase. ` : ""}report as its footer says, with dori report ${woke.key} <kind> --text-file FILE.`
+      : `You are the ${woke.key} lane, resumed after a pause for inactivity. Continue where you left off; report with dori report ${woke.key} <kind> --text-file FILE, which finds the lead's current pane.`;
     const argv = fill(deps.config.agentCommand, { model: woke.model ?? deps.config.defaultModel, prompt });
     const omo = omoIndex(argv);
     if (omo < 0) throw new LaunchError("the agent command has no omo invocation to resume");

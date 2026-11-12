@@ -26,10 +26,15 @@ export type DoriConfig = {
   readonly workspaces: readonly string[];
   readonly ignorePanes: readonly string[];
   readonly leadPane: string;
+  /** File the lead writes its pane id to at startup; read after DORI_LEAD_PANE and before leadPane. */
+  readonly leadPaneFile?: string;
   readonly defaultCwd: string;
   readonly agentCommand: ArgvTemplate;
   readonly defaultModel: string;
   readonly launchKeywords: string;
+  /** Named launch prompts; when set, a launch uses --profile or defaultProfile instead of launchKeywords. */
+  readonly launchProfiles?: Readonly<Record<string, string>>;
+  readonly defaultProfile?: string;
   readonly sessionsDir: string;
   readonly nudgeAfterMin: number;
   readonly postAfterMin: number;
@@ -77,7 +82,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   const file = Bun.file(path);
   const raw = (await file.exists()) ? ((await file.json()) as Partial<DoriConfig>) : {};
   const merged: DoriConfig = { ...base, ...raw, guard: { ...base.guard, ...raw.guard }, hooks: { ...base.hooks, ...raw.hooks } };
-  let limits: { readonly maxWorkers: number; readonly hibernateAfterMin: number; readonly runtimeRevision?: string } | undefined;
+  let limits: { readonly maxWorkers: number; readonly hibernateAfterMin: number; readonly runtimeRevision?: string; readonly defaultProfile?: string } | undefined;
   if (merged.runtimeConfigFile) {
     const live: unknown = await Bun.file(expandHome(merged.runtimeConfigFile, home)).json();
     if (typeof live !== "object" || live === null ||
@@ -87,17 +92,24 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
       throw new TypeError("Invalid live worker settings");
     }
     limits = { maxWorkers: live.maxWorkers, hibernateAfterMin: live.hibernateAfterMin,
-      ...("revision" in live && typeof live.revision === "string" ? { runtimeRevision: live.revision } : {}) };
+      ...("revision" in live && typeof live.revision === "string" ? { runtimeRevision: live.revision } : {}),
+      ...("laneProfile" in live && typeof live.laneProfile === "string" ? { defaultProfile: live.laneProfile } : {}) };
   }
+  const paneFile = merged.leadPaneFile ? Bun.file(expandHome(merged.leadPaneFile, home)) : undefined;
+  const recordedPane = paneFile && (await paneFile.exists()) ? (await paneFile.text()).trim() : "";
   return {
     ...merged,
     ...limits,
     stateDir: expandHome(process.env.DORI_STATE_DIR ?? merged.stateDir, home),
     defaultCwd: expandHome(merged.defaultCwd, home),
     sessionsDir: expandHome(merged.sessionsDir, home),
-    leadPane: process.env.DORI_LEAD_PANE ?? merged.leadPane,
+    leadPane: process.env.DORI_LEAD_PANE ?? (recordedPane || merged.leadPane),
   };
 };
+
+/** The prompt keywords for a launch, or undefined when the named profile does not exist. */
+export const profileKeywords = (config: DoriConfig, profile?: string): string | undefined =>
+  config.launchProfiles ? config.launchProfiles[profile ?? config.defaultProfile ?? ""] : config.launchKeywords;
 
 export const fill = (template: ArgvTemplate, values: Readonly<Record<string, string>>): string[] =>
   template.map((part) => part.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole));

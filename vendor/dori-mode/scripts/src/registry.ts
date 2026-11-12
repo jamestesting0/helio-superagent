@@ -16,6 +16,8 @@ export type Lane = {
   readonly job?: string;
   readonly source?: string;
   readonly phase?: PhaseDescriptor;
+  /** Launch profile chosen at first launch; a resumed session keeps the mode it started in. */
+  readonly profile?: string;
   readonly revision?: number;
   readonly launchState?: "reserved" | "brief-written" | "worktree-created" | "pane-created" | "started" | "unconfirmed" | "failed";
   readonly launchOwner?: number;

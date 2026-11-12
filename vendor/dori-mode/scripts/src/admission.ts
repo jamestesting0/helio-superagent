@@ -15,6 +15,7 @@ export type QueuedLaunch = {
   readonly job?: string;
   readonly source?: string;
   readonly phase?: PhaseDescriptor;
+  readonly profile?: string;
   readonly title: string;
   readonly done: string;
   readonly thread?: string;

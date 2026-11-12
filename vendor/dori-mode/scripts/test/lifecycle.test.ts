@@ -661,3 +661,40 @@ test("a job resumed by a new launch takes that attempt's Done line, title, threa
     expect([brief.includes("acme/app#22"), brief.includes("acme/app#11")]).toEqual([true, false]);
   }
 });
+
+const workerPrompt = (s: ReturnType<typeof setup>, key: string): string =>
+  s.world.calls.filter((c) => c[0] === "herdr" && c[1] === "pane" && c[2] === "run").map((c) => c.join(" "))
+    .find((c) => c.includes(`You are the ${key} lane`)) ?? "";
+
+test("a launch profile chooses the worker prompt, is recorded on the lane and survives the launch queue", async () => {
+  const s = setup({ launchProfiles: { thorough: "ulw set goal and work", direct: "" }, defaultProfile: "thorough", maxWorkers: 1 });
+  await launch(s, "first", { profile: "direct" });
+  expect(workerPrompt(s, "first")).not.toContain("ulw set goal and work");
+  expect((await s.deps.registry.read("first"))?.profile).toBe("direct");
+  const queued = await launch(s, "second", { profile: "direct" });
+  expect(queued.startup).toStartWith("LAUNCH_QUEUED");
+  expect((await readQueue(s.deps)).find((entry) => entry.key === "second")?.profile).toBe("direct");
+});
+
+test("a queued launch keeps the default profile it was admitted under when the default later changes", async () => {
+  const s = setup({ launchProfiles: { thorough: "ulw set goal and work", direct: "" }, defaultProfile: "direct", maxWorkers: 1 });
+  await launch(s, "first");
+  expect((await launch(s, "second")).startup).toStartWith("LAUNCH_QUEUED");
+  Object.assign(s.deps.config, { defaultProfile: "thorough" });
+  const first = (await s.deps.registry.read("first"))!;
+  await s.deps.registry.write(withStatus(first, "closed", "done", new Date(T0).toISOString(), { closedAt: new Date(T0).toISOString() }));
+  expect((await lifecycleTick(s.deps)).some((line) => line.includes("LANE_DEQUEUED second STARTUP_OK second"))).toBe(true);
+  expect(workerPrompt(s, "second")).not.toContain("ulw set goal and work");
+  expect((await s.deps.registry.read("second"))?.profile).toBe("direct");
+});
+
+test("without a profile the configured default applies, so one setting rolls every route back; unknown names are refused", async () => {
+  const s = setup({ launchProfiles: { thorough: "ulw set goal and work", direct: "" }, defaultProfile: "thorough" });
+  await launch(s, "plain");
+  expect(workerPrompt(s, "plain")).toContain("ulw set goal and work.");
+  expect((await s.deps.registry.read("plain"))?.profile).toBe("thorough");
+  await expect(launch(s, "odd", { profile: "fastest" })).rejects.toThrow('unknown launch profile "fastest"');
+  const legacy = setup();
+  await launch(legacy, "legacy", { profile: "direct" });
+  expect(workerPrompt(legacy, "legacy")).toContain("ulw set goal and work.");
+});

@@ -30,19 +30,21 @@ import { Telegram } from "./messenger/telegram.ts";
 import { Discord, discordPresence } from "./messenger/discord.ts";
 import { realTimers } from "./messenger/typing.ts";
 import { reclaimLane } from "./reclaim.ts";
+import { sendVerified, UnsafeTextError } from "./panes.ts";
 import { transcribe, TranscriptionError } from "./messenger/voice.ts";
 import { parsePhase } from "./phase.ts";
 import { recoverStart } from "./startup-recovery.ts";
 
 const USAGE = `dori <command> [options]
 
-  launch <key> --job J --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--source REF] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR]
+  launch <key> --job J --title T --brief FILE --done "merged o/r#N; closed o/r#M" [--source REF] [--priority owner|normal] [--thread REF] [--model M] [--cwd DIR] [--profile NAME]
                                        one open lane per job (LANE_EXISTS); resumes the job's hibernated or closed lane;
                                        over the worker cap or host limits it prints LAUNCH_QUEUED and the watcher starts it later
   adopt  <key> --job J --pane ID --title T --brief FILE --done "..." [--source REF] [--thread REF]
   job-id --repository owner/repo --channel ID --source ORIGINAL_MESSAGE_ID
   sync   [--write]                     registry vs live panes; read-only unless --write
   claim-done [<key>] --evidence TEXT [--expected-revision N]  key defaults to the lane registered for $HERDR_PANE_ID
+  report <key> <milestone|blocker|question|done> --text-file FILE   send one [REPORT] line to the lead's current pane
   show <key>                          full lane evidence, claim, history and receipt (read-only)
   claim-ack <key>                     acknowledge receipt and start the 5-minute close window
   object-done <key> --reason TEXT [--reason TEXT ...]
@@ -56,7 +58,7 @@ const USAGE = `dori <command> [options]
   launch/resume --phase JSON           opaque owner/version/generation; requires effect-time authority hooks
   stale [--hours N] [--json]           lanes paused, not done, failed or awaiting cleanup for N hours (default 24)
   reap-worktrees [--apply] [--json]    remove worktrees of closed lanes whose PR settled 3+ days ago and that hold no unpushed work
-  reclaim <key>                       checkpoint an owned idle session and release its slot; retain unfinished work and all files
+  reclaim <key> [--stop --expected-revision N]   checkpoint an owned idle session (or, with --stop, a paused stop-ready one) and release its slot; retain unfinished work and all files
   watch                                long-running: emits LANE_* lines every 30 s; hibernates idle lanes and starts queued launches
   freshness [--loop MIN]               nudge silent lanes, post their last report via hooks.threadReply
   dead-panes [--loop MIN]              print DEAD_PANE <id> for stopped agent panes
@@ -89,7 +91,7 @@ const flags = parseArgs({
     reason: { type: "string", multiple: true }, note: { type: "string" }, write: { type: "boolean" }, "with-unpushed": { type: "boolean" }, loop: { type: "string" },
     job: { type: "string" }, priority: { type: "string" }, hours: { type: "string" }, json: { type: "boolean" }, apply: { type: "boolean" }, verify: { type: "boolean" }, stop: { type: "boolean" },
     source: { type: "string" }, repository: { type: "string" }, channel: { type: "string" },
-    phase: { type: "string" }, "expected-revision": { type: "string" },
+    phase: { type: "string" }, "expected-revision": { type: "string" }, profile: { type: "string" },
     manifest: { type: "string" }, failed: { type: "string" }, replacement: { type: "string" },
     to: { type: "string" }, text: { type: "string" }, "text-file": { type: "string" }, edit: { type: "string" }, ping: { type: "string" },
   },
@@ -117,7 +119,7 @@ try {
       const priority = opt("priority") ?? "normal";
       if (priority !== "owner" && priority !== "normal") die("--priority must be owner or normal");
       const r = await launchLane(deps, { key: key ?? "", title: need("title"), brief: need("brief"), done: need("done"), thread: opt("thread"), model: opt("model"), cwd: opt("cwd"), job: need("job"), source: opt("source"), priority: priority as "owner" | "normal",
-        ...(phase ? { phase } : {}) });
+        ...(phase ? { phase } : {}), ...(opt("profile") ? { profile: opt("profile") } : {}) });
       if (r.lane) console.log(`LAUNCHED ${r.lane.key} pane=${r.lane.pane} tab=${r.lane.tab ?? "?"}`);
       console.log(r.startup);
       process.exit(/^(STARTUP_OK|LAUNCH_QUEUED|LANE_WOKEN)/.test(r.startup) ? 0 : 3);
@@ -148,6 +150,18 @@ try {
       if (expected !== undefined && (!Number.isSafeInteger(expected) || expected < 0)) die("--expected-revision must be a nonnegative integer");
       console.log(await claimDone(deps, await lane(key), need("evidence"), expected, phase));
       break;
+    }
+    case "report": {
+      const kind = flags.positionals[1];
+      if (!kind || !["milestone", "blocker", "question", "done"].includes(kind)) die("report needs <key> milestone|blocker|question|done --text-file FILE");
+      const reporting = await lane(key ?? die("report needs a lane key"));
+      const body = (await Bun.file(need("text-file")).text()).replace(/\s+/g, " ").trim() || die("--text-file is empty");
+      if (!deps.config.leadPane) die("no lead pane is recorded; the lead records it when it starts");
+      const line = `[REPORT] ${reporting.key} | ${kind} | ${body}`;
+      console.log(line);
+      const delivery = await sendVerified(deps.run, deps.clock, deps.config.leadPane, line);
+      console.log(`REPORT_${delivery.toUpperCase()} ${reporting.key} pane=${deps.config.leadPane}`);
+      process.exit(delivery === "failed" ? 1 : delivery === "unconfirmed" ? 3 : 0);
     }
     case "completion":
       console.log(`COMPLETION_RECORDED ${await recordCompletion(deps, await lane(key))}`);
@@ -191,7 +205,9 @@ try {
       process.exit(r.closed ? 0 : 2);
     }
     case "reclaim": {
-      const result = await reclaimLane(deps, key ?? die("reclaim needs a lane key"));
+      // --stop releases a paused session whose engine is stop-ready (after `dori pause`), bound to the revision read back.
+      const stopAt = flags.values.stop ? { expected: Number(opt("expected-revision") ?? die("--stop needs --expected-revision")) } : undefined;
+      const result = await reclaimLane(deps, key ?? die("reclaim needs a lane key"), stopAt);
       for (const line of result.lines) console.log(line);
       process.exitCode = result.released ? 0 : 2;
       break;
@@ -371,6 +387,7 @@ try {
   }
 } catch (e) {
   if (e instanceof CompletionError) die(e.message, 2);
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError) die(e.message);
+  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError ||
+      e instanceof UnsafeTextError) die(e.message);
   throw e;
 }

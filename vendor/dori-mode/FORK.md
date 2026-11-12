@@ -142,3 +142,21 @@ contracts before admission. Completion refuses such contracts without writing a
 misleading receipt; watcher settlement checks receipt binding before recording
 verified state. Existing legacy lanes remain readable and may be explicitly
 abandoned, but are never silently certified or assigned weaker acceptance.
+
+## Launch profiles, lead-pane file and `dori report` (2026-11-12)
+
+- `launchProfiles` (name to prompt keywords) and `defaultProfile` let a deployment size the worker prompt;
+  `dori launch --profile NAME` selects one. The runtime settings file may set `laneProfile`, which overrides
+  `defaultProfile`. Without `launchProfiles`, `launchKeywords` applies as before. An unknown name refuses the
+  launch. The chosen profile is stored on the lane and on its queue entry; a resumed session keeps its mode.
+- `leadPaneFile` names a file holding the lead's current pane id, read after `DORI_LEAD_PANE` and before
+  `leadPane`, so the lead can record its pane outside a read-only `config.json`.
+- `dori report KEY milestone|blocker|question|done --text-file FILE` sends one `[REPORT]` line to the lead's
+  current pane through the existing verified pane transport and prints the line it sent. Both footer branches and
+  both resume prompts name it; managed-phase footers use it for blockers only.
+
+## `dori reclaim --stop --expected-revision N` (2026-11-12)
+
+Exposes the stop path `reclaimLane` already had (used by `abandon --stop`): after `dori pause` interrupts a running
+turn and pauses its goal, `reclaim --stop` checkpoints the paused, stop-ready session and releases its slot, refusing
+if the lane revision changed since it was read. The plain `reclaim` (idle sessions only) is unchanged.
