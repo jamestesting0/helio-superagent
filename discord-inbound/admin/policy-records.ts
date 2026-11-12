@@ -45,10 +45,23 @@ export class PolicyRecords {
   deployment(): AdminRecord {
     const path = join(this.runtime.home, ".dori/elobot/deploy-state.json");
     const saved = existsSync(path) ? object(JSON.parse(readFileSync(path, "utf8"))) : {};
+    // Same rule as helio_deploy_plan.restart_state: the host deploy records a pending restart and since when;
+    // start receipts under state/ satisfy it.
+    const receipt = (kind: string) => {
+      const file = join(this.runtime.home, `.dori/elobot/state/${kind}-start.json`);
+      return existsSync(file) ? object(JSON.parse(readFileSync(file, "utf8"))) : {};
+    };
+    const lead = receipt("lead"), full = receipt("full");
+    const outstanding = (kind: string, started: Record<string, unknown>) => {
+      const since = saved[`${kind}_restart_since`] ?? saved.deployed_at;
+      const at = typeof started.at === "string" ? started.at : "";
+      return saved[`${kind}_restart_pending`] === true && (typeof since === "string" && since ? at < since : !at);
+    };
     const deployed = typeof saved.version === "string" ? saved.version.slice(0, 100) : "Unrecorded";
-    const running = typeof saved.lead_version === "string" ? saved.lead_version.slice(0, 100) : "Unrecorded";
-    const pending = saved.full_restart_pending === true ? "Full workspace restart pending" :
-      saved.lead_restart_pending === true ? "Lead restart pending" : deployed !== running ? "Running and deployed versions differ" : "";
+    const leadVersion = typeof lead.version === "string" ? lead.version : saved.lead_version;
+    const running = typeof leadVersion === "string" ? leadVersion.slice(0, 100) : "Unrecorded";
+    const pending = outstanding("full", full) ? "Full workspace restart pending" :
+      outstanding("lead", lead) ? "Lead restart pending" : deployed !== running ? "Running and deployed versions differ" : "";
     return { id: "deployment", title: "Deployment", revision: this.runtime.published.revision,
       summary: pending || (deployed === "Unrecorded" ? "Version not recorded" : "Up to date"),
       state: pending ? "pending" : "current",
