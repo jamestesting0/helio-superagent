@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import os,runpy,tempfile,unittest
 from pathlib import Path
 from types import SimpleNamespace

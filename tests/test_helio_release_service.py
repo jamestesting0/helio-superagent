@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import datetime,runpy,tempfile,unittest,json,io
 from contextlib import redirect_stdout
 from unittest.mock import patch

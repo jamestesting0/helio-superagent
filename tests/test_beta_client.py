@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json, runpy, socket, struct, tempfile, threading, unittest
 from pathlib import Path
 

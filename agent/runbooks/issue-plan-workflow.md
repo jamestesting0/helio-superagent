@@ -65,9 +65,37 @@ infrastructure recovery, and resumes the same session with a fresh generation
 only for actionable repair. Workers never rerun CI, wait for CI, claim job
 completion or close the lane after handoff.
 
+Scope is the issue's current confirmed requirements until the first handoff: updating the issue after
+an answer before submitting is expected. The handoff binds the scope that submit verified, and later
+controller effects require the issue to keep it.
+
+A blocker is recorded with `helio work block --issue N --reason R`, adding `--question QID` when a
+Helio question will resolve it; it works before or after submit. `helio pr phase check` then prints
+`PHASE_BLOCKED`, which finishes the worker goal; a blocked phase never hands off or becomes ready.
+Acknowledging that question with `helio question ack QID` clears it; otherwise run
+`helio work unblock --issue N --question QID` (answered by the owner or a trusted user) or
+`--message M --channel C` (a new request from an authorized requester). A live worker continues in its
+generation; a released one is woken once with a new generation. A pause is never overridden by a clear.
+Submit refuses while the work request still carries a blocker.
+
 `FOLLOWUP_PR_CUSTODY` is a durable internal event. Read its `read` command,
-reconcile its current generation/status, then acknowledge its event with the
-supplied `ack` command. Acknowledgement records delivery, not completion or new
+reconcile its current generation/status, act as below, then acknowledge its event with the
+supplied `ack` command.
+
+### Custody events
+
+No managed lane may stop silently: a stop reaches you after 30 minutes and the owner after 90 minutes, as one
+question with buttons on the `custody-issueN` lane. Act by state:
+
+| Event | Your action |
+|---|---|
+| `waiting`, `repair`, `ready`, `settled` | Acknowledge; the controller acts. Announce only results a requester waits for. |
+| `decision` "Asked owner (QID)" or "Owner answered QID" | When answered, apply it: `helio pr phase decide --issue N --question QID` (add `--option LABEL` for a typed reply; `--title`, `--body-file`, `--restored-body-file` when the option creates an issue). Never `helio question ack` a custody question. |
+| `decision` "Parked until the owner decides" | Nothing until the owner speaks; then apply his message: `helio pr phase decide --issue N --message M --channel C --option LABEL`. |
+| `decision` "edited outside Helio" | Review the issue and adopt it with `helio issue update ... --question QID` or `--message M --channel C` naming who asked; only an owner source reworks the PR, others become the owner's scope question. |
+| `decision` "Requirements changed after merge" | Create the linked follow-up with the requester's message (`helio issue followup`); without one, the controller asks the owner. |
+| `diagnosis` "Stopped N min" or "made no change" | Inspect `helio pr phase show`, the lane pane and `dori show`; fix within your authority (tell the lane a fact, retry a delivery, `helio work unblock --issue N --lead --reason R` for a stall or no-progress blocker); otherwise the owner question follows at 90 minutes. |
+| `held` at the requester's request | Tell the requester once; no action. | Acknowledgement records delivery, not completion or new
 authority. `helio health --json` exposes custody, next owner/probe and last
 meaningful progress. Repeat observations do not warrant repeat announcements.
 An unavailable lead leaves events pending. Admission off affects new jobs;

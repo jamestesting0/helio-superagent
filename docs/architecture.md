@@ -19,6 +19,19 @@ repo --(sudo rsync, then helio update inside)--> /var/lib/helio-agent/home (isol
 - **Profiles**: `owner` runs as your WSL user; `isolated` runs as `helio-agent`
   in the sandbox below. They share all rules except the overlay in `agent/profiles/`.
 
+## Read-only code inside the sandbox
+
+Inside the isolated runtime `~/helio-agent`, `~/.dori/elobot` (including `config.json` and its hooks) and
+`~/.dori/discord-inbound` are read-only bind mounts; only `~/.dori/elobot/state` and `~/.dori/elobot/backups`
+are writable there. Helio therefore cannot edit the code and instructions that constrain it. `helio deploy`
+runs on the host, outside these mounts, and is the only writer of those directories; `helio update --apply`
+inside the sandbox refuses. Runtime records live under `state/`: the lead's pane (`lead-pane`) and start receipt
+(`lead-start.json`), and the full-start receipt (`full-start.json`). `deploy-state.json` is written only by the
+deploy; readers derive pending restarts by comparing it with those receipts. `~/.local/bin/helio` stays
+replaceable (a single file the updater replaces atomically), and bubblewrap 0.6.1 cannot forbid nested user
+namespaces, so this protects against ordinary edits, not a determined adversary. The mounts take effect at
+the next full start after the root bundle is reinstalled.
+
 ## Beta isolation and recovery
 
 The installed WSL launcher starts a dedicated `helio-agent` UID inside a Bubblewrap user, mount, PID and network namespace. Herdr, the lead, workers, BrowserSkill and Chrome are launched within that boundary. A UID-scoped firewall blocks the host's local and private addresses and IPv6 while permitting public outbound IPv4; `slirp4netns` also blocks the host loopback gateway. The original project `.env`, SSH directory, Windows interop paths, host Herdr socket and protected service credentials are not mounted. The dedicated Wayland socket supports the private Chrome profile. The physical checkout and Helio memory under `/var/lib/helio-agent/home` are separate copies; they do not automatically synchronize with the owner's original WSL checkout.

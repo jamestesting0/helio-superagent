@@ -1,4 +1,5 @@
 """Root bundle rollout against temporary source and installed directories."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import io
 import json
 from pathlib import Path

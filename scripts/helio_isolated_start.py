@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Start a private Herdr session and optionally launch the Helio lead."""
-import json,os,subprocess,sys,time
+import datetime,json,os,subprocess,sys,time
 from pathlib import Path
 
 if len(sys.argv)!=2 or sys.argv[1] not in ('shell','start','resume'):
@@ -20,9 +20,11 @@ try:
         if server.poll() is not None:raise RuntimeError('private Herdr server exited')
         time.sleep(.1)
     else:raise RuntimeError('private Herdr server did not start')
-    state=Path('/home/james/.dori/elobot/deploy-state.json')
-    if mode!='shell' and state.is_file():
-        data=json.loads(state.read_text());data['full_restart_pending']=False;state.write_text(json.dumps(data,indent=2)+'\n')
+    if mode!='shell':
+        # The deploy record is host-owned; a full start is recorded as a receipt under state/.
+        state=Path('/home/james/.dori/elobot/state');state.mkdir(parents=True,exist_ok=True);temporary=state/'.full-start.json.tmp'
+        temporary.write_text(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')})+'\n')
+        os.replace(temporary,state/'full-start.json')
     if mode!='shell':
         for tab in json.loads(run(['tab','list']))['result']['tabs']:
             if tab.get('label')=='Helio':run(['tab','close',tab['tab_id']])

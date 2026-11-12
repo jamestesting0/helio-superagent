@@ -1,4 +1,5 @@
 """Real operation storage protects issue edits and resumes notification failures."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import datetime
 import json
 import os

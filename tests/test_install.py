@@ -1,6 +1,7 @@
 """Offline tests of the installer's filesystem and startup prerequisites."""
 
 from __future__ import annotations
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 
 import json
 import io

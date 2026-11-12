@@ -47,6 +47,30 @@ def identity(pull: dict, change: dict, landed: bool = False) -> None:
         raise Refused("PR head changed; refresh the verified report under the existing task authority.")
 
 
+LINK_READS, LINK_DELAY = 6, 5.0
+pause = time.sleep
+
+
+def settle_link(store: Store, change: dict, pull: dict) -> dict:
+    """GitHub fills closingIssuesReferences after creating the PR. Wait only while the marker is complete and
+    correct and the set is still empty; every reread rechecks identity and body. Anything else is decided at once."""
+    body = pull.get("body") or ""
+    for _ in range(LINK_READS):
+        try:
+            marker = LINK["parse"](body)
+        except LINK["Refused"]:
+            return pull
+        if (len(LINK["MARKER"].findall(body)) != 1 or marker is None or not marker.complete
+                or marker.issue != change["issue"] or pull.get("closingIssuesReferences")):
+            return pull
+        pause(LINK_DELAY)
+        pull = view(store, change["url"])
+        identity(pull, change)
+        if (pull.get("body") or "") != body:
+            raise Refused("PR body changed while GitHub linked the issue; the bot must review its current body.", "pr_read", True)
+    return pull
+
+
 def relationship(pull: dict, issue: int) -> None:
     if len(LINK["MARKER"].findall(pull.get("body") or "")) != 1:
         raise Refused("PR implementation metadata is ambiguous; the bot must review its current body.")
@@ -175,6 +199,7 @@ def finish(store: Store, db: sqlite3.Connection, operation: str, change: dict,
             identity(pull, change)
             if pull.get("body") != after:
                 raise Refused("PR body read-back is pending; the bot will reconcile the saved publication.", "pr_read", True)
+    pull = settle_link(store, change, pull)
     relationship(pull, change["issue"])
     try:
         FINALIZE["finish"](store.repo, store.command, change, pull, permitted)

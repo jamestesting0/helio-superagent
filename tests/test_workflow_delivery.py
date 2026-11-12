@@ -1,4 +1,5 @@
 """Installed transport contracts: one logical completion, independent of prose."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import base64
 import json
 import os

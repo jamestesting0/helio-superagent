@@ -1,4 +1,5 @@
 """Planning acceptance survives intake cleanup without granting implementation authority."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import datetime
 from contextlib import contextmanager
 import io

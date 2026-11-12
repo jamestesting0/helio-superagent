@@ -1,4 +1,5 @@
 """The triage helper surfaces existing issues, pull requests, lanes and unmerged branches."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 import io

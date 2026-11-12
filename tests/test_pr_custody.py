@@ -1,9 +1,11 @@
 """Custody is exercised through real proof, publication, checkpoints and durable state."""
 from __future__ import annotations
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 
 import argparse
 import io
 import json
+import sqlite3
 from pathlib import Path
 import subprocess
 import unittest
@@ -69,7 +71,10 @@ class CustodyTests(unittest.TestCase):
             C["watch"](self.world.store, self.world.run, set(), self.world.now + (opportunity + 1) * 1800)
         wait = S["load"](self.world.store, 7)
         self.assertEqual((len(self.world.reruns), len(wait.data["incidents"])), (3, 1))
-        self.assertEqual((wait.generation, wait.data["status"]), (1, "waiting"))
+        # An exhausted budget is no longer a silent wait: the owner is asked once, with no new generation.
+        self.assertEqual((wait.generation, wait.data["status"], wait.data["escalation"]["kind"]), (1, "decision", "ci-budget"))
+        with sqlite3.connect(self.world.store.state / "discord-questions.sqlite") as db:
+            self.assertEqual(db.execute("SELECT count(*), max(lane) FROM questions").fetchone(), (1, "custody-issue7"))
         self.assertNotIn(json.loads(self.world.lane_path.read_text())["status"], ("working", "closed"))
 
     def test_a_same_head_repair_requires_a_new_phase_goal_and_receipt(self) -> None:
@@ -180,7 +185,9 @@ class CustodyTests(unittest.TestCase):
         self.assertEqual(self.world.reruns, [])
         extra["state"] = "FAILURE"
         C["watch"](self.world.store, services, self.world.seen, self.world.now)
-        self.assertEqual(S["load"](self.world.store, 7).data["status"], "diagnosis")
+        wait = S["load"](self.world.store, 7)
+        self.assertEqual((wait.generation, wait.data["status"], wait.data["intent"]["kind"]), (2, "repair", "wake"))
+        self.assertIn("CI failure needs diagnosis: External review", wait.data["notices"][-1]["detail"])
         self.assertEqual(self.world.reruns, [])
 
     def test_unknown_and_retargeted_prs_preserve_custody_without_effects(self) -> None:
@@ -206,6 +213,18 @@ class CustodyTests(unittest.TestCase):
         self.assertEqual(len(self.world.reruns), 1)  # Late completion starts the real cooldown.
         self.world.poll(190)
         self.assertEqual(len(self.world.reruns), 2)
+
+    def test_a_rerun_whose_acceptance_never_reconciles_is_a_bounded_stop(self) -> None:
+        run = self.world.run
+        def lost(argv):
+            if argv[-1].endswith("/rerun"):
+                raise RuntimeError("response lost")
+            return run(argv)
+        for minute in (0, 1, 32, 92):
+            self.world.run_status = "completed"
+            C["watch"](self.world.store, lost, set(), self.world.now + minute * 60)
+        wait = S["load"](self.world.store, 7)
+        self.assertEqual((len(self.world.reruns), wait.data["escalation"]["kind"]), (0, "ci-rejected"))
 
     def test_restart_after_uncertain_rerun_reconciles_remote_acceptance(self) -> None:
         run = self.world.run
@@ -382,7 +401,9 @@ class CustodyTests(unittest.TestCase):
         for minute in (0, 5, 10, 60):
             C["watch"](self.world.store, interrupted, self.world.seen, self.world.now + minute * 60)
         wait = S["load"](self.world.store, 7)
-        self.assertEqual((wait.generation, wait.data["status"], len(resumes)), (2, "unknown", 1))
+        self.assertEqual((wait.generation, len(resumes)), (2, 1))
         self.assertGreater(len(reconciliations), 0)
+        # Held without relaunch, and no longer silent: the stop reached the lead after 30 minutes.
+        self.assertEqual((wait.data["status"], wait.data["stop"]["lead_at"] is not None), ("diagnosis", True))
         self.assertTrue(any("retained resources" in notice["detail"] for notice in wait.data["notices"]))
         self.assertEqual(json.loads(self.world.lane_path.read_text())["pane"], "retained:empty")

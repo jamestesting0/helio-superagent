@@ -1,4 +1,5 @@
 """Process-level acceptance commit and publication ownership checks."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 import selectors

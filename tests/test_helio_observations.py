@@ -1,4 +1,5 @@
 """Oracle transitions remain pending until handled and baseline does not alert."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import runpy
 import sqlite3
 import unittest

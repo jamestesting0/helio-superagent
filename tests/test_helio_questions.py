@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import io
 import json,os,runpy,sqlite3,tempfile,unittest
 import urllib.error

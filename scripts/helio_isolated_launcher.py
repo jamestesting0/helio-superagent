@@ -11,6 +11,15 @@ from pathlib import Path
 SCOPE='/system.slice/helio-isolated.scope'
 CHAIN='HELIO_AGENT_EGRESS'
 HOME='/var/lib/helio-agent/home'
+def protected_mounts(home):
+    # Helio's code, installed files and config are read-only inside the sandbox; only state/ and backups/ are written there.
+    # Directories are bound so files replaced by a host-side deploy stay visible.
+    return ['--bind',home,'/home/james',
+            '--ro-bind',home+'/helio-agent','/home/james/helio-agent',
+            '--ro-bind',home+'/.dori/elobot','/home/james/.dori/elobot',
+            '--ro-bind',home+'/.dori/discord-inbound','/home/james/.dori/discord-inbound',
+            '--bind',home+'/.dori/elobot/state','/home/james/.dori/elobot/state',
+            '--bind',home+'/.dori/elobot/backups','/home/james/.dori/elobot/backups']
 if os.geteuid()!=0:raise SystemExit('Helio isolation launcher requires root')
 if not any(line.split(':',2)==['0','',SCOPE] for line in Path('/proc/self/cgroup').read_text().splitlines()):
     raise SystemExit('Helio isolation launcher requires the dedicated systemd scope')
@@ -102,6 +111,10 @@ signal.signal(signal.SIGTERM,interrupted)
 signal.signal(signal.SIGHUP,interrupted)
 try:
     policy=refresh_owner_policy()
+    for writable in ('.dori/elobot/state','.dori/elobot/backups'):
+        directory=Path(HOME,writable)
+        if not directory.is_dir():
+            directory.mkdir(mode=0o700);os.chown(directory,account.pw_uid,account.pw_gid)
     if '--start' in sys.argv[1:] or '--resume' in sys.argv[1:]:
         runpy.run_path(str(Path(__file__).resolve().parent/'helio_admin_lifecycle.py'))['report'](True)
     fw('iptables','-N',CHAIN);made=True
@@ -141,7 +154,7 @@ try:
              '--setenv','XDG_RUNTIME_DIR','/run/user/'+uid,'--setenv','WAYLAND_DISPLAY','wayland-0',
              '--ro-bind','/usr','/usr','--symlink','usr/bin','/bin','--symlink','usr/lib','/lib','--symlink','usr/lib64','/lib64',
              '--dir','/etc','--ro-bind','/etc/ssl','/etc/ssl','--ro-bind','/etc/fonts','/etc/fonts','--ro-bind','/etc/machine-id','/etc/machine-id','--ro-bind','/etc/hosts','/etc/hosts','--ro-bind','/etc/nsswitch.conf','/etc/nsswitch.conf','--ro-bind','/etc/passwd','/etc/passwd','--ro-bind','/etc/group','/etc/group','--ro-bind',str(dns),'/etc/resolv.conf',
-             '--dir','/home','--bind',HOME,'/home/james','--dir','/mnt','--dir','/run','--dir','/run/user','--dir','/run/user/'+uid,'--chmod','0700','/run/user/'+uid,
+             '--dir','/home',*protected_mounts(HOME),'--dir','/mnt','--dir','/run','--dir','/run/user','--dir','/run/user/'+uid,'--chmod','0700','/run/user/'+uid,
              '--ro-bind','/mnt/wslg/runtime-dir/wayland-0','/run/user/'+uid+'/wayland-0',
              # Bind stable directories so broker socket replacements remain visible.
              '--ro-bind','/run/helio-beta-service','/run/helio-beta-service',

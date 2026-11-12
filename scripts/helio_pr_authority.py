@@ -51,6 +51,9 @@ def verify(proof: dict, source_reader: Callable[..., dict] = reader) -> None:
                for path in proof["paths"] for pattern in patterns if pattern.strip()):
             raise Refused("Automatic fix touches a currently denied path.")
         return
+    if proof.get("channel") == "grant":
+        verify_grant(proof)
+        return
     confirmation = proof.get("confirmation")
     if not confirmation and proof.get("posted_at") and proof.get("state"):
         confirmation = legacy_record(proof, "discord-prompts.sqlite",
@@ -73,6 +76,19 @@ def verify(proof: dict, source_reader: Callable[..., dict] = reader) -> None:
         raise Refused(str(error)) from error
     if proof.get("author") and proof["author"] != author:
         raise Refused("Work requester identity differs from the saved publication.")
+
+
+def verify_grant(proof: dict) -> None:
+    """Work authority from the owner's recorded answer to a custody question (helio pr phase decide)."""
+    work = runpy.run_path(str(Path(__file__).with_name("helio-work.py")))
+    grant = work["grant"](str(proof.get("message") or ""))
+    owner = os.environ.get("DORI_DISCORD_OWNER_ID", "")
+    if grant is None or "implement" not in grant["permissions"]:
+        raise Refused("The recorded decision does not authorize implementation work.")
+    if not owner or grant["author"] != owner or proof.get("author") not in (None, owner):
+        raise Refused("The recorded decision was not made by the current owner.")
+    if proof.get("source_hash") not in (None, grant["question_sha256"]):
+        raise Refused("The recorded decision differs from the saved authority.")
 
 
 def publication(change: dict, command: Callable[..., str], repo: str, authorize: Callable[[], None] | None) -> None:

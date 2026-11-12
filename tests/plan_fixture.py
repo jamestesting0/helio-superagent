@@ -1,5 +1,6 @@
 """Seed planning sources through the actual intake schema without live policy."""
 from __future__ import annotations
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 
 import os
 from pathlib import Path
@@ -27,6 +28,6 @@ def stage_source(state: Path, payload: str) -> None:
     )
     env = {**os.environ, "HOME": str(state.parent)}
     env.pop("DORI_POLICY_DIR", None)
-    subprocess.run([str(Path.home() / ".bun/bin/bun"), "--eval", code,
+    subprocess.run([hermetic.BUN, "--eval", code,
                     str(state / "discord-delivery.sqlite"), payload],
                    env=env, check=True, capture_output=True, text=True)

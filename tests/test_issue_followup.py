@@ -1,4 +1,5 @@
 """Creation identity, historical immutability and uncertain-write recovery."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 import io

@@ -1,8 +1,10 @@
 """Confirmed bugs and authorized work reach a PR without another approval, and misses are reported."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import argparse
 import contextlib
 import datetime
 import io
+import shlex
 import json
 import os
 from pathlib import Path
@@ -79,6 +81,15 @@ class StorageTests(StateCase):
         self.assertIsNone(self.work["available"]("o/r", 21, NOW + datetime.timedelta(minutes=1)).blocked)
         self.assertFalse(self.work["block"]("o/r", 99, "nothing", NOW))
 
+    def test_a_named_clear_resumes_only_an_automatic_fix_blocked_on_that_question(self):
+        self.work["save_bugfix"]("o/r", 22, NOW, route="autofix", status="started")
+        self.assertTrue(self.work["block"]("o/r", 22, "awaiting rounding answer", NOW, "q1"))
+        self.assertFalse(self.work["unblock"]("o/r", 22, NOW, "q2"))
+        self.assertEqual(self.work["bugfix"]("o/r", 22)["status"], "blocked")
+        self.assertTrue(self.work["unblock"]("o/r", 22, NOW, "q1"))
+        self.assertEqual((self.work["bugfix"]("o/r", 22)["status"], self.work["bugfix"]("o/r", 22)["blocked_question"]),
+                         ("started", None))
+
     def test_consuming_a_published_request_keeps_later_holds_in_force(self):
         self.grant(message="1", at=NOW - datetime.timedelta(minutes=2))
         self.grant(message="0", at=NOW - datetime.timedelta(minutes=3))
@@ -133,7 +144,7 @@ class IssueReadinessTests(unittest.TestCase):
         self.assertEqual(self.answer([pull(9, "helio/issue-9")])(21), 'PR_NONE {"issue": 21}')
 
 
-class LaneTests(StateCase):
+class LaneCase(StateCase):
     def setUp(self):
         super().setUp()
         self.lanes = runpy.run_path(str(SCRIPTS / "helio_task_lane.py"))
@@ -162,6 +173,8 @@ class LaneTests(StateCase):
     def task(self, route="work", holds=()):
         return self.lanes["Task"]("o/r", 21, "Aborted match colour", route, "Requested by the owner.", "discord:9:1", "owner", holds)
 
+
+class LaneTests(LaneCase):
     def test_new_lane_gets_its_own_worktree_brief_and_pr_done_signal(self):
         key, line = self.lanes["start"](self.task(), self.project, self.command)
         self.assertEqual((key, line), ("issue21-aborted-match-colour", "LAUNCHED issue21-aborted-match-colour pane=w1:p1"))
@@ -460,10 +473,79 @@ class WorkStartTests(StateCase):
             self.plan["block_work"](self.args(reason="no failing test"))
         self.grant()
         self.assertEqual(self.plan["block_work"](self.args(reason="no  failing\ntest")),
-                         ['WORK_BLOCKED issue=21 reason="no failing test"'])
+                         ['WORK_BLOCKED issue=21 stage=pre-submit reason="no failing test"'])
         with self.assertRaisesRegex(self.plan["Refused"], "blocked"):
             self.plan["start_work"](self.args(), self.github, None)
         self.assertEqual(self.started, [])
+
+
+class LaneProfileTests(LaneCase):
+    def settings(self, profile):
+        policy = Path(os.environ["HOME"]) / ".dori/elobot/policy"
+        policy.mkdir(parents=True, exist_ok=True)
+        (policy / "lane-settings.json").write_text(json.dumps({"maxWorkers": 2, "hibernateAfterMin": 30, "laneProfile": profile}))
+        self.addCleanup((policy / "lane-settings.json").unlink)
+
+    def brief(self, task=None):
+        self.lanes["start"](task or self.task(), self.project, self.command)
+        argv = self.launches[-1]
+        return dict(zip(argv[3::2], argv[4::2])), Path(dict(zip(argv[3::2], argv[4::2]))["--brief"]).read_text()
+
+    def test_the_owner_setting_chooses_the_lane_profile(self):
+        self.settings("direct")
+        options, text = self.brief()
+        self.assertEqual(options["--profile"], "direct")
+
+    def test_an_explicit_thorough_request_wins_over_the_owner_setting(self):
+        self.settings("direct")
+        options, text = self.brief(self.lanes["Task"]("o/r", 21, "Aborted match colour", "work", "Requested by the owner.",
+                                                      "discord:9:1", "owner", (), "", "thorough"))
+        self.assertEqual(options["--profile"], "thorough")
+
+    def test_every_brief_carries_submit_files_the_validators_accept(self):
+        _, text = self.brief()
+        self.assertIn(json.dumps(self.lanes["RESULT_EXAMPLE"]), text)
+        self.assertIn(json.dumps(self.lanes["REPORT_EXAMPLE"]), text)
+
+
+class SubmitExampleTests(StateCase):
+    @staticmethod
+    def offline(*_):
+        raise RuntimeError("no Discord in offline tests")
+
+    def run_plan(self, *argv):
+        plan = runpy.run_path(str(SCRIPTS / "helio-plan.py"))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = plan["main"](list(argv), gh=FakeGitHub(), discord=self.offline)
+            except SystemExit as exit:
+                code = "usage" if exit.code == 2 else exit.code
+            except Exception as error:  # the arguments parsed; this offline run stops at the first external call
+                code = type(error).__name__
+        return plan, code, out.getvalue(), err.getvalue()
+
+    def test_the_printed_example_files_pass_the_submit_validators(self):
+        plan, code, out, _ = self.run_plan("pr", "submit", "--example")
+        printed = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(plan["check_result"](None, printed["result_file"]), printed["result_file"])
+        posts = runpy.run_path(str(SCRIPTS / "helio_github_posts.py"))
+        self.assertEqual(posts["report"](json.dumps(printed["report_file"]), True).summary, printed["report_file"]["summary"])
+
+    def test_an_argument_error_prints_a_valid_example_that_parses(self):
+        for argv in (("pr", "submit", "--issue", "23"), ("work", "unblock", "--issue", "23"), ("work", "start"),
+                     ("work", "unblock", "--issue", "23", "--message", "1570186341193482241"),
+                     ("work", "unblock", "--issue", "23", "--message", "1570186341193482241", "--channel", "1", "--named"),
+                     ("work", "block", "--issue", "23"),
+                     ("work", "unblock", "--issue", "-1", "--question", "6d1eabfab39a478db83b"),
+                     ("pr", "submit", "--issue", "-1", "--result-file", "r", "--report-file", "p")):
+            with self.subTest(argv=argv):
+                _, code, _, err = self.run_plan(*argv)
+                self.assertEqual(code, "usage")
+                example = next(line for line in err.splitlines() if line.startswith("example: helio "))
+                _, parsed, _, _ = self.run_plan(*shlex.split(example)[2:])
+                self.assertNotEqual(parsed, "usage", example)
 
 
 if __name__ == "__main__":

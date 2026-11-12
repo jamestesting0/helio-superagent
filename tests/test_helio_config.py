@@ -1,4 +1,5 @@
 """The single helio.env drives every generated runtime file."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from pathlib import Path
 import runpy
 import stat

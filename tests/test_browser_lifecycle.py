@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json,runpy,unittest
 import subprocess,tempfile
 from types import SimpleNamespace

@@ -1,4 +1,5 @@
 """Ledger authority, idempotency and undo are exercised against real SQLite."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from dataclasses import replace
 from pathlib import Path
 import runpy

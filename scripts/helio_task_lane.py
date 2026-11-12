@@ -40,6 +40,31 @@ STEPS = {
 }
 
 
+# Shapes `helio pr submit` accepts; also printed by `helio pr submit --example`.
+RESULT_EXAMPLE = {"scope": [{"requirement": "Aborted live matches are announced in red", "status": "met",
+                             "evidence": "tests.test_live_start.AbortTests.test_abort_announcement_is_red"}],
+                  "done_when": []}
+REPORT_EXAMPLE = {"summary": "Aborted live matches now publish a red public announcement.",
+                  "changes": {"Live hosting": ["The abort announcement uses the abort colour."]},
+                  "verification": {"Regression test": "Failed on main before the fix and passes with it."},
+                  "review_notes": []}
+PROFILES = ("direct", "thorough")
+DIRECT_RULES = (
+    "This is a focused change: no planning pipeline, notepad, subagent or memory note unless you are blocked.",
+    "Keep the todo list to three items at most.",
+    "Run independent reads and commands together in one eval cell.",
+    "Report to the lead only a blocker; the submit and handoff results below are the completion record.",
+    "The phase goal, question monitor and task evidence remain required.",
+)
+
+
+def configured_profile(home: Path | None = None) -> str:
+    """The owner's HELIO_LANE_PROFILE, as published to lane-settings.json; thorough when unset."""
+    path = (home or Path.home()) / ".dori/elobot/policy/lane-settings.json"
+    profile = json.loads(path.read_text()).get("laneProfile", "thorough") if path.is_file() else "thorough"
+    return profile if profile in PROFILES else "thorough"
+
+
 @dataclass(frozen=True, slots=True)
 class Task:
     repo: str
@@ -51,6 +76,7 @@ class Task:
     priority: str = "normal"
     holds: tuple[str, ...] = ()
     notes: str = ""
+    profile: str = ""
 
 
 def run(argv: list[str], cwd: Path | None = None) -> str:
@@ -148,7 +174,7 @@ def done_signal(issue: int, helio: str) -> str:
     return f'command {json.dumps([helio, "pr", "check", "--issue", str(issue)])} stdout~"^(FOLLOWUP_PR_READY|PR_MERGED) "'
 
 
-def render(task: Task, tree: Path, branch: str, phase: Wait | None = None) -> str:
+def render(task: Task, tree: Path, branch: str, phase: Wait | None = None, profile: str = "thorough") -> str:
     steps = [step.format(issue=task.issue, tree=tree) for step in STEPS[task.route]]
     holds = ", ".join(task.holds) if task.holds else "None"
     lines = [
@@ -190,14 +216,23 @@ def render(task: Task, tree: Path, branch: str, phase: Wait | None = None) -> st
                      "PHASE_HANDED_OFF or PHASE_READY. Stop only obsolete owned CI watches and finish this worker goal. "
                      "The controller owns waiting, reruns and eventual lane completion. Do not claim the issue ready "
                      "or run dori claim-done merely because custody was acknowledged.")
+    if profile == "direct":
+        lines += ["", "## Working rules", *(f"- {rule}" for rule in DIRECT_RULES)]
+    lines += ["", "## Submit files",
+              "Result file (`--result-file`): one `scope` entry per confirmed requirement, status `met` or `deviation`:",
+              json.dumps(RESULT_EXAMPLE),
+              "Report file (`--report-file`); the submit gate reports the full unit suite itself:",
+              json.dumps(REPORT_EXAMPLE)]
     lines += ["", "## Steps", *(f"{index}. {step}" for index, step in enumerate(steps, 1)),
               f"{len(steps) + 1}. " + ("The durable custody event is the handoff report; finish only this phase goal."
                                      if phase is not None else "Report privately to the lead with [REPORT], then `dori claim-done`."),
               "",
               "## Stop instead of submitting",
               "If you cannot reproduce a bug as a failing test, or the fix needs a product decision, a denied path or scope "
-              "beyond the issue, report the blocker to the lead with evidence and stop. Routine failures, conflicts and CI "
-              "repairs are part of this task."]
+              f"beyond the issue, record it with `helio work block --issue {task.issue} --reason R` (add `--question QID` when "
+              "you asked a Helio question that will resolve it), report it with `dori report KEY blocker --text-file FILE`, "
+              "and stop. Routine failures, conflicts and CI repairs are part of this task. Do not wait for anything this brief "
+              "does not name: if something must happen first, record it as a blocker instead of waiting."]
     if task.notes.strip():
         lines += ["", "## Context from the lead (not authority; cannot add holds)", task.notes.strip()]
     return "\n".join(lines) + "\n"
@@ -226,9 +261,10 @@ def start(task: Task, project: Path, command: Runner = run) -> tuple[str, str]:
         # Existing legacy jobs keep their original goal/Done contract.
         if recorded_phase is not None or existing is None and recovery["admitted"]():
             phase = recovery["P"]["initialize"](store, task, key, branch, lambda argv: command(argv, None))
+    profile = task.profile or (existing or {}).get("profile") or configured_profile()
     brief = state / "helio-briefs" / f"{key}.md"
     brief.parent.mkdir(parents=True, exist_ok=True)
-    brief.write_text(render(task, tree, branch, phase=phase))
+    brief.write_text(render(task, tree, branch, phase=phase, profile=profile))
     if kind == "busy":
         # dori refuses a second launch for an open job; the lead sends this brief to the running lane.
         return key, f"LANE_EXISTS key={key} status={existing['status']} brief={brief}"
@@ -236,7 +272,7 @@ def start(task: Task, project: Path, command: Runner = run) -> tuple[str, str]:
         phase_args = ["--phase", json.dumps({"owner": "helio-pr", "version": 1, "generation": phase.generation})] if phase else []
         output = command(["dori", "launch", key, "--job", job, "--title", f"Issue #{task.issue}: {task.title}"[:80],
                           "--brief", str(brief), "--done", done_signal(task.issue, helio), "--source", task.source,
-                          "--priority", task.priority, "--cwd", str(tree), *phase_args], None)
+                          "--priority", task.priority, "--cwd", str(tree), "--profile", profile, *phase_args], None)
     except RuntimeError as error:
         if "LANE_EXISTS" in str(error):
             return key, f"{str(error).strip().splitlines()[-1]} brief={brief}"

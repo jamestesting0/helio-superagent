@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from pathlib import Path
 import json,os,runpy,subprocess,sys,tempfile,unittest
 from unittest.mock import patch

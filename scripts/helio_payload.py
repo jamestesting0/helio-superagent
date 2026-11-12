@@ -15,10 +15,11 @@ AGENT = ROOT / "agent"
 CONFIG = runpy.run_path(str(ROOT / "scripts/helio_config.py"))
 PROFILES = ("isolated", "owner")
 EXECUTABLES = ("start", "inbound", "ack", "context")
-HELPERS = ("knowledge-setup.py", "helio-sessions.py", "browser-env", "browser-env.test.ts",
+HELPERS = ("knowledge-setup.py", "helio-sessions.py", "monitor-specs.py", "browser-env", "browser-env.test.ts",
            "reply.ts", "reply.test.ts", "evidence.ts", "evidence.test.ts", "thread-target.ts", "thread-target.test.ts")
 RUNBOOKS = ("github-writing-workflow.md", "discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md", "autofix-workflow.md",
-            "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md")
+            "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md",
+            "lead-turns.md", "request-intake.md", "questions.md", "monitor-events.md", "discord-reference.md")
 PROFILE_RUNBOOKS = ("beta-maintenance-workflow.md", "oracle-restart-workflow.md")
 # Skills passed to the lead and every lane with `omo --skill`; installed under ~/.dori/elobot/skills.
 SKILLS = ("skills/karpathy-guidelines/SKILL.md",)
@@ -128,7 +129,7 @@ INBOUND_FILES = (
     "tests/turns-flow.test.ts", "tests/reply-media-replay.test.ts", "tests/trusted-attention.test.ts",
     # fixtures
     "fixtures/clock.ts", "fixtures/delivery-output.ts", "fixtures/discord-client.ts", "fixtures/discord-data.ts",
-    "fixtures/discord.ts", "fixtures/now.ts", "fixtures/working.ts",
+    "fixtures/discord.ts", "fixtures/now.ts", "fixtures/working.ts", "fixtures/hermetic.ts", "bunfig.toml",
 )
 CHECKOUT_DOCS = ("README.md", "base-fingerprints.md", "bot-ui.md", "copy-style.md", "discord-qa.md")
 PLACEHOLDER = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
@@ -182,6 +183,8 @@ def documents(profile: str, mapping: dict[str, str]) -> dict[str, bytes]:
         "decisions-workflow.md": render_text([AGENT / "runbooks/decisions-workflow.md"], mapping),
         "issue-truth-workflow.md": render_text([AGENT / "runbooks/issue-truth-workflow.md"], mapping),
         "startup-recovery-workflow.md": render_text([AGENT / "runbooks/startup-recovery-workflow.md"], mapping),
+        **{name: render_text([AGENT / "runbooks" / name], mapping) for name in
+           ("lead-turns.md", "request-intake.md", "questions.md", "monitor-events.md", "discord-reference.md")},
     }
     for name in PROFILE_RUNBOOKS:
         rendered[name] = render_text([overlay / "runbooks" / name], mapping)

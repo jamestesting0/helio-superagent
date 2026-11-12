@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import closing, ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import datetime
 import hashlib
 import json
@@ -41,6 +41,7 @@ PUBLICATION = runpy.run_path(str(HERE / "helio_pr_publication.py"))
 ISSUES = runpy.run_path(str(HERE / "helio_issues.py"))
 AUTHORITY = runpy.run_path(str(HERE / "helio_pr_authority.py"))
 WORK = runpy.run_path(str(HERE / "helio-work.py"))
+POLICY = runpy.run_path(str(HERE / "helio_runtime_policy.py"))
 REQUEST_CLI = runpy.run_path(str(HERE / "helio_plan_request_cli.py"))
 PLAN_SOURCE = runpy.run_path(str(HERE / "helio_plan_source.py"))
 PLAN_PUBLICATION = runpy.run_path(str(HERE / "helio_plan_publication.py"))
@@ -50,6 +51,8 @@ LANE = runpy.run_path(str(HERE / "helio_task_lane.py"))
 PROOF = runpy.run_path(str(HERE / "helio_regression_proof.py"))
 VERIFICATION = runpy.run_path(str(HERE / "helio_pr_verification.py"))
 PR_RECOVERY_CLI = runpy.run_path(str(HERE / "helio_pr_recovery_cli.py"))
+CLI = runpy.run_path(str(HERE / "helio_cli.py"))
+ExampleParser, positive = CLI["ExampleParser"], CLI["positive"]
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 MARKER = "<!-- helio-plan v1 -->"
 DATA = re.compile(r"<!-- helio-plan-data:([A-Za-z0-9+/=]+) -->\s*\Z")
@@ -704,9 +707,11 @@ def work_authority(grant) -> str:
 def start_work(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> list[str]:
     """Record (or reuse) the work authority, then launch its lane with a rendered brief and PR-based Done."""
     lines: list[str] = []
-    if not args.from_authorization:
+    if getattr(args, "grant", None):
+        lines = [record_grant(args.issue, args.grant, args.now)]
+    elif not args.from_authorization:
         if not (args.message and args.channel):
-            raise Refused("work start needs --message and --channel, or --from-authorization")
+            raise Refused("work start needs --message and --channel, --grant, or --from-authorization")
         lines = authorize_work(args, gh, discord(args.message, args.channel))
     try:
         grant = WORK["available"](REPO, args.issue, args.now, include_used=True)
@@ -720,7 +725,8 @@ def start_work(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> 
     owner = os.environ.get("DORI_DISCORD_OWNER_ID", "")
     task = LANE["Task"](REPO, args.issue, issue["title"], "work", work_authority(grant),
                         f"discord:{grant.channel}:{grant.message}", "owner" if grant.author == owner else "normal",
-                        grant.holds, args.note_file.read_text() if args.note_file else "")
+                        grant.holds, args.note_file.read_text() if args.note_file else "",
+                        "thorough" if getattr(args, "thorough", False) else "")
     try:
         key, launch = LANE["start"](task, Path(os.environ["HELIO_PROJECT"]).expanduser().resolve())
     except RuntimeError as error:
@@ -728,10 +734,274 @@ def start_work(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> 
     return lines + [f"WORK_STARTED issue={args.issue} key={key} holds={','.join(grant.holds) or 'none'} launch={launch}"]
 
 
+def custody_store() -> object:
+    return ISSUES["Issues"](REPO, Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state"))))
+
+
 def block_work(args: argparse.Namespace) -> list[str]:
-    if not WORK["block"](REPO, args.issue, " ".join(args.reason.split())[:300], args.now):
+    reason = " ".join(args.reason.split())[:300]
+    try:
+        WORK["available"](REPO, args.issue, args.now)
+        stage = "pre-submit"
+    except WORK["Refused"]:
+        stage = "post-submit"
+    question = getattr(args, "question", None)
+    marked = WORK["block"](REPO, args.issue, reason, args.now, question)
+    store = custody_store()
+    wait = PR_RECOVERY_CLI["S"]["load"](store, args.issue)
+    if wait is not None and not wait.data["terminal"] and wait.data["acknowledgment"] != wait.generation:
+        PR_RECOVERY_CLI["P"]["block"](store, wait, reason, stage, question, args.now.timestamp())
+        marked = True
+    if not marked:
         raise Refused(f"issue #{args.issue} has no unfinished authorized or bug-fix work to block")
-    return [f"WORK_BLOCKED issue={args.issue} reason={json.dumps(' '.join(args.reason.split())[:300])}"]
+    return [f"WORK_BLOCKED issue={args.issue} stage={stage} reason={json.dumps(reason)}"
+            + (f" clear=helio work unblock --issue {args.issue} --question {question}" if question else "")]
+
+
+def answered_question(issue: int, question: str) -> str:
+    """The answer must come from this job's lane and from the owner or a currently trusted user."""
+    path = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state"))) / "discord-questions.sqlite"
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        row = db.execute("SELECT lane,status,answer_author FROM questions WHERE id=?", (question,)).fetchone()
+    if row is None:
+        raise Refused(f"unknown question {question}")
+    lane_key, status, author = row
+    state = path.parent
+    record = next((json.loads(p.read_text()) for p in (state / "lanes" / f"{lane_key}.json", state / "lanes/archive" / f"{lane_key}.json")
+                   if re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,60}", lane_key) and p.is_file()), None)
+    custody = lane_key == f"custody-issue{issue}"  # a worker question transferred so its slot could be released
+    if not custody and (record is None or record.get("job") != f"issue-{issue}"):
+        raise Refused(f"question {question} does not belong to issue #{issue}'s lane")
+    if status not in ("answered", "done") or not author:
+        raise Refused(f"question {question} has no recorded answer")
+    trusted = POLICY["values"](os.environ).get("DORI_DISCORD_TRUSTED_IDS", "").split(",")
+    if author != os.environ.get("DORI_DISCORD_OWNER_ID") and author not in trusted:
+        raise Refused(f"question {question} was not answered by the owner or a current trusted user")
+    return f"answered question {question}"
+
+
+def record_grant(issue: int, identity: str, now: datetime.datetime) -> str:
+    """Work authority from the owner's recorded decision: implement permission, bound to this issue."""
+    granted = WORK["grant"](identity)
+    owner = os.environ.get("DORI_DISCORD_OWNER_ID", "")
+    if not granted or "implement" not in granted["permissions"] or granted["author"] != owner:
+        raise Refused("the grant does not authorize implementation by the current owner")
+    if issue != (granted["target_issue"] or granted["issue"]):
+        raise Refused("the grant belongs to another issue")
+    WORK["record"](WORK["Authorization"](REPO, issue, identity, "grant", owner, now, granted["question_sha256"]))
+    return f"WORK_AUTHORIZED issue={issue} source=grant:{identity}"
+
+
+def decide(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> list[str]:
+    """Apply the owner's answer to a custody question as its defined transition, then close the question."""
+    C = PR_RECOVERY_CLI["C"]
+    E, S, P = C["E"], C["S"], C["P"]
+    state = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
+    store = ISSUES["Issues"](gh.repo, state, command=gh.run)
+    wait = S["load"](store, args.issue)
+    if wait is None:
+        raise Refused(f"issue #{args.issue} has no managed custody record")
+    owner = os.environ.get("DORI_DISCORD_OWNER_ID", "")
+    escalation, blocked = wait.data.get("escalation") or {}, wait.data.get("blocked") or {}
+    now = args.now.timestamp()
+    if args.message:
+        if not (args.channel and args.option):
+            raise Refused("a later answer needs --message, --channel and --option")
+        source = discord(args.message, args.channel)
+        try:
+            author = source["verify_source"](source["payload"], source["live"], source["owner"], source["trusted"], source["channel_ok"])
+        except source["Refused"] as error:
+            raise Refused(str(error)) from None
+        qid, option, evidence = escalation.get("question") or blocked.get("question"), args.option, f"owner message {args.message}"
+    else:
+        if not args.question:
+            raise Refused("decide needs --question, or --message, --channel and --option for a later answer")
+        row = E["question"](store, args.question)
+        if row is None or row["lane"] != E["lane_key"](args.issue):
+            raise Refused(f"{args.question} is not a custody question for issue #{args.issue}")
+        if row["status"] != "answered":
+            raise Refused(f"question {args.question} has no answer to apply ({row['status']})")
+        if row["answer_source"] == "component" and args.option not in (None, row["answer_text"]):
+            raise Refused(f"the owner tapped {row['answer_text']!r}; a button answer is applied as given")
+        option = row["answer_text"] if row["answer_source"] == "component" else args.option or row["answer_text"]
+        qid, author, evidence = args.question, row["answer_author"], f"answered question {args.question}"
+    questions = runpy.run_path(str(HERE / "helio-questions.py"))
+
+    def close() -> None:
+        if qid and E["question"](store, qid):
+            with closing(questions["db_connect"]()) as db:
+                questions["close"](db, qid)
+
+    if blocked.get("transferred") and blocked.get("question") == qid and not args.message:
+        # The worker's own question: the A2 answer rules (owner or a current trusted user) clear its blocker.
+        lines = unblock_work(argparse.Namespace(issue=args.issue, question=qid, message=None, channel=None, named=False,
+                                                lead=False, now=args.now), discord)
+        current = S["load"](store, args.issue)
+        S["save"](store, replace(current, data={**current.data, "escalation": None}))
+        close()
+        return lines + [f"PHASE_DECIDED issue={args.issue} question={qid} transition=worker-unblock"]
+    if escalation.get("question") != qid and not args.message:
+        raise Refused(f"{qid} is not this issue's open custody decision")
+    if author != owner:
+        raise Refused("custody decisions are the owner's")
+    if option not in (escalation.get("options") or []):
+        raise Refused("choose one of: " + "; ".join(escalation.get("options") or []))
+    kind, lane = escalation["kind"], wait.data["lane"]
+    answer_sha = hashlib.sha256(json.dumps([qid, escalation.get("detail"), option, args.issue]).encode()).hexdigest()
+    reason = f"owner decision {qid or args.message}: {option}"
+
+    def settle(current: Wait, **fields) -> Wait:
+        return S["save"](store, S["notice"](replace(current, data={**current.data, "escalation": None, **fields}),
+                                            "decision", f"Owner decided: {option}", now))
+
+    def wake(current: Wait) -> Wait:
+        if current.data.get("blocked", {}) and current.data["blocked"].get("stage") != "controller":
+            WORK["unblock"](REPO, args.issue, args.now)
+        current = S["save"](store, replace(current, data={**current.data, "escalation": None}))
+        current = P["unblock"](store, current, reason, now)
+        intent = current.data.get("intent")
+        if intent and intent.get("kind") == "wake" and current.data.get("pending"):
+            # A resumed repair stays bound to its observation, so an unchanged return counts against that budget.
+            current = S["save"](store, replace(current, data={**current.data, "intent": {**intent, "observation": current.data["pending"]}}))
+        return current
+
+    def create(permissions: tuple[str, ...], related: bool) -> tuple[str, int]:
+        if not args.title or not args.body_file:
+            raise Refused("this option creates an issue: pass --title and --body-file with its requirements")
+        identity = WORK["create_grant"](REPO, args.issue, qid or args.message, option, permissions, owner, answer_sha, args.now)
+        labels = tuple(args.labels or [item["name"] for item in store.get(args.issue).get("labels", [])] or ["bug"])
+        number, _ = FOLLOWUP["create"](store, FOLLOWUP["Request"](args.issue, "grant", identity, args.title,
+                                                                   args.body_file.read_text(), labels, related))
+        WORK["target_grant"](identity, number)
+        return identity, number
+
+    if option in E["PARK"]:
+        # Parked, not settled: the decision (kind, options) stays so a later owner message can resume it.
+        wait = E["park"](store, wait, reason, now)
+        wait = S["save"](store, replace(wait, data={**wait.data, "escalation": {**escalation, "question": None, "parked": True}}))
+    elif option == E["STOP"]:
+        gh.run(["dori", "abandon", lane, "--reason", reason])
+        wait = settle(wait, terminal=True)
+    elif option == E["BUSY"]:
+        worker_question = blocked.get("question") if blocked.get("stage") != "controller" else None
+        moving = kind == "worker-blocked" and worker_question and (E["question"](store, worker_question) or {}).get("status") in (
+            "queued", "send_failed", "delivery_unknown", "sending", "awaiting_answer", "answered")
+        if moving:
+            # Dori will not release a lane whose own question is open, so the question moves to custody first (journaled;
+            # a rerun of this decision finds it already moved).
+            C["A"]["transfer"](store, worker_question, E["lane_key"](args.issue))
+            wait = S["save"](store, replace(wait, data={**wait.data, "blocked": {**blocked, "transferred": E["lane_key"](args.issue)}}))
+        gh.run(["dori", "pause", lane, "--note", reason])
+        revision = P["lane"](store, wait).get("revision", 0)
+        gh.run(["dori", "reclaim", lane, "--stop", "--expected-revision", str(revision)])
+        if moving:
+            # The worker is stopped with its checkpoint; its own question now waits in custody and its answer wakes it.
+            wait = S["save"](store, replace(wait, data={**wait.data,
+                "escalation": {"kind": "worker-blocked", "at": now, "question": worker_question,
+                               "options": list(E["OPTIONS"]["worker-blocked"]), "detail": blocked.get("reason", "")}}))
+            wait = S["save"](store, S["notice"](wait, "decision", f"Owner decided: {option}", now))
+        else:
+            wait = wake(wait)
+    elif option in ("Try once more", "Try again", "Unblock and continue"):
+        data = dict(wait.data)
+        key = escalation.get("observation") or data.get("pending") or ""
+        if kind == "repair-exhausted":
+            # Exactly one more round for the observation that ran out; every other budget is unchanged.
+            data["reworked"] = [item for item in data.get("reworked") or [] if "scope:" + item != key and item != key]
+        elif kind == "startup-failed":
+            data.update(startup_failures=[], startup_failed_revision=None)
+        if kind == "repair-exhausted":
+            # One more round for exactly this observation: the controller's repair dispatch delivers it (it releases the
+            # worker safely first, retries while busy, and the stop clock bounds the wait); an unchanged return asks again.
+            data.update(attempts={**(data.get("attempts") or {}), key: 1}, pending=key, last_action=key)
+            wait = settle(wait, **{field: data.get(field) for field in ("attempts", "pending", "last_action", "reworked")}, blocked=None)
+        else:
+            wait = wake(S["save"](store, replace(wait, data=data)))
+    elif option == "Retry CI now":
+        incidents = {key: item if item["resolved"] else {**item, "retries": [], "first_at": now}
+                     for key, item in wait.data["incidents"].items()}
+        wait = settle(wait, incidents=incidents, blocked=None)
+    elif option == "Reopen the PR and continue":
+        gh.run(["gh", "pr", "reopen", wait.data["pr"], "--repo", REPO])
+        pull = C["exact_pull"](store, wait, gh.run)
+        if pull["state"] != "OPEN" or pull["headRefOid"] != wait.data["head"]:
+            raise Refused("the reopened PR does not show the handed-off head; inspect it before continuing")
+        wait = settle(wait, blocked=None)
+    elif option == "Continue under a linked follow-up issue":
+        identity, number = create(("create", "implement"), False)
+        start_work(argparse.Namespace(issue=number, grant=identity, from_authorization=False, message=None, channel=None,
+                                      note_file=None, thorough=False, now=args.now), gh, discord)
+        gh.run(["dori", "abandon", lane, "--reason", f"{reason}; continued in #{number}"])
+        wait = settle(wait, terminal=True)
+    elif option == "Include the new requirements in this PR":
+        WORK["create_grant"](REPO, args.issue, qid or args.message, option, ("implement",), owner, answer_sha, args.now)
+        digest = P["requirements"](store.get(args.issue))
+        wait = settle(wait, scope_grant=digest, blocked=None)
+    elif option == "Leave them for a related issue":
+        if not args.restored_body_file:
+            raise Refused("pass --restored-body-file with this issue's requirements without the moved ones")
+        _, number = create(("create",), True)
+        current = store.get(args.issue)
+        store.update(args.issue, {"body": args.restored_body_file.read_text(), "adopt": ISSUES["digest"](current.get("body") or ""),
+                                  "note": f"Moved the newer requirements to #{number} ({reason}).",
+                                  "source": {"kind": "question", "id": qid, "author": owner}})
+        if P["requirements"](store.get(args.issue)) != wait.data["scope"]:
+            raise Refused(f"#{args.issue}'s requirements still differ from the handed-off scope; correct the restored text")
+        wait = settle(wait, blocked=None)
+    elif option in ("Create the follow-up issue", "No follow-up"):
+        if option == "Create the follow-up issue":
+            create(("create",), False)
+        wait = settle(wait, blocked=None, followup_handled=P["requirements"](store.get(args.issue)))
+    else:
+        raise Refused(f"no transition is defined for {option!r}")
+    close()
+    return [f"PHASE_DECIDED issue={args.issue} kind={kind} option={json.dumps(option)} generation={wait.generation}"]
+
+
+def lead_unblock(args: argparse.Namespace) -> list[str]:
+    """The lead clears a watchdog or stall blocker it diagnosed; worker blockers and owner decisions are refused."""
+    if not args.reason or not args.reason.strip():
+        raise Refused("--lead needs --reason with what was diagnosed")
+    store = custody_store()
+    S, P = PR_RECOVERY_CLI["S"], PR_RECOVERY_CLI["P"]
+    wait = S["load"](store, args.issue)
+    blocked = (wait.data.get("blocked") if wait else None) or {}
+    if blocked.get("stage") != "controller" or blocked.get("kind") not in ("stalled", "no-progress") or blocked.get("parked"):
+        raise Refused("--lead clears only a controller stall or no-progress blocker; this one needs its answer or the owner")
+    if (wait.data.get("escalation") or {}).get("question"):
+        raise Refused("the owner was already asked; apply the answer with helio pr phase decide")
+    wait = S["save"](store, replace(wait, data={**wait.data, "escalation": None}))
+    wait = P["unblock"](store, wait, "lead: " + " ".join(args.reason.split())[:200], args.now.timestamp())
+    return [f"WORK_UNBLOCKED issue={args.issue} by=lead changed=true generation={wait.generation}"]
+
+
+def unblock_work(args: argparse.Namespace, discord: DiscordReader) -> list[str]:
+    if getattr(args, "lead", False):
+        return lead_unblock(args)
+    if not args.question and not args.message:
+        raise Refused("unblock needs --question, --message with --channel, or --lead with --reason")
+    if args.question:
+        evidence = answered_question(args.issue, args.question)
+    else:
+        source = discord(args.message, args.channel)
+        if source["payload"].get("channel_id") != args.channel:
+            raise Refused("unblock request channel does not match the live message")
+        try:
+            source["verify"](source["payload"], source["live"], "work", f"{REPO}#{args.issue}", None,
+                             source["owner"], source["trusted"], source["channel_ok"], source["is_dm"],
+                             source["bot_id"], now=args.now)
+        except source["Refused"] as error:
+            raise Refused(str(error)) from None
+        evidence = f"request {args.message}"
+    named = args.question if getattr(args, "named", False) else None
+    cleared = WORK["unblock"](REPO, args.issue, args.now, named)
+    store = custody_store()
+    wait = PR_RECOVERY_CLI["S"]["load"](store, args.issue)
+    if wait is not None and wait.data.get("blocked") and (named is None or wait.data["blocked"]["question"] == named):
+        wait = PR_RECOVERY_CLI["P"]["unblock"](store, wait, evidence, args.now.timestamp())
+        cleared = True
+    return [f"WORK_UNBLOCKED issue={args.issue} by={json.dumps(evidence)} changed={str(cleared).lower()}"
+            + (f" generation={wait.generation}" if wait is not None else "")]
 
 
 def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], Suite], discord: DiscordReader) -> list[str]:
@@ -769,6 +1039,9 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], Su
             return
         if newest.holds:
             raise Refused(f"held by requester: {','.join(newest.holds)}; report the verified work and wait for them")
+        if newest.blocked:
+            raise Refused(f"work is blocked ({newest.blocked}); once resolved run helio work unblock --issue {args.issue} "
+                          "--question QID (or --message M --channel C), then submit")
 
     require_unheld()
     authorization = None
@@ -887,38 +1160,59 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         if name == "show":
             sub.add_argument("--json", action="store_true")
     commands.add_parser("list")
-    work_commands = commands.add_parser("work").add_subparsers(dest="work_command", required=True)
-    work = work_commands.add_parser("authorize")
-    work.add_argument("--issue", type=int, required=True)
+    work_commands = commands.add_parser("work").add_subparsers(dest="work_command", required=True, parser_class=ExampleParser)
+    work = work_commands.add_parser("authorize", example='helio work authorize --issue 23 --message 1570186341193482241 --channel 1218071208197623880')
+    work.add_argument("--issue", type=positive, required=True)
     work.add_argument("--message", required=True)
     work.add_argument("--channel", required=True)
-    starter = work_commands.add_parser("start")
-    starter.add_argument("--issue", type=int, required=True)
+    starter = work_commands.add_parser("start", example='helio work start --issue 23 --message 1570186341193482241 --channel 1218071208197623880')
+    starter.add_argument("--issue", type=positive, required=True)
     starter.add_argument("--message")
     starter.add_argument("--channel")
+    starter.add_argument("--grant", help="an owner decision recorded by helio pr phase decide (implement permission)")
     starter.add_argument("--from-authorization", action="store_true",
                          help="relaunch from the newest recorded authorization without a new source")
     starter.add_argument("--note-file", type=Path, help="task context for the lane; never authority or holds")
+    starter.add_argument("--thorough", action="store_true",
+                         help="full ultrawork lane for multi-module features, data or schema changes, or live QA")
     for parser_with_holds in (work, starter):
         parser_with_holds.add_argument("--hold", action="append", choices=WORK["HOLDS"],
                                        help="only when the requester's own words ask for it")
-    blocker = work_commands.add_parser("block")
-    blocker.add_argument("--issue", type=int, required=True)
+    blocker = work_commands.add_parser("block", example='helio work block --issue 23 --reason "needs the owner\'s rounding choice" --question 6d1eabfab39a478db83b')
+    blocker.add_argument("--issue", type=positive, required=True)
     blocker.add_argument("--reason", required=True)
-    prs = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True)
+    blocker.add_argument("--question", help="the helio question ID whose answer resolves this blocker")
+    unblocker = work_commands.add_parser("unblock", example='helio work unblock --issue 23 --question 6d1eabfab39a478db83b')
+    unblocker.add_argument("--issue", type=positive, required=True)
+    evidence = unblocker.add_mutually_exclusive_group(required=False)
+    evidence.add_argument("--question", help="an answered question from this issue's lane")
+    evidence.add_argument("--message", help="a new request from an authorized requester; needs --channel")
+    unblocker.add_argument("--channel")
+    unblocker.add_argument("--named", action="store_true", help="only blockers recorded with this --question")
+    unblocker.add_argument("--lead", action="store_true",
+                           help="clear a controller stall/no-progress blocker after diagnosis (never a worker or owner decision)")
+    unblocker.add_argument("--reason", help="what the lead diagnosed; required with --lead")
+    prs = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True, parser_class=ExampleParser)
     PR_RECOVERY_CLI["register"](prs)
     inspection = prs.add_parser("check").add_mutually_exclusive_group(required=True)
     inspection.add_argument("--number", type=int)
     inspection.add_argument("--issue", type=int, help="the issue's canonical PR; prints PR_MERGED or PR_NONE when none is open")
-    pr = prs.add_parser("submit")
-    pr.add_argument("--issue", type=int, required=True)
-    pr.add_argument("--result-file", type=Path, required=True)
-    reports = pr.add_mutually_exclusive_group(required=True)
+    pr = prs.add_parser("submit", example='helio pr submit --issue 23 --result-file /tmp/result.json --report-file /tmp/report.json --worktree ~/.dori/elobot/state/worktrees/issue23-example')
+    pr.add_argument("--example", action="store_true", help="print a valid result file and report file, then exit")
+    pr.add_argument("--issue", type=positive)
+    pr.add_argument("--result-file", type=Path)
+    reports = pr.add_mutually_exclusive_group()
     reports.add_argument("--summary-file", type=Path)
     reports.add_argument("--report-file", type=Path)
     pr.add_argument("--adopt-body")
     pr.add_argument("--worktree", type=Path, help="task worktree in the canonical repository; otherwise discovered automatically")
     args = parser.parse_args(argv)
+    if args.command == "pr" and args.pr_command == "submit":
+        if args.example:
+            print(json.dumps({"result_file": LANE["RESULT_EXAMPLE"], "report_file": LANE["REPORT_EXAMPLE"]}, indent=2))
+            return 0
+        if args.issue is None or args.result_file is None or (args.summary_file is None and args.report_file is None):
+            pr.error("submit needs --issue, --result-file and --report-file (or --summary-file); see helio pr submit --example")
     if getattr(args, "issue", None) is not None and args.issue < 1:
         parser.error("--issue must be positive")
     gh = gh or GitHub(REPO)
@@ -929,6 +1223,9 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         if getattr(args, "issue", None) and args.command not in ("pr", "work"):
             stack.enter_context(PLAN_PUBLICATION["scope"](
                 gh.repo, args.issue, serialize=args.command != "request" or args.request_action == "cancel"))
+        if args.command == "pr" and args.pr_command == "phase" and args.phase_action == "decide":
+            print("\n".join(decide(args, gh, discord)))
+            return 0
         if args.command == "pr" and args.pr_command in ("wait", "phase"):
             state_dir = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
             return PR_RECOVERY_CLI["execute"](args, ISSUES["Issues"](gh.repo, state_dir, command=gh.run), gh.run)
@@ -958,6 +1255,12 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
             lines = start_work(args, gh, discord)
         elif args.command == "work" and args.work_command == "block":
             lines = block_work(args)
+        elif args.command == "work" and args.work_command == "unblock":
+            if (args.message and not args.channel) or (args.named and not args.question):
+                unblocker.error("--message needs --channel; --named needs --question")
+            if not (args.question or args.message or args.lead) or (args.lead and not args.reason):
+                unblocker.error("unblock needs --question, --message with --channel, or --lead with --reason")
+            lines = unblock_work(args, discord)
         elif args.command == "work":
             lines = authorize_work(args, gh, discord(args.message, args.channel))
         elif args.command == "list":
@@ -1006,7 +1309,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         except (OSError, sqlite3.Error) as error:
             print(f"ISSUE_SYNC_PENDING issue={args.issue}: {type(error).__name__}; run helio issue sync")
     ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_ADOPTED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "PLAN_REQUEST",
-          "WORK_AUTHORIZED", "WORK_STARTED", "WORK_BLOCKED", "{")
+          "WORK_AUTHORIZED", "WORK_STARTED", "WORK_BLOCKED", "WORK_UNBLOCKED", "{")
     return 0 if lines and lines[0].startswith(ok) else 1
 
 

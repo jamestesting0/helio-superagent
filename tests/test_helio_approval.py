@@ -1,4 +1,5 @@
 """Natural-language approvals stay bound to sender, action, target and revision."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import datetime
 import runpy
 import unittest

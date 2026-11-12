@@ -52,11 +52,25 @@ def read_state() -> dict:
         return {}
 
 
+def restart_state(state: dict) -> dict:
+    receipts = {}
+    for name in ('lead', 'full'):
+        try:
+            receipts[name] = json.loads(SAFE['read_agent_file'](HOME, f'.dori/elobot/state/{name}-start.json') or b'{}')
+        except ValueError:
+            receipts[name] = {}
+    return runpy.run_path(str(HERE / 'helio_deploy_plan.py'))['restart_state'](state, receipts['lead'], receipts['full'])
+
+
 def source_version():
+    commit, changed = source_status()
+    return commit, bool(changed)
+
+
+def source_status() -> tuple[str, int]:
     git = [*AS_OWNER, 'git', '-C', SOURCE]
     commit = run([*git, 'rev-parse', '--short', 'HEAD']).stdout.strip() or 'unknown'
-    dirty = bool(run([*git, 'status', '--porcelain']).stdout.strip())
-    return commit, dirty
+    return commit, len(run([*git, 'status', '--porcelain']).stdout.splitlines())
 
 
 def backup():
@@ -171,13 +185,18 @@ def deploy(restart_after: bool) -> int:
     node = ensure_node()
     outcome = plan['plan'](kit, installed, before != after)
     previous = read_state()
+    current = restart_state(previous)
     version = commit + ('+local changes' if dirty else '')
+    deployed_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+    since = lambda kind: (previous.get(f'{kind}_restart_since') or previous.get('deployed_at')) if current[f'{kind}_restart_pending'] else deployed_at
+    lead_pending = current['lead_restart_pending'] or outcome['needs'] in ('lead', 'full')
+    full_pending = current['full_restart_pending'] or outcome['needs'] == 'full'
     state = {
-        'version': version, 'deployed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+        'version': version, 'deployed_at': deployed_at,
         'needs': outcome['needs'], 'changed': outcome['changed'][:60],
-        'lead_restart_pending': previous.get('lead_restart_pending', False) or outcome['needs'] in ('lead', 'full'),
-        'full_restart_pending': previous.get('full_restart_pending', False) or outcome['needs'] == 'full',
-        'lead_version': previous.get('lead_version'),
+        'lead_restart_pending': lead_pending, 'lead_restart_since': since('lead') if lead_pending else None,
+        'full_restart_pending': full_pending, 'full_restart_since': since('full') if full_pending else None,
+        'lead_version': current['lead_version'],
         'admin_controller_version': administration['controller_sha256'] if administration else None,
         'admin_controller_restart_pending': bool(administration and admin_running.loaded_version != administration['controller_sha256']),
     }
@@ -220,6 +239,7 @@ def restart() -> int:
 
 def status() -> int:
     state = read_state()
+    state.update(restart_state(state))
     commit, dirty = source_version()
     print(f'Repo checkout: {commit}{" +local changes" if dirty else ""}')
     print(f'Isolated runtime: {state.get("version", "unknown (deploy once with `helio deploy`)")}'
@@ -245,13 +265,21 @@ def main() -> int:
         result = run([*AS_AGENT, '/usr/bin/python3', '-I', str(HERE / 'helio_doctor.py'),
                       '--home', HOME, '--runtime-home', '/home/james', *args[1:]], timeout=30)
         administration = asdict(runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['status']())
+        commit, changed = source_status()
+        deployed = read_state().get('deployed_at')
+        hours = None
+        if deployed:
+            hours = round((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(deployed)).total_seconds() / 3600, 1)
+        source = {'commit': commit, 'uncommitted_files': changed, 'hours_since_deploy': hours}
         if '--json' in args:
             report = json.loads(result.stdout)
             report['administration'] = administration
+            report['source'] = source
             print(json.dumps(report))
         else:
             print(result.stdout, end='')
             print('administration: ' + json.dumps(administration, sort_keys=True))
+            print('source: ' + json.dumps(source, sort_keys=True))
         if result.stderr:
             print(result.stderr, file=sys.stderr, end='')
         return result.returncode

@@ -1,4 +1,5 @@
 """Decision CLI verifies live human provenance and pages complete active guidance."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from contextlib import redirect_stdout
 from dataclasses import replace
 import datetime

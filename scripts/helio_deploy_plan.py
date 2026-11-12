@@ -47,6 +47,17 @@ INSTALLED_RULES = (
 )
 
 
+def restart_state(deploy: dict, lead: dict, full: dict) -> dict:
+    """The host deploy records which restart is pending and since when; start receipts written inside the sandbox
+    (state/lead-start.json, state/full-start.json) satisfy it. ISO-8601 UTC strings compare in time order."""
+    def pending(kind: str, receipt: dict) -> bool:
+        since = deploy.get(f"{kind}_restart_since") or deploy.get("deployed_at")
+        started = receipt.get("at") or ""
+        return bool(deploy.get(f"{kind}_restart_pending")) and (started < since if since else not started)
+    return {"lead_restart_pending": pending("lead", lead), "full_restart_pending": pending("full", full),
+            "lead_version": lead.get("version") or deploy.get("lead_version")}
+
+
 def classify(path: str, rules) -> str:
     for pattern, need in rules:
         if fnmatch(path, pattern):

@@ -89,10 +89,16 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
                     probes.append(max(incident["first_at"] + (0, 1800, 7200)[len(attempts)],
                                       (attempts[-1]["finished_at"] or now) + 1800 if attempts else 0))
             status = data["status"]
+            blocked, escalation, stop = data.get("blocked") or {}, data.get("escalation") or {}, data.get("stop") or {}
+            waiting_on_owner = bool(blocked.get("parked") or escalation.get("question"))
             custody.append({"repo": repo, "issue": issue, "job": job, "generation": generation,
+                            "waiting_on_owner": waiting_on_owner, "decision": escalation.get("kind") or blocked.get("kind"),
+                            "question": escalation.get("question"), "parked": bool(blocked.get("parked")),
+                            "stopped_min": int((now - stop["since"]) // 60) if stop else None,
                             "state": status, "implementation_complete": data["acknowledgment"] == generation,
                             "pr": data["pr"], "head": data["head"], "last_progress": data["last_progress"],
-                            "next_owner": "worker" if status in ("starting", "implementing", "repair", "diagnosis") else
+                            "next_owner": "owner" if waiting_on_owner else
+                            "worker" if status in ("starting", "implementing", "repair", "diagnosis") else
                             "requester" if status in ("held", "decision", "unknown") else "controller",
                             "next_probe": min(probes) if probes else None,
                             "attempts": [dict(item) for _, item in retries],
@@ -143,6 +149,12 @@ def problems(health: dict, now: float) -> list[str]:
         found.append("housekeeping awaits first-run approval")
     if last and last.get("backup_error"):
         found.append(f"backup failed: {last['backup_error'][:120]}")
+    for row in health["pr_custody"]:
+        if row.get("waiting_on_owner"):
+            found.append(f"issue #{row['issue']} waits on the owner ({row.get('decision') or 'decision'}"
+                         + (f", question {row['question']}" if row.get("question") else ", parked") + ")")
+        elif (row.get("stopped_min") or 0) >= 30:
+            found.append(f"issue #{row['issue']} stopped {row['stopped_min']} min")
     return found
 
 

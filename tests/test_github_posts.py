@@ -1,4 +1,5 @@
 """Editorial ownership, Markdown integrity and legacy input compatibility."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 from pathlib import Path
 import runpy

@@ -33,6 +33,7 @@ if [ ! -s "$here/skills/karpathy-guidelines/SKILL.md" ]; then
   echo "missing $here/skills/karpathy-guidelines/SKILL.md; run: helio update" >&2
   exit 2
 fi
+monitor_specs="$(python3 "$here/monitor-specs.py" "$here/docs/monitor-events.md")"
 cd "$HELIO_PROJECT"
 knowledge_status="$(python3 "$here/knowledge-setup.py" --check-docs)"
 
@@ -46,29 +47,30 @@ fi
 
 mkdir -p "$DORI_STATE_DIR"
 recovery_status="$(bun "$here/../discord-inbound/recovery.ts" begin)"
-python3 - "$here/deploy-state.json" <<'PY' || true
-import json, sys
+# Runtime records live under state/; installed files and config.json are written only by updates.
+python3 - "$here/deploy-state.json" "$DORI_STATE_DIR" "$HERDR_PANE_ID" <<'PY'
+import datetime, json, os, sys
 from pathlib import Path
-path = Path(sys.argv[1])
-if path.is_file():
-    state = json.loads(path.read_text())
-    state.update(lead_restart_pending=False, lead_version=state.get("version"))
-    path.write_text(json.dumps(state, indent=2) + "\n")
+deploy, state, pane = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+try:
+    version = json.loads(deploy.read_text()).get("version") if deploy.is_file() else None
+except ValueError:
+    version = None
+receipt = {"version": version, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+for name, text in (("lead-start.json", json.dumps(receipt) + "\n"), ("lead-pane", pane + "\n")):
+    temporary = state / f".{name}.tmp"
+    temporary.write_text(text)
+    os.replace(temporary, state / name)
 PY
-bun -e '
-  const path = process.env.DORI_CONFIG;
-  const config = await Bun.file(path).json();
-  config.leadPane = process.env.HERDR_PANE_ID;
-  await Bun.write(path, JSON.stringify(config, null, 2) + "\n");
-'
 
 # OmO's positional prompt starts the interactive lead's first turn automatically.
 if [[ "$mode" == resume ]]; then
   startup='Resume Helio mode. Persistent monitors restore automatically; arm only those missing from the watching status. Never duplicate a restored monitor.'
 else
-  startup='Start Helio mode. This new session has no monitors: arm all eight from the setup instructions without first listing them.'
+  startup='Start Helio mode. This new session has no monitors: arm all eight listed below without first listing them.'
 fi
-startup+=$'\nFollow autofix-workflow.md, "Arming monitors": one eval cell with a plain for loop (tool.monitor is synchronous in Python; no asyncio). After partial failure, arm only missing monitors. Then batch-read ack pending inbound, ack pending context, helio question list and helio followups list, including continuation pages. Run helio doctor --json and send the owner DM greeting under startup-recovery-workflow.md once receiving status is known. Separate intake readiness, historical work and dated/unprobed dependencies. Read active decisions before work and reconcile recovery before old deliveries. Unfinished recovery does not block new requests.'
+startup+=$'\nFollow monitor-events.md, "Arming monitors": one eval cell with a plain for loop (tool.monitor is synchronous in Python; no asyncio). After partial failure, arm only missing monitors. Then batch-read ack pending inbound, ack pending context, helio question list and helio followups list, including continuation pages. Run helio doctor --json and send the owner DM greeting under startup-recovery-workflow.md once receiving status is known. Separate intake readiness, historical work and dated/unprobed dependencies. Read active decisions before work and reconcile recovery before old deliveries. Unfinished recovery does not block new requests.'
+startup+=$'\nMonitor specifications (description, command, filter, options), one tool.monitor call each:\n'"$monitor_specs"
 startup+=$'\n'"$recovery_status"
 doc_drift="$(grep '^KNOWLEDGE_DOC_DRIFT' <<<"$knowledge_status" || true)"
 if [[ -n "$doc_drift" ]]; then

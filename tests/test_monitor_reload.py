@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import os
 import selectors
 import shutil
@@ -240,14 +241,14 @@ class MonitorReloadTests(unittest.TestCase):
                 (helpers / "helio_discord_text.py").write_text((ROOT / "scripts/helio_discord_text.py").read_text())
                 if name == "followups":
                     for helper in ("helio_observations.py", "helio_decision_upkeep.py", "helio_decisions.py", "helio_issue_sync.py", "helio-issue.py", "helio_issues.py", "helio-plan.py", "helio-work.py", "helio_issue_link.py", "helio_housekeeping.py", "helio_retention.py", "helio_state_backup.py", "helio_pr_readiness.py", "helio_issue_followup.py", "helio_github_posts.py", "helio_github_body.py", "helio_issue_format.py", "helio_pr_publication.py", "helio_pr_authority.py", "helio_pr_finalize.py",
-                                   "helio_task_lane.py", "helio_regression_proof.py"):
+                                   "helio_task_lane.py", "helio_regression_proof.py", "helio_cli.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
                     for helper in ("helio_followup_delivery.py", "helio_plan_publication.py",
                                    "helio_plan_request_cli.py", "helio_plan_requests.py", "helio_approval.py",
                                    "helio_plan_source.py", "helio_runtime_policy.py",
                                    "helio_pr_verification.py", "helio_pr_recovery_store.py", "helio_pr_recovery_ci.py",
                                    "helio_pr_phase.py", "helio_pr_recovery_actions.py", "helio_pr_recovery.py",
-                                   "helio_pr_recovery_cli.py"):
+                                   "helio_pr_recovery_cli.py", "helio_pr_escalation.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
                     for relative in ("delivery/plan-requests.sql",):
                         destination = self.home / "discord-inbound" / relative

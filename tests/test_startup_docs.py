@@ -1,4 +1,5 @@
 """Managed document drift cannot prevent either lead startup mode."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,9 @@ class StartupDocsTests(unittest.TestCase):
             shutil.copyfile(ROOT / "agent/bin/start", base / "start")
             shutil.copyfile(ROOT / "agent/helpers/knowledge-setup.py", base / "knowledge-setup.py")
             shutil.copyfile(ROOT / "agent/helpers/helio-sessions.py", base / "helio-sessions.py")
+            shutil.copyfile(ROOT / "agent/helpers/monitor-specs.py", base / "monitor-specs.py")
+            (base / "docs").mkdir()
+            shutil.copyfile(ROOT / "agent/runbooks/monitor-events.md", base / "docs/monitor-events.md")
             (base / "env").write_text(
                 f"export HELIO_PROJECT='{project}'\nexport DORI_STATE_DIR='{base / 'state'}'\n"
                 "export DORI_DISCORD_TOKEN=test DORI_DISCORD_OWNER_ID=1 DORI_DISCORD_ALLOWED=1\n"
@@ -72,6 +76,50 @@ class StartupDocsTests(unittest.TestCase):
                     self.assertIn("greeting", argv[-1])
                     self.assertEqual((project / "docs/local.md").read_text(), "local edits")
                     self.assertFalse((project / "docs/missing.md").exists())
+                    for line in subprocess.run([sys.executable, str(base / "monitor-specs.py"), str(base / "docs/monitor-events.md")],
+                                               capture_output=True, text=True, check=True).stdout.splitlines():
+                        self.assertIn(line, argv[-1])
+            runbook = base / "docs/monitor-events.md"
+            runbook.write_text(runbook.read_text().replace('"command": "dori guard --loop 1"', '"command": "dori watch"'))
+            result = subprocess.run(["bash", str(base / "start"), "start"], env=environment,
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("omo", result.stdout)
+            self.assertIn("monitor specifications unreadable", result.stderr)
+
+
+class MonitorSpecTests(unittest.TestCase):
+    def test_the_installed_runbook_yields_eight_valid_monitor_specifications_for_startup(self):
+        result = subprocess.run([sys.executable, str(ROOT / "agent/helpers/monitor-specs.py"),
+                                 str(ROOT / "agent/runbooks/monitor-events.md")], capture_output=True, text=True, check=True)
+        specs = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(specs), 8)
+        self.assertEqual({spec["command"].split()[0] for spec in specs},
+                         {"~/.dori/elobot/inbound", "~/.dori/elobot/context", "helio", "dori"})
+
+    def test_duplicate_incomplete_or_mistyped_specifications_are_refused(self):
+        good = (ROOT / "agent/runbooks/monitor-events.md").read_text()
+        guard = '"command": "dori guard --loop 1"'
+        damaged = {
+            "duplicate monitor": good.replace('"description": "guard"', '"description": "lanes"'),
+            "duplicate command": good.replace(guard, '"command": "dori watch"'),
+            "empty command": good.replace(guard, '"command": " "'),
+            "missing monitor": good.replace(good[good.index('{"description": "guard"'):good.index('{"description": "freshness"')], ""),
+            "unanchored filter": good.replace('"filter": "^(HOST_GUARD', '"filter": "(HOST_GUARD'),
+            "not persistent": good.replace(guard + ', "filter": "^(HOST_GUARD|GUARD_ERROR)", "persistent": true',
+                                           guard + ', "filter": "^(HOST_GUARD|GUARD_ERROR)", "persistent": false'),
+            "unknown field": good.replace(guard, guard + ', "cwd": "/"'),
+            "text wake rate": good.replace('"wakes_per_hour": 3600}', '"wakes_per_hour": "3600"}', 1),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            for name, text in damaged.items():
+                with self.subTest(name=name):
+                    self.assertNotEqual(text, good)
+                    runbook = Path(temporary, "monitor-events.md")
+                    runbook.write_text(text)
+                    result = subprocess.run([sys.executable, str(ROOT / "agent/helpers/monitor-specs.py"), str(runbook)],
+                                            capture_output=True, text=True)
+                    self.assertEqual((result.returncode, result.stdout), (2, ""))
 
 
 if __name__ == "__main__":

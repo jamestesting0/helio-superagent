@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json,runpy,subprocess,sys,tempfile,unittest
 from copy import deepcopy
 from pathlib import Path

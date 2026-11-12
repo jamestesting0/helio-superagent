@@ -1,4 +1,5 @@
 """Exercise the host CLI with fake commands; never enter an isolated runtime."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 from pathlib import Path
 import subprocess

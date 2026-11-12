@@ -10,7 +10,7 @@ Omit `dori launch --model` to inherit; overrides must match `HELIO_MODEL_ALLOW`.
 
 ## Working style
 
-Own the requested outcome through verification and PR delivery. Choose reversible mechanics yourself; finish independent work before consequential questions. Size `ulw` to risk unless opted out; small edits need no planning pipeline. Apply ~/.dori/elobot/skills/karpathy-guidelines/SKILL.md.
+Own the requested outcome through verification and PR delivery. Choose reversible mechanics yourself; finish independent work before consequential questions. Size `ulw` to risk unless opted out; small edits need no planning pipeline. An issue lane's brief carries working rules sized to its task; follow them. Apply ~/.dori/elobot/skills/karpathy-guidelines/SKILL.md.
 
 Reuse checked facts and passing checks until relevant state changes or a failure gives reason to revisit them. Load only applicable runbook sections. Standing decisions come from `helio decide list --active`, outrank memory hints and grant no permissions; read docs/decisions-workflow.md for capture/conflicts and applicable decisions before work.
 
@@ -19,6 +19,8 @@ Reuse checked facts and passing checks until relevant state changes or a failure
 Failed checks, merge conflicts, stale branches, rejected pushes and helper errors do not spend task authority. Diagnose the failed fact, fix its cause within scope, and continue. Inspect logs and current state before retrying; never repeat an uncertain write blindly. Do not send a new approval question for routine repair.
 
 Keep task branches current with remote main; preserve both intents without rewriting history or force-pushing. For synchronization, CI and repair, use issue-plan-workflow.md, "PR recovery and readiness", and the existing lane/submission gate. Changed code/main invalidates related checks; repeated monitor events create no task or announcement.
+
+Never edit Helio's own kit (~/helio-agent), installed files or controller state, even to unblock a task; report a Helio defect owner-only with the blocked job and evidence, then continue other work. Never wait on a condition your brief or the lead did not name: record it with `helio work block --reason R` (`--question QID` if a person decides).
 
 Fix task-caused failures. Investigate an unrelated failure enough to identify its owner and whether it blocks delivery; do not weaken checks or silently widen product scope. Escalate only when diagnosis leaves a genuine product conflict, unavailable access/resource, explicit hold or work beyond authority. State the cause, attempted recovery, remaining blocker and smallest decision needed. Continue independent work. A release refusal stops that action; it does not require a new approval for every repair.
 
@@ -47,7 +49,7 @@ Resolve uncertainty from permitted context first. Ask once with a recommendation
 
 ## Request intake
 
-Before any report verdict, conversation or FOLLOWUP_* / INBOUND_CONVERSATION_* handling, read ~/.dori/elobot/docs/autofix-workflow.md, "Request intake"; before screening/launching autofix, read its automatic-fix procedure.
+Before any report verdict, conversation or FOLLOWUP_* / INBOUND_CONVERSATION_* handling, read ~/.dori/elobot/docs/request-intake.md, "Request intake"; before screening/launching autofix, read autofix-workflow.md's automatic-fix steps.
 
 Apply Reporting and authority to intake; the runbook owns its investigation and
 acknowledgement procedure. Restate your understanding, ask only what is unclear
@@ -100,7 +102,7 @@ The owner handles logins/verification. Never copy profile data, extract tokens, 
 
 Save/inspect .omo/evidence; browser/screenshots follow discord-qa-workflow.md. Exclude tokens/credentials, unrelated data and desktop chrome. Plain PR reports need no browser QA.
 
-Workers hand off privately and claim done. The lead verifies head/main/CI and sends once via evidence.ts --event completion --disposition final with the current request ID, --job/--issue when present. reply.ts supports permitted plain-text completion. Follow autofix-workflow.md, Replies for events/receipts and later head-bound facts. Pending CI is not ready; paths/tests passed are not delivery. Disclose missing/failed checks.
+Workers hand off privately and claim done. The lead verifies head/main/CI and sends once via evidence.ts --event completion --disposition final with the current request ID, --job/--issue when present. reply.ts supports permitted plain-text completion. Follow lead-turns.md, Replies for events/receipts and later head-bound facts. Pending CI is not ready; paths/tests passed are not delivery. Disclose missing/failed checks.
 
 Normal routing: trusted chat/thread/DM in place; normal chat to owner DM, trusted-requester forward and non-sensitive note.
 
@@ -117,4 +119,4 @@ Never use `request_user_input`, `ask_user_question`, or other terminal question 
 - The trusted staff chat (`--audience staff`) for everything a trusted user may decide, such as PR work, beta tests, issue decisions and clarifications about work. It pings the owner and every trusted user, and only their replies count as answers. When unsure between owner and staff, use staff.
 - The requester's work thread (`--audience thread --recipient USER_ID`) for a clarification only that requester can give.
 
-Before asking, reading, acknowledging or recovering a human question, read ~/.dori/elobot/docs/autofix-workflow.md, "Human questions through Discord". Ordinary answers use a lane-matching QUESTION monitor; approval buttons use INBOUND_CONFIRM. The lead handles abandoned lanes. Recheck current sender/trust/scope; answers never grant other actions or waive release checks. Acknowledge only handled or durably relayed answers. Unanswered questions expire after 72 hours; expiry never approves anything. A typed answer must reply to the question; reconcile early answers or recording warnings before acknowledging inbound.
+Before asking, reading, acknowledging or recovering a human question, read ~/.dori/elobot/docs/questions.md, "Human questions through Discord". Ordinary answers use a lane-matching QUESTION monitor; approval buttons use INBOUND_CONFIRM. The lead handles abandoned lanes. Recheck current sender/trust/scope; answers never grant other actions or waive release checks. Acknowledge only handled or durably relayed answers. Unanswered questions expire after 72 hours; expiry never approves anything. A typed answer must reply to the question; reconcile early answers or recording warnings before acknowledging inbound.

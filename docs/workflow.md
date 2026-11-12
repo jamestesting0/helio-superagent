@@ -33,7 +33,9 @@ Inside the isolated workspace (`helio-wsl`): `helio start|resume`, `helio update
 `helio pr check --number N` (read-only current-main/CI/mergeability inspection),
 `helio release inspect`, `helio release-check ...`, `helio triage ...`,
 `helio conversation list|show|open|set|join|leave|merge|close`, `helio followups check|deliver|list|show`, `helio status`,
-`helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`.
+`helio blacklist ...`, `helio housekeeping [--dry-run|--last]`, `helio health [--json]`,
+`helio metrics [--since DATE] [--json]` (per-lane submit window, round trips, ceremony and wakes from transcripts),
+`helio work block|unblock` (record and clear a lane blocker).
 These last three run inside the isolated workspace (or owner installation), not through the host launcher.
 
 Live beta browser work uses `helio browser ready`, which defaults to qa-a.
@@ -57,6 +59,13 @@ The host route needs the current owner-installed root bundle
 (`scripts/helio_root_bundle.py`); routine deployment does not replace it.
 
 Running without isolation: `herdr --session elobot`, then `~/.dori/elobot/start` (or `start resume`).
+
+## Lane profiles
+
+`HELIO_LANE_PROFILE` in `helio.env` chooses the launch prompt for new issue lanes: `thorough` (the full
+ultrawork process) or `direct` (no ultrawork prompt; the brief carries lean working rules, exact commands and
+submit-file examples). `helio work start --thorough` always uses thorough. Change it, `helio deploy`, and new
+lanes use it; running lanes keep their mode. Compare runs with `helio metrics --since DATE`.
 
 ## Change a setting (IDs, people, models, secrets)
 

@@ -1,4 +1,5 @@
 """Plan-comment retries preserve identity and revision after uncertain writes."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import copy
 import json
 import sqlite3

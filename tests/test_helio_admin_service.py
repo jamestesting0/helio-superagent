@@ -1,4 +1,5 @@
 """The owner-peer broker never turns a forged or revoked actor into authority."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from dataclasses import replace
 import json
 import os

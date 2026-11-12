@@ -1,4 +1,5 @@
 """Update the original installed inventory, independently of today's payload lists."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from contextlib import redirect_stdout
 import hashlib
 from io import StringIO

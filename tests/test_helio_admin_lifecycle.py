@@ -1,4 +1,5 @@
 """Host lifecycle observations against a real publisher process and kernel signals."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from contextlib import contextmanager
 import hashlib
 import json
@@ -30,7 +31,7 @@ class AdministrationLifecycleTests(unittest.TestCase):
             source_receipt = home / "controller-source.json"
             source_receipt.write_text(json.dumps({"controller_sha256": version,
                 "source_sha256": installed["source_version"](sources)}))
-            child = subprocess.Popen([str(Path.home() / ".bun/bin/bun"), str(ROOT / "tests/fixtures/command-publisher.ts")],
+            child = subprocess.Popen([hermetic.BUN, str(ROOT / "tests/fixtures/command-publisher.ts")],
                 env={**os.environ, "HELIO_ADMIN_STATE_DIR": str(home), "HELIO_ADMIN_CONTROLLER_SHA256": version,
                      "HELIO_ADMIN_CREDENTIAL_SHA256": hashlib.sha256(b"fixture").hexdigest()},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

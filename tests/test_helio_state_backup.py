@@ -1,4 +1,5 @@
 """A live SQLite WAL snapshot can be restored independently of its source."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 from pathlib import Path
 import runpy

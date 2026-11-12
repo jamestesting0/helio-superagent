@@ -1,4 +1,5 @@
 """Exercise the launcher's broker mounts with real socket replacement."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import ast
 from pathlib import Path
 import select

@@ -43,6 +43,7 @@ IDS = ("DORI_DISCORD_OWNER_ID", "HELIO_ADMIN_GUILD", "DORI_DISCORD_SCOPE_CATEGOR
        "HELIO_STAFF_CHAT")
 PATHS = ("HELIO_PROJECT", "HELIO_BROWSER_SKILL")
 FLAGS = ("HELIO_ANSWER_FOR_OWNER", "HELIO_AUTOFIX", "HELIO_PR_CUSTODY")
+CHOICES = {"HELIO_LANE_PROFILE": ("direct", "thorough")}
 COUNTS = ("HELIO_OWNER_PRESENT_MINUTES", "HELIO_AUTOFIX_MAX_LINES", "HELIO_AUTOFIX_MAX_FILES", "HELIO_AUTOFIX_MAX_OPEN",
           "HELIO_PING_LIMIT_PER_HOUR", "HELIO_AUTOBLOCK_STRIKES", "HELIO_AUTOBLOCK_WINDOW_H", "HELIO_MAX_WORKERS",
           "HELIO_HIBERNATE_AFTER_MIN", "HELIO_CONVERSATION_NUDGE_HOURS", "HELIO_CONVERSATION_TIMEOUT_HOURS")
@@ -57,7 +58,7 @@ RUNTIME = ("DORI_DISCORD_TOKEN", "DORI_DISCORD_OWNER_ID", "HELIO_ADMIN_GUILD", "
            "HELIO_PROJECT", "HELIO_GITHUB_REPO", "HELIO_TEST_CHANNEL", "HELIO_TEST_CATEGORY",
            "HELIO_NEVER_LEARN_CATEGORY", "HELIO_BUG_REPORT_BOT", "HELIO_BUG_REPORT_CHANNEL", "HELIO_STAFF_CHAT",
            "HELIO_LEAD_MODEL", "HELIO_LEAD_THINKING", "HELIO_WORKER_MODEL", "HELIO_MODEL_ALLOW",
-           "HELIO_BROWSER_SKILL", *FLAGS, *COUNTS, "HELIO_AUTOFIX_DENY")
+           "HELIO_BROWSER_SKILL", *FLAGS, *CHOICES, *COUNTS, "HELIO_AUTOFIX_DENY")
 BETA = (("BOT_BETA_TOKEN", "BOT_BETA_TOKEN"), ("COC_API_EMAIL", "COC_API_EMAIL"),
         ("COC_API_PASSWORD", "COC_API_PASSWORD"), ("MONGO_DB_URL", "HELIO_BETA_MONGO_URL"),
         ("HELPER_API_BASE_URL", "HELPER_API_BASE_URL"), ("HELPER_API_KEY", "HELPER_API_KEY"))
@@ -161,6 +162,9 @@ def problems(values: dict[str, str], require_secrets: bool = True) -> list[str]:
     for key in FLAGS:
         if merged.get(key) not in ("on", "off"):
             found.append(f"{key} must be on or off")
+    for key, allowed in CHOICES.items():
+        if merged.get(key) not in allowed:
+            found.append(f"{key} must be one of: {', '.join(allowed)}")
     for key in COUNTS:
         if key == "HELIO_HIBERNATE_AFTER_MIN" and merged.get(key) == "0":
             continue
@@ -208,7 +212,7 @@ def generate(values: dict[str, str], home: Path) -> dict[str, tuple[bytes, int]]
     files["policy/policy.json"] = ((json.dumps(snapshot, sort_keys=True) + "\n").encode(), 0o644)
     files["policy/lane-settings.json"] = ((json.dumps({"revision": snapshot["revision"],
         "maxWorkers": int(v["HELIO_MAX_WORKERS"]), "hibernateAfterMin": int(v["HELIO_HIBERNATE_AFTER_MIN"]),
-        "prCustody": v["HELIO_PR_CUSTODY"] == "on"}) + "\n").encode(), 0o644)
+        "prCustody": v["HELIO_PR_CUSTODY"] == "on", "laneProfile": v["HELIO_LANE_PROFILE"]}) + "\n").encode(), 0o644)
     return files
 
 

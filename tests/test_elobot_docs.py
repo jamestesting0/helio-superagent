@@ -1,4 +1,5 @@
 """Content-preserving migration of installed operator runbooks."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 from pathlib import Path
 import os
 import runpy
@@ -83,7 +84,9 @@ class OriginalDocumentationMigrationTests(unittest.TestCase):
                                              "issue-plan-workflow.md": b"issue plan runbook",
                                              "decisions-workflow.md": b"decision runbook",
                                              "issue-truth-workflow.md": b"issue truth runbook",
-                                             "startup-recovery-workflow.md": b"startup recovery runbook"})
+                                             "startup-recovery-workflow.md": b"startup recovery runbook",
+                                             **{name: name.encode() for name in ("lead-turns.md", "request-intake.md", "questions.md",
+                                                                                 "monitor-events.md", "discord-reference.md")}})
             for name in ("discord-qa-workflow.md", "oracle-restart-workflow.md"):
                 self.assertEqual((base / name).read_text(), "local instructions for " + name)
                 self.assertEqual(os.readlink(base / name), f"docs/{name}")

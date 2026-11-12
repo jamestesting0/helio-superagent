@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Persist task questions, deliver them to Discord, and watch for answers."""
 from __future__ import annotations
-import argparse, hashlib, json, os, re, runpy, sqlite3, sys, time, urllib.error, urllib.request, uuid
+import argparse, hashlib, json, os, re, runpy, sqlite3, subprocess, sys, time, urllib.error, urllib.request, uuid
 from pathlib import Path
 from datetime import datetime
 
@@ -23,6 +23,17 @@ def may_answer(row,author):
  if row['audience']=='staff':return author==OWNER or author in trusted_now()
  return author==OWNER or (row['audience']=='thread' and author==row['recipient'])
 
+def clear_blockers(id,lane):
+ # A work blocker recorded with this question clears once its answer is handled; unblock rechecks who answered.
+ path=next((p for p in (STATE/'lanes'/f'{lane}.json',STATE/'lanes'/'archive'/f'{lane}.json') if p.is_file() and not p.is_symlink()),None)
+ job=re.fullmatch(r'issue-(\d+)',json.loads(path.read_text()).get('job') or '') if path else None
+ if not job:return []
+ here=Path(__file__).resolve().parent
+ p=subprocess.run([sys.executable,str(here/'helio-plan.py'),'work','unblock','--issue',job[1],'--question',id,'--named'],capture_output=True,text=True,timeout=300)
+ if p.returncode:
+  print(f'QUESTION_WARN blocker on issue {job[1]} not cleared: '+(p.stdout+p.stderr).strip().replace(chr(10),' ')[-300:],file=sys.stderr);return []
+ return [int(job[1])] if 'changed=true' in p.stdout else []
+
 def db_connect():
  if not STATE.is_absolute():raise ValueError('DORI_STATE_DIR must be an absolute path')
  STATE.mkdir(parents=True,exist_ok=True,mode=0o700);p=STATE/'discord-questions.sqlite'
@@ -37,7 +48,7 @@ def db_connect():
  answer_text TEXT, error TEXT, updated INTEGER NOT NULL)""")
  present={r[1] for r in db.execute('PRAGMA table_info(questions)')}
  for name,kind in (('options','TEXT'),('components','TEXT'),('answer_source','TEXT'),('announced_at','INTEGER'),
-                   ('cleared_at','INTEGER'),('pending_by','TEXT'),('pending_at','INTEGER')):
+                   ('cleared_at','INTEGER'),('pending_by','TEXT'),('pending_at','INTEGER'),('reminded_at','INTEGER')):
   if name not in present:db.execute(f'ALTER TABLE questions ADD COLUMN {name} {kind}')
  db.commit();return db
 
@@ -77,8 +88,39 @@ def summary(row: sqlite3.Row) -> str:
   encoded=json.dumps(fields,ensure_ascii=True,separators=(',',':'))
  return encoded
 
+CUSTODY=re.compile(r'^custody-issue([0-9]+)$')
+REMIND_AFTER_MS=24*3600*1000
+
+def remind(db: sqlite3.Connection, now_ms: int) -> None:
+ # One reminder per custody question that still waits on the owner after a day.
+ for row in db.execute("SELECT * FROM questions WHERE status='awaiting_answer' AND reminded_at IS NULL AND updated<=?",(now_ms-REMIND_AFTER_MS,)).fetchall():
+  if not CUSTODY.fullmatch(row['lane']):continue
+  if db.execute('UPDATE questions SET reminded_at=? WHERE id=? AND reminded_at IS NULL',(now_ms,row['id'])).rowcount:
+   db.commit();print('QUESTION_REMINDER '+json.dumps({'id':row['id'],'lane':row['lane'],'age_hours':(now_ms-row['updated'])//3600000,
+    'message_id':row['message_id'],'channel_id':row['channel_id']}),flush=True)
+
+def close(db: sqlite3.Connection, id: str) -> None:
+ """`helio pr phase decide` closes a custody question only after applying its answer."""
+ row=db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone()
+ if not row or not CUSTODY.fullmatch(row['lane']):raise ValueError('not a custody question')
+ if row['status']=='done':return
+ unposted=row['answer_source']=='component' and row['announced_at'] is None
+ write(db,id,'done',row['status'],question='',**({} if unposted else {'answer_text':None}))
+
+def transfer(db: sqlite3.Connection, id: str, lane: str) -> sqlite3.Row:
+ """Move an open worker question to its issue's custody lane, so the worker's slot can be released while it waits."""
+ if not CUSTODY.fullmatch(lane):raise ValueError('questions transfer only to a custody-issueN lane')
+ row=db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone()
+ if not row:raise ValueError('unknown question')
+ if row['lane']!=lane:
+  if row['status'] not in ('queued','send_failed','delivery_unknown','sending','awaiting_answer','answered'):
+   raise ValueError('only an open question can be transferred')
+  db.execute('UPDATE questions SET lane=? WHERE id=? AND lane=?',(lane,id,row['lane']));db.commit()
+ return db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone()
+
 def poll(db: sqlite3.Connection, lane: str | None, seen: dict[str,tuple[str,int,str]]) -> None:
  pending=0
+ if lane is None:remind(db,int(time.time()*1000))
  for row in db.execute("SELECT * FROM questions WHERE status NOT IN ('done','cancelled') ORDER BY updated,id"):
   if lane and row['lane']!=lane:continue
   if row['status']=='answering':continue
@@ -344,12 +386,13 @@ def confirm_argv(a):
 
 def main():
  parser=argparse.ArgumentParser();sub=parser.add_subparsers(dest='cmd',required=True)
- ask=sub.add_parser('ask');ask.add_argument('--lane');ask.add_argument('--audience',choices=('owner','staff','thread'));ask.add_argument('--recipient',default='');ask.add_argument('--text')
+ ask=sub.add_parser('ask');ask.error=lambda m:(ask.print_usage(sys.stderr),ask.exit(2,f'{ask.prog}: error: {m}\nexample: helio question ask --lane issue23-example --audience staff --text "Round to whole seconds?" --option yes --option no\n'));ask.add_argument('--lane');ask.add_argument('--audience',choices=('owner','staff','thread'));ask.add_argument('--recipient',default='');ask.add_argument('--text')
  ask.add_argument('--option',action='append');ask.add_argument('--other',action='store_true',help='accepted; a typed answer is allowed by default')
  ask.add_argument('--no-other',action='store_true',help='menu only, no typed answer')
  for name in ('--action','--target','--revision','--channel','--reply-to'):ask.add_argument(name,choices=('pr','merge','restart') if name=='--action' else None)
- for name in ('retry','recover','ack','cancel','withdraw','show'):
+ for name in ('retry','recover','ack','cancel','withdraw','show','transfer'):
   command=sub.add_parser(name);command.add_argument('id')
+  if name=='transfer':command.add_argument('--lane',required=True)
   if name=='show':command.add_argument('--offset',type=int,default=0)
  w=sub.add_parser('watch');w.add_argument('--lane')
  listing=sub.add_parser('list');listing.add_argument('--offset',type=int,default=0)
@@ -359,7 +402,7 @@ def main():
   # Before the question database opens: the router's confirm route sets the release-check environment.
   argv=confirm_argv(a);os.execvp(argv[0],argv)
  if a.cmd=='ask' and (not a.lane or not a.audience or a.text is None or a.target or a.revision or a.channel or a.reply_to):
-  parser.error('ask needs --lane, --audience and --text; --target/--revision/--channel/--reply-to need --action')
+  ask.error('ask needs --lane, --audience and --text; --target/--revision/--channel/--reply-to need --action')
  db=db_connect()
  try:
   if getattr(a,'offset',0)<0:parser.error('--offset must be nonnegative')
@@ -375,11 +418,15 @@ def main():
   else:
    row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
    if not row:raise ValueError('unknown question')
-   if a.cmd=='ack':
+   if a.cmd=='transfer':row=transfer(db,a.id,a.lane)
+   elif a.cmd=='ack':
+    if CUSTODY.fullmatch(row['lane']):
+     raise ValueError(f"custody question: apply the answer with helio pr phase decide --issue {CUSTODY.fullmatch(row['lane'])[1]} --question {a.id}")
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
     # A clicked answer keeps its text until the watcher has posted it publicly; it clears the text afterwards.
     unposted=row['answer_source']=='component' and row['announced_at'] is None
     write(db,a.id,'done','answered',question='',**({} if unposted else {'answer_text':None}));row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
+    unblocked=clear_blockers(a.id,row['lane'])
    elif a.cmd=='withdraw':
     # A sent question that no longer matters (policy changed, answered elsewhere) would otherwise stay pending forever.
     if row['status']!='awaiting_answer':raise ValueError('can only withdraw a sent, unanswered question; use cancel for unsent ones')
@@ -389,6 +436,7 @@ def main():
     write(db,a.id,'cancelled',row['status'],question='',answer_text=None);row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
    if a.cmd=='show':print(detail(row,a.offset));return 0
    result=event(row)
+   if a.cmd=='ack' and unblocked:result['unblocked_issues']=unblocked
   text=json.dumps(result,ensure_ascii=False)
   if isinstance(result,dict) and len(text.encode())>45000:
    print(detail(db.execute('SELECT * FROM questions WHERE id=?',(result['id'],)).fetchone(),0))

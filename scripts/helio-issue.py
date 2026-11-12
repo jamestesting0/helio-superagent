@@ -18,6 +18,8 @@ ISSUE_LINK = runpy.run_path(str(HERE / "helio_issue_link.py"))
 SYNC = runpy.run_path(str(HERE / "helio_issue_sync.py"))
 FOLLOWUP = runpy.run_path(str(HERE / "helio_issue_followup.py"))
 POSTS = runpy.run_path(str(HERE / "helio_github_posts.py"))
+CLI = runpy.run_path(str(HERE / "helio_cli.py"))
+ExampleParser, positive = CLI["ExampleParser"], CLI["positive"]
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
 STATE = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
 
@@ -145,24 +147,50 @@ def projection(issue: int, gh, transition: str | None = None) -> Projection:
             "delivery": delivery + warnings}
 
 
+def update_source(args) -> dict:
+    """Who asked for this change, verified now and stored with the update (the PR controller trusts only the owner)."""
+    plan = runpy.run_path(str(HERE / "helio-plan.py"))
+    if args.question:
+        plan["answered_question"](args.issue, args.question)
+        path = STATE / "discord-questions.sqlite"
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+            author = db.execute("SELECT answer_author FROM questions WHERE id=?", (args.question,)).fetchone()[0]
+        return {"kind": "question", "id": args.question, "author": author}
+    if not args.channel:
+        raise ISSUES["Refused"]("--message needs --channel")
+    source = plan["discord_message"](args.message, args.channel)
+    try:
+        author = source["verify_source"](source["payload"], source["live"], source["owner"], source["trusted"], source["channel_ok"])
+    except source["Refused"] as error:
+        raise ISSUES["Refused"](str(error)) from None
+    return {"kind": "message", "id": args.message, "channel": args.channel, "author": author}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=ExampleParser)
     draft = sub.add_parser("render")
     draft.add_argument("--draft-file", type=Path, required=True)
     draft.add_argument("--output-file", type=Path, required=True)
     for name in ("update", "sync"):
-        command = sub.add_parser(name)
-        command.add_argument("--issue", type=int, required=True)
+        command = sub.add_parser(name, example="helio issue update --issue 23 --body-file /tmp/body.md --note-file /tmp/note.md"
+                                 if name == "update" else None)
+        command.add_argument("--issue", type=positive if name == "update" else int, required=True)
         command.add_argument("--body-file", type=Path)
         command.add_argument("--note-file", type=Path)
         command.add_argument("--adopt", help="SHA256 of the exact reviewed body")
         command.add_argument("--close", choices=("not_planned", "completed"))
         command.add_argument("--labels", nargs="+")
+        if name == "update":
+            command.add_argument("--question", help="the answered question this change records")
+            command.add_argument("--message", help="the Discord message this change records; needs --channel")
+            command.add_argument("--channel")
     followup = sub.add_parser("followup")
     followup.add_argument("--previous", type=int, required=True)
-    followup.add_argument("--message", required=True)
-    followup.add_argument("--channel", required=True)
+    followup.add_argument("--message")
+    followup.add_argument("--channel")
+    followup.add_argument("--grant", help="an owner decision recorded by helio pr phase decide")
+    followup.add_argument("--related", action="store_true", help="link to an open issue instead of a closed one")
     followup.add_argument("--title", required=True)
     followup.add_argument("--body-file", type=Path, required=True)
     followup.add_argument("--labels", nargs="+", required=True)
@@ -186,9 +214,19 @@ def main() -> int:
         gh = ISSUES["Issues"](REPO, STATE)
         now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
         if args.command == "followup":
+            if args.grant:
+                granted = runpy.run_path(str(HERE / "helio-work.py"))["grant"](args.grant)
+                if (not granted or "create" not in granted["permissions"] or granted["issue"] != args.previous
+                        or granted["repo"] != REPO or granted["author"] != os.environ.get("DORI_DISCORD_OWNER_ID", "")):
+                    raise ISSUES["Refused"]("The grant does not authorize creating an issue from this one.")
+                channel, message = "grant", args.grant
+            elif args.message and args.channel and not args.related:
+                channel, message = args.channel, args.message
+            else:
+                raise ISSUES["Refused"]("followup needs --message and --channel, or --grant (required for --related)")
             number, url = FOLLOWUP["create"](gh, FOLLOWUP["Request"](
-                args.previous, args.channel, args.message, args.title,
-                args.body_file.read_text(), tuple(sorted(set(args.labels)))))
+                args.previous, channel, message, args.title,
+                args.body_file.read_text(), tuple(sorted(set(args.labels))), args.related))
             SYNC["schedule"](REPO, number)
             print(f"ISSUE_FOLLOWUP issue={number} previous={args.previous} url={url}; implementation authority is separate")
             return 0
@@ -226,6 +264,8 @@ def main() -> int:
                   "body": args.body_file.read_text() if args.body_file else None,
                   "note": args.note_file.read_text().strip() if args.note_file else "", "close": args.close,
                   "adopt": args.adopt, "labels": args.labels, "delivery": facts["delivery"]}
+        if args.command == "update" and (args.question or args.message):
+            change["source"] = update_source(args)
         if args.labels is None and "Plan " in change["projection"] and ": Approved" in change["projection"]:
             current = gh.get(args.issue)
             change["labels"] = [item["name"] for item in current.get("labels", []) if item["name"] != "needs-owner-review"]

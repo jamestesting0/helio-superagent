@@ -1,4 +1,5 @@
 """Terminal state must return to shell defaults after an interrupted relay."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import ast
 import fcntl
 import os

@@ -10,6 +10,8 @@ from __future__ import annotations
 from contextlib import closing
 from dataclasses import dataclass
 import datetime
+import hashlib
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -50,17 +52,24 @@ def connect() -> sqlite3.Connection:
         db.execute("BEGIN IMMEDIATE")
         columns = {row[1] for row in db.execute("PRAGMA table_info(authorizations)")}
         for name, ddl in (("source_hash", "source_hash TEXT"), ("kind", "kind TEXT NOT NULL DEFAULT 'request'"),
-                          ("holds", "holds TEXT NOT NULL DEFAULT ''"), ("blocked", "blocked TEXT")):
+                          ("holds", "holds TEXT NOT NULL DEFAULT ''"), ("blocked", "blocked TEXT"),
+                          ("blocked_question", "blocked_question TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE authorizations ADD COLUMN {ddl}")
         db.execute("""CREATE TABLE IF NOT EXISTS bugfixes (
             repo TEXT NOT NULL, issue INTEGER NOT NULL, route TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
             message TEXT, channel TEXT, lane TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             PRIMARY KEY(repo, issue))""")
+        if "blocked_question" not in {row[1] for row in db.execute("PRAGMA table_info(bugfixes)")}:
+            db.execute("ALTER TABLE bugfixes ADD COLUMN blocked_question TEXT")
         db.execute("""CREATE TABLE IF NOT EXISTS work_events (
             repo TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, emitted_at TEXT NOT NULL,
             PRIMARY KEY(repo, issue, kind))""")
         db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("""CREATE TABLE IF NOT EXISTS grants (
+            id TEXT PRIMARY KEY, repo TEXT NOT NULL, issue INTEGER NOT NULL, question TEXT NOT NULL, option TEXT NOT NULL,
+            permissions TEXT NOT NULL, author TEXT NOT NULL, question_sha256 TEXT NOT NULL, created_at TEXT NOT NULL,
+            target_issue INTEGER)""")
         # Confirmed bugs filed before this existed are never flagged retroactively.
         db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES ('bugfix_cutoff', ?)",
                    (datetime.datetime.now(datetime.timezone.utc).isoformat(),))
@@ -112,19 +121,68 @@ def consume(repo: str, issue: int, message: str) -> None:
                        (repo, issue, repo, issue, message))
 
 
-def block(repo: str, issue: int, reason: str, now: datetime.datetime) -> bool:
-    """Park unfinished work on a genuine blocker; any newer authorization supersedes it."""
+def block(repo: str, issue: int, reason: str, now: datetime.datetime, question: str | None = None) -> bool:
+    """Park unfinished work on a genuine blocker; `unblock` or a newer authorization clears it."""
     with closing(connect()) as db, db:
         db.execute("BEGIN IMMEDIATE")
         newest = db.execute("""SELECT message FROM authorizations WHERE repo=? AND issue=? AND used=0
                                ORDER BY recorded_at DESC LIMIT 1""", (repo, issue)).fetchone()
         if newest:
-            db.execute("UPDATE authorizations SET blocked=? WHERE repo=? AND issue=? AND message=?",
-                       (reason, repo, issue, newest[0]))
-        changed = db.execute("""UPDATE bugfixes SET status='blocked',reason=?,updated_at=? WHERE repo=? AND issue=?
-                                AND status IN ('starting','started','queued')""",
-                             (reason, now.isoformat(), repo, issue)).rowcount
+            db.execute("UPDATE authorizations SET blocked=?,blocked_question=? WHERE repo=? AND issue=? AND message=?",
+                       (reason, question, repo, issue, newest[0]))
+        changed = db.execute("""UPDATE bugfixes SET status='blocked',reason=?,blocked_question=?,updated_at=?
+                                WHERE repo=? AND issue=? AND status IN ('starting','started','queued')""",
+                             (reason, question, now.isoformat(), repo, issue)).rowcount
         return bool(newest) or bool(changed)
+
+
+def unblock(repo: str, issue: int, now: datetime.datetime, named: str | None = None) -> bool:
+    """Clear recorded blockers, including one left on a request that submit already used; with `named`, only those
+    recorded with that question. Holds are untouched."""
+    with closing(connect()) as db, db:
+        db.execute("BEGIN IMMEDIATE")
+        cleared = db.execute("""UPDATE authorizations SET blocked=NULL,blocked_question=NULL
+                                WHERE repo=? AND issue=? AND blocked IS NOT NULL AND (? IS NULL OR blocked_question=?)""",
+                             (repo, issue, named, named)).rowcount
+        resumed = db.execute("""UPDATE bugfixes SET status='started',reason=NULL,blocked_question=NULL,updated_at=?
+                                WHERE repo=? AND issue=? AND status='blocked' AND (? IS NULL OR blocked_question=?)""",
+                             (now.isoformat(), repo, issue, named, named)).rowcount
+        return bool(cleared or resumed)
+
+
+GRANT_PERMISSIONS = ("create", "implement")
+
+
+def create_grant(repo: str, issue: int, question: str, option: str, permissions: tuple[str, ...], author: str,
+                 question_sha256: str, now: datetime.datetime) -> str:
+    """Snapshot an owner's answer to a custody question as durable authority; question cleanup cannot remove it."""
+    if not permissions or set(permissions) - set(GRANT_PERMISSIONS):
+        raise Refused("unknown grant permission")
+    identity = hashlib.sha256(json.dumps([repo, issue, question, option]).encode()).hexdigest()[:32]
+    with closing(connect()) as db, db:
+        db.execute("""INSERT INTO grants(id,repo,issue,question,option,permissions,author,question_sha256,created_at)
+                      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING""",
+                   (identity, repo, issue, question, option, ",".join(permissions), author, question_sha256, now.isoformat()))
+        stored = db.execute("SELECT permissions,author,question_sha256 FROM grants WHERE id=?", (identity,)).fetchone()
+        if stored != (",".join(permissions), author, question_sha256):
+            raise Refused("a different grant was already recorded for this answer")
+    return identity
+
+
+def grant(identity: str) -> dict | None:
+    with closing(connect()) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM grants WHERE id=?", (identity,)).fetchone()
+        return {**dict(row), "permissions": tuple(row["permissions"].split(","))} if row else None
+
+
+def target_grant(identity: str, issue: int) -> None:
+    """Bind a creation grant to the issue it created, once."""
+    with closing(connect()) as db, db:
+        changed = db.execute("UPDATE grants SET target_issue=? WHERE id=? AND (target_issue IS NULL OR target_issue=?)",
+                             (issue, identity, issue)).rowcount
+        if changed != 1:
+            raise Refused("grant is unknown or already bound to another issue")
 
 
 def bugfix(repo: str, issue: int) -> dict | None:

@@ -1,4 +1,5 @@
 """Publication recovery crosses a durable journal and an independent GitHub boundary."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 from pathlib import Path
@@ -32,11 +33,44 @@ class GitHub:
         self.remote_head = None
         self.history = []
         self.autofix_count = 0
+        self.link_lag = 0
+        self.created: dict[int, dict] = {}
+        self.link_issue = 7
 
     def command(self, argv, stdin=None):
         action = argv[1:3]
         if argv[1] == "api" and "/git/ref/heads/" in argv[2]:
             return self.remote_head or self.head
+        if argv[1:3] == ["api", "user"]:
+            return "helio-bot"
+        if argv[1] == "api" and argv[-1].startswith("repos/o/r/issues?state=all"):
+            return json.dumps([[{"number": number, "body": item["body"], "user": {"login": "helio-bot"}, "state": "open"}
+                                 for number, item in self.created.items()]])
+        if argv[1] == "api" and argv[2] == "repos/o/r/issues" and "POST" in argv:
+            number = 50 + len(self.created)
+            self.created[number] = {**json.loads(stdin), "state": "OPEN", "labels": [], "comments": []}
+            return json.dumps({"number": number})
+        created = next((part for part in argv if part.startswith("repos/o/r/issues/5")), None)
+        if argv[1] == "api" and created and int(created.rsplit("/", 1)[1]) in self.created:
+            item = self.created[int(created.rsplit("/", 1)[1])]
+            return json.dumps({"number": int(created.rsplit("/", 1)[1]), "body": item["body"], "state": "open",
+                               "state_reason": None, "labels": item.get("labels", []), "user": {"login": "helio-bot"}})
+        endpoint = next((part for part in argv if part.startswith("repos/o/r/issues/7")), None)
+        if argv[1] == "api" and endpoint and endpoint.endswith("/timeline"):
+            return "[[]]"
+        if argv[1] == "api" and endpoint:
+            if endpoint.endswith("/comments"):
+                if "--slurp" in argv:
+                    return json.dumps([self.issue["comments"]])
+                self.issue["comments"].append(json.loads(stdin))
+                return "{}"
+            if stdin:
+                change = json.loads(stdin)
+                self.issue["body"] = change.get("body", self.issue["body"])
+                self.issue["state"] = change.get("state", self.issue["state"]).upper()
+                return "{}"
+            return json.dumps({"body": self.issue["body"], "state": self.issue["state"].lower(), "state_reason": None,
+                               "labels": self.issue["labels"]})
         if action == ["issue", "view"]:
             return json.dumps(self.issue)
         if action == ["pr", "list"]:
@@ -53,9 +87,13 @@ class GitHub:
             body = self.body
             if self.stale is not None:
                 body, self.stale = self.stale, None
+            closing = [{"number": self.link_issue}] if body and body.startswith("Fixes #7") else []
+            if closing and self.link_lag:
+                self.link_lag -= 1
+                closing = []
             return json.dumps({"state": "OPEN", "body": body, "headRefName": "helio/autofix-7",
                                "headRefOid": self.head, "baseRefName": "main", "isCrossRepository": False,
-                               "closingIssuesReferences": [{"number": 7}] if body and body.startswith("Fixes #7") else []})
+                               "closingIssuesReferences": closing})
         if action == ["pr", "create"]:
             with sqlite3.connect(self.state / "issue-updates.sqlite") as db:
                 self.durable_before_post = db.execute("SELECT written FROM operations WHERE completed=0").fetchone()[0] == 1
@@ -114,6 +152,35 @@ class PublicationTests(unittest.TestCase):
     def pending(self):
         with sqlite3.connect(self.state / "issue-updates.sqlite") as db:
             return db.execute("SELECT id FROM operations WHERE completed=0").fetchall()
+
+    def paused(self) -> list[float]:
+        pauses: list[float] = []
+        injected = patch.dict(P["settle_link"].__globals__, {"pause": pauses.append})
+        injected.start()
+        self.addCleanup(injected.stop)
+        return pauses
+
+    def test_a_closing_link_github_fills_late_publishes_once_without_another_write(self):
+        pauses = self.paused()
+        self.github.link_lag = 4
+        self.assertEqual(self.publish(), URL)
+        self.assertEqual((self.github.creates, self.github.edits, self.pending()), (1, 0, []))
+        self.assertGreaterEqual(len(pauses), 1)
+
+    def test_a_wrong_closing_link_refuses_at_once(self):
+        pauses = self.paused()
+        self.github.link_issue = 9
+        with self.assertRaisesRegex(P["Refused"], "closing-issue links disagree"):
+            self.publish()
+        self.assertEqual(pauses, [])
+
+    def test_a_link_that_never_arrives_refuses_after_the_bounded_wait(self):
+        pauses = self.paused()
+        self.github.link_lag = 100
+        with self.assertRaisesRegex(P["Refused"], "closing-issue links disagree"):
+            self.publish()
+        self.assertEqual(len(pauses), P["LINK_READS"])
+        self.assertEqual(self.github.creates, 1)
 
     def test_durable_create_and_noop_replay_publish_once(self):
         self.assertEqual(self.publish(), URL)

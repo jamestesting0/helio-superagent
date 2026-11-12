@@ -7,8 +7,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import runpy
+import subprocess
+import sys
 from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,23 +22,41 @@ HERE = Path(__file__).resolve().parent
 S = runpy.run_path(str(HERE / "helio_pr_recovery_store.py"))
 CI = runpy.run_path(str(HERE / "helio_pr_recovery_ci.py"))
 P = runpy.run_path(str(HERE / "helio_pr_phase.py"))
+ESCALATION = runpy.run_path(str(HERE / "helio_pr_escalation.py"))
 Runner = Callable[[list[str]], str]
 
 
-def release(store: Store, wait: Wait, run: Runner) -> bool:
+def reclaim(store: Store, wait: Wait, run: Runner) -> tuple[bool, str]:
+    """Release an idle worker's slot; the refusal says why (a busy session, an open question)."""
     current = P["lane"](store, wait)
     status = "closed" if current.get("closedAt") else current.get("status", "working")
     if status in ("hibernated", "closed"):
-        return True
+        return True, ""
     if status not in ("working", "not-done", "cleanup-pending"):
-        return False
+        return False, f"lane is {status}"
     try:
         run(["dori", "reclaim", wait.data["lane"]])
     except RuntimeError as error:
         if str(error).startswith(f"REFUSED {wait.data['lane']}:"):
-            return False
+            return False, str(error).strip()[:300]
         raise
-    return P["lane"](store, wait).get("status") == "hibernated"
+    return P["lane"](store, wait).get("status") == "hibernated", ""
+
+
+def release(store: Store, wait: Wait, run: Runner) -> bool:
+    return reclaim(store, wait, run)[0]
+
+
+def transfer(store: Store, qid: str, lane: str) -> None:
+    """Move an open worker question to the custody lane so the idle worker's slot can be released while it waits."""
+    result = subprocess.run([sys.executable, str(HERE / "helio-questions.py"), "transfer", qid, "--lane", lane],
+                            capture_output=True, text=True, timeout=60, env={**os.environ, "DORI_STATE_DIR": str(store.state)})
+    try:
+        moved = json.loads(result.stdout).get("lane") == lane  # an undelivered question exits 1 yet is still moved
+    except (ValueError, AttributeError):
+        moved = False
+    if not moved:
+        raise RuntimeError("question transfer failed: " + (result.stderr or result.stdout).strip()[-300:])
 
 
 def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
@@ -48,7 +69,10 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
         current = P["lane"](store, wait)
         if current.get("status") == "working":
             return wait  # Its recorded launch owner is still alive, not an acknowledged delivery.
-    if not release(store, wait, run):
+    released, refusal = reclaim(store, wait, run)
+    if refusal != (wait.data.get("release_refusal") or ""):
+        wait = S["save"](store, replace(wait, data={**wait.data, "release_refusal": refusal}))
+    if not released:
         return wait
     current = P["lane"](store, wait)
     if current.get("status") == "paused":
@@ -57,9 +81,11 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
         observation = wait.data["pending"]
         if observation is None:
             return wait
+        intent = {"kind": "wake", "observation": observation, "generation": wait.generation + 1}
+        if wait.data.get("expected_head"):
+            intent["expected_head"] = wait.data["expected_head"]
         wait = S["save"](store, replace(wait, generation=wait.generation + 1, data={
-            **wait.data, "status": "repair", "acknowledgment": None, "started_session": None,
-            "intent": {"kind": "wake", "observation": observation, "generation": wait.generation + 1},
+            **wait.data, "status": "repair", "acknowledgment": None, "started_session": None, "intent": intent,
         }))
     intent = wait.data["intent"]
     if intent is None or intent["kind"] != "wake":
@@ -75,8 +101,15 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
         if queued.get("phase") != descriptor:
             raise S["Refused"]("queued phase does not match the pending repair intent")
         return wait
-    if current.get("launchState") == "failed":
-        return S["save"](store, S["notice"](wait, "decision", "Repair startup failed; inspect the existing phase before retry", now))
+    failures = list(wait.data.get("startup_failures") or [])
+    if current.get("launchState") == "failed" and current.get("revision") != wait.data.get("startup_failed_revision"):
+        wait = startup_failed(store, wait, str(current.get("launchError") or "no detail"), current.get("revision"), now)
+        failures = wait.data["startup_failures"]
+    if failures and len(failures) >= 3:
+        return ESCALATION["escalate"](store, wait, "startup-failed",
+            f"The worker failed to start three times: {str(current.get('launchError') or 'no detail')[:300]}", now)
+    if failures and now - failures[-1] < 5 * 60:
+        return wait  # Retries are at least five minutes apart.
     lanes = runpy.run_path(str(HERE / "helio_task_lane.py"))
     task = lanes["Task"](store.repo, wait.issue, wait.data["title"], wait.data["route"],
                          "Continue the original recorded task; authorization hooks and submit gates remain binding.",
@@ -85,10 +118,20 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
                          f"\nInspect current evidence: helio pr check --issue {wait.issue}")
     brief = store.state / "helio-briefs" / f"{wait.data['lane']}-phase-{wait.generation}.md"
     brief.parent.mkdir(parents=True, exist_ok=True)
-    brief.write_text(lanes["render"](task, Path(current["cwd"]), wait.data["branch"], phase=wait))
+    brief.write_text(lanes["render"](task, Path(current["cwd"]), wait.data["branch"], phase=wait,
+                                      profile=current.get("profile") or "thorough"))
     P["access"](store, wait, run)
+    # An interrupted start may have retained resources, so a raised error is never retried here; only Dori's recorded
+    # failed launch counts toward the bounded retries above.
     run(["dori", "resume", wait.data["lane"], "--brief", str(brief), "--phase", json.dumps(descriptor)])
     return wait  # Delivery is acknowledged only by phase start, not by enqueue or process launch.
+
+
+def startup_failed(store: Store, wait: Wait, detail: str, revision: object, now: float) -> Wait:
+    failures = [*(wait.data.get("startup_failures") or []), now]
+    return S["save"](store, S["notice"](replace(wait, data={**wait.data, "startup_failures": failures,
+                                                           "startup_failed_revision": revision}), "diagnosis",
+        f"Worker startup failed ({len(failures)} of 3): {detail[:300]}", now))
 
 
 def complete(store: Store, wait: Wait, run: Runner, now: float) -> Wait:

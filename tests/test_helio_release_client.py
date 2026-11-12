@@ -1,4 +1,5 @@
 """Readiness observation never repeats a restart or overstates login evidence."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import runpy
 import io
 import json

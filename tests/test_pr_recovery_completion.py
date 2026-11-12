@@ -1,4 +1,5 @@
 """A recovered publication spends its creation receipt and finishes bot bookkeeping."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import datetime
 import os
 import runpy

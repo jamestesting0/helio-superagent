@@ -1,5 +1,6 @@
 """Offline CLI regressions; mutable state stays inside TemporaryDirectory."""
 from __future__ import annotations
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 
 import hashlib
 import argparse

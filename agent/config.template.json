@@ -4,6 +4,7 @@
   "workspaces": [],
   "ignorePanes": [],
   "leadPane": "",
+  "leadPaneFile": "~/.dori/elobot/state/lead-pane",
   "defaultCwd": "{{HELIO_PROJECT}}",
   "agentCommand": [
     "/bin/bash",
@@ -29,6 +30,11 @@
   ],
   "defaultModel": "{{HELIO_WORKER_MODEL}}",
   "launchKeywords": "ulw set goal and work",
+  "launchProfiles": {
+    "thorough": "ulw set goal and work",
+    "direct": ""
+  },
+  "defaultProfile": "thorough",
   "sessionsDir": "~/.omo/agent/sessions",
   "nudgeAfterMin": 15,
   "postAfterMin": 20,

@@ -1,3 +1,4 @@
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import runpy
 import unittest
 from pathlib import Path
@@ -55,6 +56,28 @@ class DeployPlanTests(unittest.TestCase):
         self.assertEqual(P["managed_changes"]("Update profile: isolated\nManaged updates: work-policy.md, @inbound/inbound.ts\n"),
                          ["work-policy.md", "@inbound/inbound.ts"])
         self.assertEqual(P["managed_changes"]("Managed updates: none\n"), [])
+
+
+class RestartStateTests(unittest.TestCase):
+    def test_a_start_after_the_pending_deploy_satisfies_it_and_an_older_one_does_not(self):
+        deploy = {"version": "abc", "deployed_at": "2026-11-12T08:00:00+00:00", "lead_restart_pending": True,
+                  "lead_restart_since": "2026-11-12T07:00:00+00:00", "full_restart_pending": True}
+        old = {"version": "old", "at": "2026-11-12T06:59:59+00:00"}
+        self.assertEqual(P["restart_state"](deploy, old, {}),
+                         {"lead_restart_pending": True, "full_restart_pending": True, "lead_version": "old"})
+        started = {"version": "abc", "at": "2026-11-12T07:30:00+00:00"}
+        full = {"at": "2026-11-12T08:00:01+00:00"}
+        self.assertEqual(P["restart_state"](deploy, started, full),
+                         {"lead_restart_pending": False, "full_restart_pending": False, "lead_version": "abc"})
+
+    def test_a_record_without_since_uses_its_deploy_time_and_nothing_pending_stays_clear(self):
+        deploy = {"deployed_at": "2026-11-12T08:00:00+00:00", "lead_restart_pending": True, "lead_version": "legacy"}
+        self.assertTrue(P["restart_state"](deploy, {}, {})["lead_restart_pending"])
+        self.assertEqual(P["restart_state"](deploy, {}, {})["lead_version"], "legacy")
+        self.assertFalse(P["restart_state"]({"deployed_at": "x"}, {}, {})["lead_restart_pending"])
+        undated = {"lead_restart_pending": True}
+        self.assertTrue(P["restart_state"](undated, {}, {})["lead_restart_pending"])
+        self.assertFalse(P["restart_state"](undated, {"at": "2026-11-12T08:00:00+00:00"}, {})["lead_restart_pending"])
 
 
 if __name__ == "__main__":

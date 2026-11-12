@@ -43,6 +43,7 @@ class Request:
     title: str
     body: str
     labels: tuple[str, ...]
+    related: bool = False  # linked to an open issue (an owner's scope decision); never a follow-up predecessor
 
 
 def predecessor(body: str) -> int | None:
@@ -62,14 +63,16 @@ def predecessor(body: str) -> int | None:
 
 def create(gh: IssueStore, request: Request) -> tuple[int, str]:
     """One current request creates one follow-up; history is never edited."""
-    if (request.previous < 1 or not request.channel.isdigit() or not request.message.isdigit()
+    granted = request.channel == "grant" and re.fullmatch(r"[0-9a-f]{32}", request.message) is not None
+    if (request.previous < 1 or not (granted or (request.channel.isdigit() and request.message.isdigit()))
             or not request.title.strip() or not request.body.strip() or not request.labels):
         raise Refused("Follow-up needs a closed issue, current source IDs, title, scope and labels.")
-    if "<!-- helio-followup:" in request.body:
+    if "<!-- helio-followup:" in request.body or "<!-- helio-related:" in request.body:
         raise Refused("Supply new scope without copied follow-up metadata.")
     key = hashlib.sha256(json.dumps([gh.repo, request.previous, request.channel, request.message]).encode()).hexdigest()
     fingerprint = hashlib.sha256(json.dumps(asdict(request), sort_keys=True).encode()).hexdigest()
-    marker = "<!-- helio-followup:" + json.dumps({"previous": request.previous, "request": key}, sort_keys=True) + " -->"
+    kind = "related" if request.related else "followup"
+    marker = f"<!-- helio-{kind}:" + json.dumps({"previous": request.previous, "request": key}, sort_keys=True) + " -->"
     with gh.operations() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS followup_creations (
             key TEXT PRIMARY KEY, repo TEXT NOT NULL, previous INTEGER NOT NULL,
@@ -95,7 +98,7 @@ def create(gh: IssueStore, request: Request) -> tuple[int, str]:
         # Recovery belongs to the new issue, even if a person changed its predecessor.
         if not matches and not (row and row[1]):
             source = gh.get(request.previous)
-            if source.get("state", "").lower() != "closed" or "pull_request" in source:
+            if "pull_request" in source or (not request.related and source.get("state", "").lower() != "closed"):
                 raise Refused("The predecessor must be a closed issue; reuse related open work instead.")
         if not row:
             db.execute("INSERT INTO followup_creations(key,repo,previous,channel,message,fingerprint) VALUES (?,?,?,?,?,?)",
@@ -108,8 +111,8 @@ def create(gh: IssueStore, request: Request) -> tuple[int, str]:
         else:
             db.execute("UPDATE followup_creations SET attempted=1 WHERE key=?", (key,))
             db.commit()
-            body = (request.body.rstrip() + f"\n\nRelated history: https://github.com/{gh.repo}/issues/{request.previous}\n\n"
-                    + marker)
+            link = "Related to" if request.related else "Related history:"
+            body = (request.body.rstrip() + f"\n\n{link} https://github.com/{gh.repo}/issues/{request.previous}\n\n" + marker)
             created: Issue = json.loads(gh.command(
                 ["gh", "api", f"repos/{gh.repo}/issues", "--method", "POST", "--input", "-"],
                 json.dumps({"title": request.title.strip(), "body": body, "labels": list(request.labels)})))

@@ -1,4 +1,5 @@
 """Run the real installer, updater and host wrapper against disposable owner homes."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import hashlib
 import json
 import os

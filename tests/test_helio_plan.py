@@ -1,4 +1,5 @@
 """Opt-in issue plans: structured template, GitHub-held state, approval and the PR path."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import argparse
 import contextlib
 import copy

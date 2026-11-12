@@ -1,5 +1,6 @@
 """Real git, verification and SQLite with independent GitHub/terminal boundaries."""
 from __future__ import annotations
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 
 from dataclasses import replace
 import datetime
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import sqlite3
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -20,12 +22,13 @@ C = runpy.run_path(str(ROOT / "scripts/helio_pr_recovery.py"))
 S, P, V = C["S"], C["P"], C["P"]["V"]
 LANES = runpy.run_path(str(ROOT / "scripts/helio_task_lane.py"))
 CLI = runpy.run_path(str(ROOT / "scripts/helio_pr_recovery_cli.py"))
+OWNER = "100000000000000001"
 
 
 class Custody:
     """Mutable independent service state; only production helpers write custody."""
 
-    def __init__(self, case: unittest.TestCase) -> None:
+    def __init__(self, case: unittest.TestCase, *, handed_off: bool = True) -> None:
         self.auto = autofix.AutofixTests()
         case.addCleanup(self.auto.doCleanups)
         self.auto.setUp()
@@ -50,12 +53,14 @@ class Custody:
         self.safe_release = True
         self.pr_state = "OPEN"
         self.replacement = False
+        self.reopened: list[str] = []
         self.session = str(uuid.uuid4())
         self.sessions = self.store.state / "sessions"
         self.sessions.mkdir()
         self.config = self.store.state / "config.json"
         self.config.write_text(json.dumps({"sessionsDir": str(self.sessions)}))
-        configuration = patch.dict(os.environ, {"DORI_CONFIG": str(self.config)})
+        configuration = patch.dict(os.environ, {"DORI_CONFIG": str(self.config), "DORI_DISCORD_OWNER_ID": OWNER,
+                                                "DORI_STATE_DIR": str(self.store.state)})
         configuration.start()
         case.addCleanup(configuration.stop)
         task = LANES["Task"]("o/r", 7, "Fix the regression", "autofix", "Standing autofix", "github:o/r#7")
@@ -67,27 +72,44 @@ class Custody:
             "status": "working", "cwd": str(self.project), "session": self.session,
             "phase": {"owner": "helio-pr", "version": 1, "generation": 1},
         }))
-        self.checkpoint = self.sessions / f"2026-11-11_{self.session}.jsonl"
+        self.checkpoint = self.sessions / ("--" + str(self.project).lstrip("/").replace("/", "-") + "--") / f"2026-11-11_{self.session}.jsonl"
+        self.checkpoint.parent.mkdir()
         self.checkpoint.write_text(json.dumps({"type": "session", "id": self.session, "cwd": str(self.project)}) + "\n")
         self.start_goal()
+        self.seen: set[str] = set()
+        if handed_off:
+            self.publish()
+            self.wait = P["handoff"](self.store, S["load"](self.store, 7), self.verification, self.run)
+            with self.checkpoint.open("a") as output:
+                output.write(json.dumps({"type": "message", "message": {
+                    "role": "toolResult", "toolName": "update_goal", "isError": False,
+                    "details": {"goal": {"threadId": self.session, "status": "complete", "objective": P["objective"](self.wait)}},
+                }}) + "\n")
+
+    def publish(self) -> None:
+        """The submit path's record and publication for the issue's current text."""
+        scope = publication.M["digest"](self.publication.github.issue["body"])
         suite = V["autofix_result"](self.project, self.head, ["tests/test_regression.py"])
         self.verification = V["record"](self.store, {
             "issue": 7, "branch": "helio/autofix-7", "route": "autofix", "head": self.head, "base": self.base,
-            "scope": publication.M["digest"](self.publication.github.issue["body"]),
+            "scope": scope,
             "authority": V["digest"](json.dumps(self.publication.proof, sort_keys=True)),
             "authority_proof": self.publication.proof,
             "job": "issue-7", "generation": 1,
         }, suite)
         publication.P["publish"](self.store, 7, "helio/autofix-7", self.head, self.publication.body(),
-            "Fix regression", self.publication.proof, publication.M["digest"](self.publication.github.issue["body"]),
-            verification=self.verification)
-        self.wait = P["handoff"](self.store, S["load"](self.store, 7), self.verification, self.run)
-        with self.checkpoint.open("a") as output:
-            output.write(json.dumps({"type": "message", "message": {
-                "role": "toolResult", "toolName": "update_goal", "isError": False,
-                "details": {"goal": {"threadId": self.session, "status": "complete", "objective": P["objective"](self.wait)}},
-            }}) + "\n")
-        self.seen: set[str] = set()
+            "Fix regression", self.publication.proof, scope, verification=self.verification)
+
+    def submit(self) -> str:
+        """Run the real `helio autofix submit` against this world's current issue text; returns its verification."""
+        self.auto.data["issue"] = dict(self.publication.github.issue)
+        self.auto.env.update({"DORI_STATE_DIR": str(self.store.state), "DORI_CONFIG": str(self.config)})
+        result = self.auto.invoke("submit")
+        if result.returncode or " verification=" not in result.stdout:
+            raise AssertionError(result.stdout + result.stderr)
+        self.publication.github.body = (self.auto.root / "body").read_text()
+        self.verification = result.stdout.split(" verification=")[1].split()[0]
+        return self.verification
 
     def start_goal(self) -> None:
         wait = S["load"](self.store, 7)
@@ -118,13 +140,30 @@ class Custody:
                           {"name": "Run unit tests", "conclusion": "skipped" if self.mode == "infra" else (
                               "success" if self.mode == "pass" else "failure")}]}
 
-    def run(self, argv: list[str]) -> str:
+    def question_hold(self, key: str) -> bool:
+        path = self.store.state / "discord-questions.sqlite"
+        if not path.is_file():
+            return False
+        with sqlite3.connect(path) as db:
+            return db.execute("SELECT 1 FROM questions WHERE lane=? AND status NOT IN ('done','cancelled','expired','withdrawn')",
+                              (key,)).fetchone() is not None
+
+    def run(self, argv: list[str], stdin: str | None = None) -> str:
         if argv[0] == "git":
             return subprocess.run(argv, check=True, capture_output=True, text=True).stdout
         if argv[:3] == ["gh", "issue", "view"]:
-            return json.dumps(self.publication.github.issue)
+            created = self.publication.github.created.get(int(argv[3]))
+            if created:
+                return json.dumps({"number": int(argv[3]), "title": created["title"], "body": created["body"],
+                                   "state": "OPEN", "labels": [{"name": name} for name in created.get("labels", [])],
+                                   "comments": []})
+            return json.dumps({"title": "Fix the regression", **self.publication.github.issue})
         if argv[:3] == ["gh", "pr", "view"]:
             return json.dumps(self.pull())
+        if argv[:3] == ["gh", "pr", "reopen"]:
+            self.reopened.append(argv[3])
+            self.pr_state = "OPEN"
+            return ""
         if argv[:3] == ["gh", "pr", "list"]:
             pulls = [self.pull()]
             if self.replacement:
@@ -152,9 +191,12 @@ class Custody:
                                    "status": self.run_status})
         if argv[0] == "dori":
             lane = json.loads(self.lane_path.read_text())
-            if argv[1] == "reclaim":
+            if argv[1] == "reclaim" and "--stop" not in argv:
                 if not self.safe_release:
                     raise RuntimeError("REFUSED issue7-regression: current session is working; no terminal closed")
+                if self.question_hold(argv[2]):
+                    # As Dori's reclaimLane: after the idle check, an open question pins the slot (reclaim.ts:125-126).
+                    raise RuntimeError(f"REFUSED {argv[2]}: an unanswered question needs this worker")
                 lane["status"] = "hibernated"
             elif argv[1] == "resume":
                 lane["status"] = "working"
@@ -168,13 +210,24 @@ class Custody:
                 lane["phase"] = json.loads(argv[argv.index("--phase") + 1])
             elif argv[1] == "claim-ack":
                 lane["acknowledged"] = True
+            elif argv[1] == "abandon":
+                lane["status"], lane["receipt"] = "closed", {"abandoned": True, "reason": argv[argv.index("--reason") + 1]}
+                lane["closedAt"] = "2026-11-12T00:00:00Z"
+            elif argv[1] == "pause":
+                lane["status"] = "paused"
+            elif argv[1] == "reclaim" and "--stop" in argv and self.question_hold(argv[2]):
+                raise RuntimeError(f"REFUSED {argv[2]}: an unanswered question needs this worker")
+            elif argv[1] == "reclaim" and "--stop" in argv:
+                if lane["status"] != "paused" or lane["revision"] != int(argv[argv.index("--expected-revision") + 1]):
+                    raise RuntimeError("REFUSED issue7-regression: lane changed before stopping; refresh its confirmation")
+                lane["status"] = "hibernated"
             else:
                 raise AssertionError(argv)
             lane["revision"] += 1
             self.lane_path.write_text(json.dumps(lane))
             return "OK"
-        raise AssertionError(argv)
+        return self.publication.github.command(argv, stdin)  # issue reads, user and issue creation
 
-    def poll(self, minute: float = 0) -> list[str]:
+    def poll(self, minute: float = 0, run=None) -> list[str]:
         self.now = 1_700_000_000.0 + minute * 60
-        return C["watch"](self.store, self.run, self.seen, self.now)
+        return C["watch"](self.store, run or self.run, self.seen, self.now)

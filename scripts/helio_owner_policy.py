@@ -117,7 +117,8 @@ def refresh_locked(HOME, account):
         raise RuntimeError('Owner policy snapshot is invalid; run helio update')
     lane_settings = {'revision': snapshot['revision'], 'maxWorkers': int(public['HELIO_MAX_WORKERS']),
                      'hibernateAfterMin': int(public['HELIO_HIBERNATE_AFTER_MIN']),
-                     'prCustody': public.get('HELIO_PR_CUSTODY', 'off') == 'on'}
+                     'prCustody': public.get('HELIO_PR_CUSTODY', 'off') == 'on',
+                     'laneProfile': public.get('HELIO_LANE_PROFILE', 'thorough')}
     for name, content in (('lane-settings.json', lane_settings), ('policy.json', snapshot)):
         fd, tmp = tempfile.mkstemp(prefix='.' + name + '-', dir=policy)
         try:

@@ -36,6 +36,16 @@ def register(prs: argparse._SubParsersAction) -> None:
             phase.add_argument("--generation", type=int, required=True)
         if name == "ack":
             phase.add_argument("--event", required=True)
+    decide = phases.add_parser("decide", help="apply the owner's answer to a custody question, then close it")
+    decide.add_argument("--issue", type=int, required=True)
+    decide.add_argument("--question", help="the answered custody question")
+    decide.add_argument("--option", help="the chosen option; required for a typed reply or a later message")
+    decide.add_argument("--message", help="a later owner message that answers it (needs --channel and --option)")
+    decide.add_argument("--channel")
+    decide.add_argument("--title", help="title of the issue a follow-up or related option creates")
+    decide.add_argument("--body-file", type=Path, help="requirements of the issue a follow-up or related option creates")
+    decide.add_argument("--restored-body-file", type=Path, help="this issue's requirements without the moved ones")
+    decide.add_argument("--labels", nargs="+")
     authorize = phases.add_parser("authorize")
     authorize.add_argument("--lane", required=True)
     authorize.add_argument("--effect", choices=("wake", "complete"), required=True)
@@ -114,7 +124,10 @@ def execute(args: argparse.Namespace, store: Store, run: Runner) -> int:
                 wait = P["start"](store, wait, run)
                 print(f"PHASE_STARTED issue={wait.issue} generation={wait.generation} session={wait.data['started_session']}")
             case "check":
-                if wait.data["acknowledgment"] == wait.generation and wait.data["receipt"]:
+                if wait.data.get("blocked"):
+                    print(f"PHASE_BLOCKED issue={wait.issue} generation={wait.generation} "
+                          f"stage={wait.data['blocked']['stage']} reason={json.dumps(wait.data['blocked']['reason'])}")
+                elif wait.data["acknowledgment"] == wait.generation and wait.data["receipt"]:
                     print(f"PHASE_HANDED_OFF issue={wait.issue} generation={wait.generation} receipt={wait.data['receipt']}")
                 elif wait.data["pr"] and ready(store, wait, run):
                     print(f"PHASE_READY issue={wait.issue} generation={wait.generation}")

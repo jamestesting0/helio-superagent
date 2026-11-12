@@ -1,4 +1,5 @@
 """New authoring inputs exercise the real CLI, git gates and offline GitHub."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 from pathlib import Path

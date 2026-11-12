@@ -16,7 +16,7 @@ PROFILES=PAYLOAD['PROFILES']
 MANAGED=PAYLOAD['MANAGED']
 RETIRED=PAYLOAD['RETIRED']
 SHIPPED=PAYLOAD['PREVIOUSLY_SHIPPED']
-NEW_PAYLOAD=('helio-sessions.py','evidence.ts','evidence.test.ts',*PAYLOAD['SKILLS'],
+NEW_PAYLOAD=('helio-sessions.py','monitor-specs.py','evidence.ts','evidence.test.ts',*PAYLOAD['SKILLS'],
              *('@vendor/'+name for name in PAYLOAD['VENDOR_MANAGED']))
 def digest(b): return hashlib.sha256(b).hexdigest()
 def atomic(p, data):
@@ -29,6 +29,8 @@ def atomic(p, data):
 def run(home, action, update_launcher=False, profile=None):
  dst=home/'.dori/elobot'; manifest=dst/'.sync-manifest.json'
  if not dst.is_dir() or dst.is_symlink(): raise SystemExit('Helio install missing or unsafe')
+ if action in ('apply','adopt') and not os.access(dst, os.W_OK):
+  raise SystemExit('Installed Helio files are read-only here; run helio deploy from the normal WSL shell')
  report_channels=dst/'report-channels'
  policy_link=(report_channels.is_symlink() and os.readlink(report_channels)=='policy/report-channels'
               and not (dst/'policy').is_symlink() and (dst/'policy/policy.json').is_file())
@@ -100,7 +102,7 @@ def run(home, action, update_launcher=False, profile=None):
  for name in names:
   if name in documents: data=documents[name]
   elif name=='config.json':
-   for k in ('agentCommand','defaultModel','launchKeywords','maxWorkers','hibernateAfterMin','runtimeConfigFile'): active[k]=source_config[k]
+   for k in ('agentCommand','defaultModel','launchKeywords','launchProfiles','defaultProfile','leadPaneFile','maxWorkers','hibernateAfterMin','runtimeConfigFile'): active[k]=source_config[k]
    for hook in ('inspectJobSource','beforeWake','beforeComplete'):
     active.setdefault('hooks',{}).setdefault(hook,source_config['hooks'][hook])
    data=(json.dumps(active,indent=2)+'\n').encode()

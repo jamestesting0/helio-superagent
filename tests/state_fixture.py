@@ -1,4 +1,5 @@
 """Builds every Helio state database with the code that owns it, for tests that must see real schemas."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 import runpy

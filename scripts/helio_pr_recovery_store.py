@@ -27,7 +27,11 @@ class Changed(Refused):
     """A concurrent owner changed the record before this transition."""
 
 
-class Notice(TypedDict):
+class NoticeOptional(TypedDict, total=False):
+    at: float
+
+
+class Notice(NoticeOptional):
     id: str
     key: str
     generation: int
@@ -59,7 +63,67 @@ class Intent(TypedDict):
     generation: int
 
 
-class Data(TypedDict):
+class BlockerOptional(TypedDict, total=False):
+    kind: str          # controller and watchdog blockers name their escalation kind; worker blockers have none
+    parked: bool       # the owner chose to hold it; no clock, no wakes
+    transferred: str   # the worker's question moved to the custody lane
+
+
+class Blocker(BlockerOptional):
+    reason: str
+    at: float
+    stage: Literal["pre-submit", "post-submit", "controller"]
+    question: str | None
+
+
+class Stop(TypedDict):
+    kind: str
+    since: float
+    detail: str
+    lead_at: float | None
+    owner_at: float | None
+
+
+class Escalation(TypedDict, total=False):
+    observation: str
+    parked: bool
+    kind: str
+    at: float
+    question: str | None
+    options: list[str]
+    detail: str
+    reasked: bool
+
+
+class WorkerProgress(TypedDict):
+    head: str
+    tree: str
+    verification: str | None
+    continuations: int
+    at: float
+
+
+class OptionalData(TypedDict, total=False):
+    blocked: Blocker | None
+    stop: Stop | None
+    stops: list[dict[str, Json]]
+    progress_at: float
+    progress_key: str
+    rescope: str | None
+    scope_grant: str | None
+    expected_head: str | None
+    release_refusal: str | None
+    reworked: list[str]
+    attempts: dict[str, int]
+    startup_failures: list[float]
+    startup_failed_revision: int | None
+    worker_progress: WorkerProgress | None
+    escalation: Escalation | None
+    ci_pending_since: float | None
+    followup_handled: str | None
+
+
+class Data(OptionalData):
     lane: str
     source: str
     route: str
@@ -110,11 +174,20 @@ def migrate(db: sqlite3.Connection) -> None:
 
 
 def decode(row: tuple[str, int, str, int, int, str]) -> Wait:
-    data: Data = json.loads(row[5])
-    if data["status"] not in ("starting", "implementing", "waiting", "repair", "diagnosis",
+    try:
+        data: Data = json.loads(row[5])
+    except ValueError as error:
+        raise Refused("custody record is not valid JSON") from error
+    if not isinstance(data, dict) or not isinstance(data.get("notices"), list) or not isinstance(data.get("incidents"), dict):
+        raise Refused("custody record has an invalid shape")
+    shapes = {"blocked": dict, "escalation": dict, "stop": dict, "intent": dict, "worker_progress": dict,
+              "stops": list, "reworked": list, "startup_failures": list, "attempts": dict}
+    if any(data.get(name) is not None and not isinstance(data[name], kind) for name, kind in shapes.items()):
+        raise Refused("custody record has a field of the wrong type")
+    if data.get("status") not in ("starting", "implementing", "waiting", "repair", "diagnosis",
                              "ready", "decision", "unknown", "held", "settled"):
         raise Refused("unknown custody state; keep the managed lane closed to new effects")
-    if row[3] < 1 or row[4] < 1 or not data["lane"] or not data["source"]:
+    if row[3] < 1 or row[4] < 1 or not data.get("lane") or not data.get("source"):
         raise Refused("invalid custody identity")
     return Wait(row[0], row[1], row[2], row[3], row[4], data)
 
@@ -169,7 +242,7 @@ def notice(wait: Wait, status: Status, detail: str, now: float) -> Wait:
     kept = [item for item in notices if not item["acknowledged"]]
     kept += [item for item in notices if item["acknowledged"]][-16:]
     notices = [*kept, {"id": identity, "key": semantic, "generation": wait.generation,
-                     "status": status, "detail": detail, "acknowledged": False}]
+                     "status": status, "detail": detail, "acknowledged": False, "at": now}]
     return replace(wait, data={**wait.data, "status": status, "notices": notices,
                                "last_observation": identity, "last_progress": now})
 

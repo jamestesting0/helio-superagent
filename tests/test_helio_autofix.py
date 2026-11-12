@@ -1,4 +1,5 @@
 """Automatic PR gates exercise real git and unittest against an offline GitHub boundary."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
 from pathlib import Path

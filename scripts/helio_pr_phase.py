@@ -59,20 +59,39 @@ def lane(store: Store, wait: Wait) -> Lane:
 
 
 def objective(wait: Wait) -> str:
-    return (f"Complete Helio job {wait.job} phase {wait.generation} under scope {wait.data['scope']}. "
+    return (f"Complete Helio job {wait.job} phase {wait.generation}. "
             f"Execute this phase's generated brief, verify and publish through its authorized submit path, "
             f"then transfer external waiting with helio pr wait --issue {wait.issue} --generation {wait.generation} "
             "--verification VERIFIED_ID. Finish this worker goal only when "
             f"helio pr phase check --issue {wait.issue} --generation {wait.generation} prints "
-            "PHASE_HANDED_OFF or PHASE_READY. Custody is not issue completion, merge or deployment authority.")
+            "PHASE_HANDED_OFF, PHASE_READY or PHASE_BLOCKED. Custody is not issue completion, merge or deployment authority.")
+
+
+def scope_bound(wait: Wait) -> bool:
+    """Scope is the issue's current confirmed requirements until a verified handoff binds it; an authorized rework
+    round reopens it until its own handoff."""
+    return wait.data["verification"] is not None and not wait.data.get("rescope")
+
+
+class IssueClosed(S["Refused"]):
+    """The issue was closed while its PR is still open (an owner decision, never reopened automatically)."""
+
+
+class ScopeChanged(S["Refused"]):
+    """The issue's requirements no longer match the scope a handoff bound."""
+
+
+def requirements(issue: dict) -> str:
+    return FORMAT["digest"](FORMAT["split"](issue.get("body") or "")[0])
 
 
 def access(store: Store, wait: Wait, run: Runner, *, merged: bool = False) -> None:
     issue = json.loads(run(["gh", "issue", "view", str(wait.issue), "--repo", store.repo,
                            "--json", "state,body,labels"]))
-    scope = FORMAT["digest"](FORMAT["split"](issue.get("body") or "")[0])
-    if scope != wait.data["scope"] or (issue["state"] != "OPEN" and not merged):
-        raise S["Refused"]("issue scope or open task identity changed")
+    if issue["state"] != "OPEN" and not merged:
+        raise IssueClosed("issue scope or open task identity changed: the issue is closed")
+    if scope_bound(wait) and not merged and requirements(issue) != wait.data["scope"]:
+        raise ScopeChanged("issue scope or open task identity changed: requirements differ from the handed-off scope")
     AUTH["require_unheld"](store.repo, wait.issue)
     try:
         grant = WORK["available"](store.repo, wait.issue, datetime.datetime.now(datetime.timezone.utc), include_used=True)
@@ -171,16 +190,23 @@ def start(store: Store, wait: Wait, run: Runner) -> Wait:
 def handoff(store: Store, wait: Wait, identity: str, run: Runner) -> Wait:
     if wait.data["started_session"] is None:
         raise S["Refused"]("phase start has not been acknowledged")
+    if wait.data.get("blocked"):
+        raise S["Refused"]("this phase has a recorded blocker; clear it with helio work unblock first")
     evidence = V["read"](store, identity)
     context = evidence["context"]
-    if (context["issue"], context["job"], context["branch"], context["scope"]) != (
-            wait.issue, wait.job, wait.data["branch"], wait.data["scope"]):
-        raise S["Refused"]("verification belongs to another task or scope")
+    if (context["issue"], context["job"], context["branch"]) != (wait.issue, wait.job, wait.data["branch"]):
+        raise S["Refused"]("verification belongs to another task")
+    if scope_bound(wait) and context["scope"] != wait.data["scope"]:
+        raise S["Refused"]("verification belongs to another scope than the one already handed off")
     if context["generation"] != wait.generation and wait.data["verification"] != identity:
         raise S["Refused"]("verification belongs to another phase")
+    if wait.data["acknowledgment"] == wait.generation and wait.data["verification"] != identity:
+        raise S["Refused"]("this phase was already handed off with another verification; its receipt is final")
     with store.operations() as db:
         pr = db.execute("SELECT pr FROM pr_verifications WHERE id=?", (identity,)).fetchone()[0]
-    updated = replace(wait, data={**wait.data, "authority": context["authority_proof"]})
+    # The first handoff binds the scope that submit verified and published; access() then rechecks it live.
+    updated = replace(wait, data={**wait.data, "authority": context["authority_proof"], "scope": context["scope"],
+                                  "verification": identity})
     access(store, updated, run)
     pull = json.loads(run(["gh", "pr", "view", pr, "--repo", store.repo, "--json",
                            "state,headRefOid,headRefName,baseRefName,isCrossRepository,closingIssuesReferences"]))
@@ -202,5 +228,35 @@ def handoff(store: Store, wait: Wait, identity: str, run: Runner) -> Wait:
     updated = replace(updated, data={
         **updated.data, "pr": pr, "head": head, "base": context["base"], "verification": identity,
         "acknowledgment": wait.generation, "receipt": receipt, "intent": None,
+        "rescope": None, "scope_grant": None, "expected_head": None,
     })
     return S["save"](store, S["notice"](updated, "waiting", "Implementation verified; controller owns CI waiting", time.time()))
+
+
+def block(store: Store, wait: Wait, reason: str, stage: str, question: str | None, now: float) -> Wait:
+    """Record a worker blocker; it never creates a PR, receipt or readiness."""
+    if wait.data["terminal"] or wait.data["acknowledgment"] == wait.generation:
+        raise S["Refused"]("this phase was already handed off; the controller owns it")
+    if wait.data.get("blocked"):
+        return wait
+    blocked = {"reason": reason, "at": now, "stage": stage, "question": question}
+    return S["save"](store, S["notice"](replace(wait, data={**wait.data, "blocked": blocked}),
+                                        "decision", f"Worker blocked ({stage}): {reason}", now))
+
+
+def unblock(store: Store, wait: Wait, evidence: str, now: float) -> Wait:
+    """Clear a recorded blocker. A live worker continues its generation; a released one gets one new wake."""
+    if not wait.data.get("blocked"):
+        return wait
+    current = lane(store, wait)
+    status = "closed" if current.get("closedAt") else current.get("status", "working")
+    live = status in ("working", "not-done", "paused") and current.get("pane") and current.get("launchState") == "started"
+    data = {**wait.data, "blocked": None}
+    if live:
+        updated = replace(wait, data=data)
+    else:
+        updated = replace(wait, generation=wait.generation + 1, data={
+            **data, "status": "starting", "acknowledgment": None, "started_session": None,
+            "intent": {"kind": "wake", "observation": f"blocker cleared: {evidence}", "generation": wait.generation + 1},
+        })
+    return S["save"](store, S["notice"](updated, "decision", f"Blocker cleared by {evidence}", now))

@@ -1,4 +1,5 @@
 """Read-only startup diagnostics against real stores and disposable process evidence."""
+import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 from pathlib import Path
 import runpy
@@ -170,9 +171,12 @@ class DoctorTests(unittest.TestCase):
         with patch.dict(admin["main"].__globals__, {"run": run}), \
                 patch("sys.argv", ["admin", "doctor", "--json"]), patch("builtins.print"):
             self.assertEqual(admin["main"](), 0)
-        self.assertEqual(len(commands), 1)
-        self.assertEqual(commands[0][:8], ["setpriv", "--reuid", "999", "--regid", "999",
-                                          "--clear-groups", "--no-new-privs", "/usr/bin/python3"])
-        self.assertIn("-I", commands[0])
-        self.assertEqual(commands[0][-1], "--json")
-        self.assertFalse(any("herdr" in arg or "systemctl" in arg for arg in commands[0]))
+        runtime = [argv for argv in commands if argv[:3] == ["setpriv", "--reuid", "999"]]
+        self.assertEqual(len(runtime), 1)
+        self.assertEqual(runtime[0][:8], ["setpriv", "--reuid", "999", "--regid", "999",
+                                         "--clear-groups", "--no-new-privs", "/usr/bin/python3"])
+        self.assertIn("-I", runtime[0])
+        self.assertEqual(runtime[0][-1], "--json")
+        self.assertFalse(any("herdr" in arg or "systemctl" in arg for argv in commands for arg in argv))
+        source_reads = [argv[argv.index("git"):] for argv in commands if argv not in runtime]
+        self.assertTrue(all(argv[:2] == ["git", "-C"] and argv[3] in ("rev-parse", "status") for argv in source_reads))

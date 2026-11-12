@@ -65,6 +65,8 @@ def snapshot(home: Path, *, runtime_home: Path | None = None, processes: list[di
     health = runpy.run_path(str(Path(__file__).with_name("helio_health.py")))
     errors: list[str] = []
     deploy = read_json(home / ".dori/elobot/deploy-state.json", errors, {})
+    receipts = [read_json(state / f"{kind}-start.json", errors, {}) for kind in ("lead", "full")]
+    deploy = {**deploy, **runpy.run_path(str(Path(__file__).with_name("helio_deploy_plan.py")))["restart_state"](deploy, *receipts)}
     sessions = read_json(state / "helio-lead-sessions.json", errors, [])
     session = None
     if sessions:

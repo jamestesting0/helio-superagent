@@ -134,6 +134,9 @@ RULES: tuple[Rule, ...] = (
              AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.completed=0 AND
                  CASE WHEN json_valid(o.change) THEN json_extract(o.change,'$.verification')=pr_verifications.id ELSE 1 END)""",)),
     Rule("issue-updates.sqlite", "meta", "singleton", "The milestone baseline."),
+    Rule("issue-updates.sqlite", "custody_damage", "derived",
+         "Unreadable-custody escalation clocks; cleared when the record reads again, otherwise kept 30 days.",
+         (f"DELETE FROM custody_damage WHERE since < :now_s - {RAW_DAYS * DAY_S}",)),
     Rule("decisions.sqlite", "decisions", "derived", "Ended guidance is kept 180 days; active guidance stays.",
          (f"DELETE FROM decisions WHERE status != 'active' AND coalesce(invalid_at, created_at) < :now_s - {DERIVED_DAYS * DAY_S}",)),
     Rule("decisions.sqlite", "decision_events", "derived", "Events of deleted decisions go with them.",
@@ -151,6 +154,8 @@ RULES: tuple[Rule, ...] = (
     Rule("work-authorizations.sqlite", "work_events", "derived", "Backstop notice state is kept 30 days.",
          ("DELETE FROM work_events WHERE emitted_at < :raw_iso",)),
     Rule("work-authorizations.sqlite", "meta", "singleton", "The bug-fix backstop cutoff."),
+    Rule("work-authorizations.sqlite", "grants", "receipt",
+         "Owner decisions that authorize custody work are small and kept, so no active or later authority check loses them."),
 )
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,31 @@ import time
 
 LEDGER = runpy.run_path(str(Path(__file__).with_name("helio_decisions.py")))
 
+
+
+def waiting_on_owner(state: Path) -> list[dict]:
+    """Custody decisions parked or asked of the owner; listed weekly so none waits unseen."""
+    path = state / "issue-updates.sqlite"
+    if not path.is_file():
+        return []
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pr_waits'").fetchone():
+            return []
+        rows = db.execute("SELECT issue,data FROM pr_waits ORDER BY issue").fetchall()
+    items = []
+    for issue, raw in rows:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue  # an unreadable record has its own escalation ladder in the controller
+        if not isinstance(data, dict) or data.get("terminal"):
+            continue
+        blocked, escalation = data.get("blocked") or {}, data.get("escalation") or {}
+        if blocked.get("parked") or escalation.get("question"):
+            items.append({"issue": issue, "decision": escalation.get("kind") or blocked.get("kind"),
+                          "question": escalation.get("question"), "parked": bool(blocked.get("parked")),
+                          "options": escalation.get("options") or [], "reason": blocked.get("reason")})
+    return items
 
 def check(state: Path, repo: str) -> dict | None:
     path = state / "decisions.sqlite"
@@ -35,8 +61,9 @@ def check(state: Path, repo: str) -> dict | None:
         fingerprint = hashlib.sha256(notes.encode()).hexdigest()
         previous = db.execute("SELECT data FROM decision_digest ORDER BY created_at DESC LIMIT 1").fetchone()
         old_fingerprint = json.loads(previous[0]).get("memory_hash") if previous else None
-        if time.time() - since >= 7 * 86400 and (changes or reviews or (notes and fingerprint != old_fingerprint)):
-            data = {"changes": changes, "trust_review": reviews, "memory_hash": fingerprint,
+        waiting = waiting_on_owner(state)
+        if time.time() - since >= 7 * 86400 and (changes or reviews or waiting or (notes and fingerprint != old_fingerprint)):
+            data = {"changes": changes, "trust_review": reviews, "memory_hash": fingerprint, "waiting_on_owner": waiting,
                     "runtime_notes": notes, "audience": "owner", "cleanup": "proposal only"}
             identity = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
             db.execute("INSERT OR IGNORE INTO decision_digest(id,created_at,data) VALUES (?,?,?)", (identity, int(time.time()), json.dumps(data)))
