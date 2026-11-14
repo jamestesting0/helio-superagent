@@ -26,7 +26,7 @@ WORKFLOW = "python-tests.yml"
 UNKNOWN_WAIT_S = 120
 CI_WAIT_S = 20 * 60
 APPROVAL_MAX_AGE_S = 12 * 3600
-ACTIVE = ("binding", "approved", "merging", "merged", "restarting", "stopped")
+ACTIVE = ("binding", "approved", "merging", "merged", "restarting")
 REQUIRED_JOBS = ("Unit tests", "Integration tests")
 # helio_release_client's errors that leave the outcome unknown, as opposed to a refusal relayed from the broker.
 TRANSPORT = re.compile(r"inspect before retrying|Invalid release response|outcome uncertain|unavailable")
@@ -584,6 +584,9 @@ def run(world: World, train_id: str, message: str | None = None) -> list[str]:
         reason = reconcile(world, train)
         if reason:
             return [line("MERGE_TRAIN_STOPPED", {"id": train["id"], "reason": reason})]
+        waiting = bind(world, train)
+        if waiting:
+            return waiting
         train["status"] = "restarting" if train.get("restart_requested_at") else "merging"
     if train["status"] in ("approved", "merging"):
         stop = merge_all(world, train)
@@ -664,6 +667,7 @@ def merge_all(world: World, train: dict) -> list[str] | None:
 def stopped(world: World, train: dict, reason: str) -> list[str]:
     train.update(status="stopped", error=reason)
     save(world, train)
+    world.run(["helio", "confirm", "unlock", train["id"]], ok=(0, 1))
     return [line("MERGE_TRAIN_STOPPED", {"id": train["id"], "reason": reason,
                                          "merged": [m["pr"] for m in train["members"] if m.get("merged")],
                                          "message": message_for(world, train)})]
@@ -985,12 +989,12 @@ def show(world: World, train_id: str | None) -> list[str]:
 
 def recoverable(state: Path, repo: str) -> list[str]:
     """Trains an interruption or a stop left between approval and completion, for helio health."""
-    if not (state / "merge-trains.sqlite").is_file():
-        return []
-    with sqlite3.connect(f"file:{state / 'merge-trains.sqlite'}?mode=ro", uri=True) as db:
-        rows = db.execute(f"SELECT id,status FROM trains WHERE repo=? AND status IN ({','.join('?' * len(ACTIVE))})",
-                          (repo, *ACTIVE)).fetchall()
-        statuses = dict(db.execute("SELECT id,status FROM trains WHERE repo=?", (repo,)).fetchall())
+    rows, statuses = [], {}
+    if (state / "merge-trains.sqlite").is_file():
+        with sqlite3.connect(f"file:{state / 'merge-trains.sqlite'}?mode=ro", uri=True) as db:
+            rows = db.execute(f"SELECT id,status FROM trains WHERE repo=? AND status IN ({','.join('?' * len(ACTIVE))})",
+                              (repo, *ACTIVE)).fetchall()
+            statuses = dict(db.execute("SELECT id,status FROM trains WHERE repo=?", (repo,)).fetchall())
     problems = [f"merge train {train} is {status}: helio merge run --train {train}" for train, status in rows]
     prompts = state / "discord-prompts.sqlite"
     if prompts.is_file():

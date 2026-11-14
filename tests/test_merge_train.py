@@ -560,7 +560,7 @@ class MergeTrainTests(Case):
         self.world.release["exchange"] = lambda request: (_ for _ in ()).throw(
             type("ReleaseError", (Exception,), {})("the prompt names a different action, target or commit"))
         self.assertTrue(TRAIN["run"](self.world, first["id"])[-1].startswith("MERGE_TRAIN_STOPPED"))
-        self.assertEqual(self.lock, first["id"])
+        self.assertIsNone(self.lock)
         tip = self.gh.sha("main")
         self.gh.push_main("later.py", "z = 1\n")  # production now runs a later main that contains the tip
         self.world.running_revision = lambda: self.gh.sha("main")
@@ -578,7 +578,7 @@ class MergeTrainTests(Case):
         self.approve(first["id"])
         self.holds.add(18)
         self.assertTrue(TRAIN["run"](self.world, first["id"])[-1].startswith("MERGE_TRAIN_STOPPED"))
-        self.assertEqual(self.lock, first["id"])
+        self.assertIsNone(self.lock)
         self.assertEqual(TRAIN["settle"](self.world), [])  # still inside the approval window: it may resume
         self.clock[0] += TRAIN["APPROVAL_MAX_AGE_S"] + 1
         expired = [json.loads(x.split(" ", 1)[1]) for x in TRAIN["settle"](self.world)]

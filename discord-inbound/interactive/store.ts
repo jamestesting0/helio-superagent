@@ -206,9 +206,13 @@ export class PromptStore {
     return this.db.transaction(() => {
       const key = o.prompt ? `prompt:${o.prompt}` : `message:${o.message}`;
       const bound = this.db.query<{ train: string }, [string]>("SELECT train FROM approval_bindings WHERE approval=?").get(key);
-      if (bound) return bound.train === o.train ? "already" : "unusable";
       const lock = this.db.query<{ train: string }, [string]>("SELECT train FROM release_locks WHERE repo=?").get(o.repo);
+      if (bound && bound.train !== o.train) return "unusable";
       if (lock && lock.train !== o.train) return "locked";
+      if (bound) {
+        this.run("INSERT OR IGNORE INTO release_locks VALUES (?,?,?)", o.repo, o.train, o.now);
+        return "already";
+      }
       let approver = o.approver, approvedAt = o.approvedAt;
       if (o.prompt) {
         const row = this.get(o.prompt);

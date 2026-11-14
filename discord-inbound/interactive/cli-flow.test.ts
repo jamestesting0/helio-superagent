@@ -230,5 +230,13 @@ test("a merge train posts one prompt for every PR, and its approval is bound onc
   try {
     expect(bound.get(train)?.status).toBe("used");
     expect(bound.binding(train)).toMatchObject({ approval: `prompt:${train}`, approver: "99" });
+    const approval = bound.binding(train);
+    bound.unlock("o/r", train);
+    bound.db.run("INSERT INTO release_locks VALUES ('o/r',?,1)", [other]);
+    expect(await main(["bind", "--prompt", train, "--train", train])).toBe(3);
+    bound.unlock("o/r", other);
+    expect(await main(["bind", "--prompt", train, "--train", train])).toBe(0);
+    expect(bound.db.query<{ train: string }, []>("SELECT train FROM release_locks WHERE repo='o/r'").get()?.train).toBe(train);
+    expect(bound.binding(train)).toEqual(approval);
   } finally { bound.close(); }
 });
