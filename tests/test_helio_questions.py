@@ -524,13 +524,16 @@ class QuestionChoiceTests(unittest.TestCase):
   self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'answered')
   with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
    db.execute("INSERT INTO reply_sends VALUES ('77',?,'sent')",(f'event:300:question-{qid}',));db.commit()
+  with self.assertRaisesRegex(ValueError,'close the conversation'):ack()
+  with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
+   db.execute("UPDATE conversations SET status='resolved'");db.commit()
   self.assertEqual(ack(),0)
   self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'done')
 
  def test_an_answered_question_may_skip_the_relay_only_with_a_reason(self):
   with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
    db.execute('CREATE TABLE conversations (channel_id TEXT, user_id TEXT, status TEXT, anchor_message_id TEXT)')
-   db.execute("INSERT INTO conversations VALUES ('300','996','open','42')");db.commit()
+   db.execute("INSERT INTO conversations VALUES ('300','996','resolved','42')");db.commit()
   out=io.StringIO()
   with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','Ban?','--for','42']),redirect_stdout(out):
    self.m['main']()

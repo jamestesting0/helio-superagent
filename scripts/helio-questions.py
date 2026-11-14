@@ -296,7 +296,7 @@ def send_question(db,id):
  except (OSError,ValueError,TimeoutError) as e:write(db,id,'delivery_unknown',error='Discord delivery could not be confirmed')
  return event(db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone())
 
-def create_question(db,lane,audience,recipient,text,options=None,allow_other=True):
+def create_question(db,lane,audience,recipient,text,options=None,allow_other=True,route=None):
  if not LANE.fullmatch(lane) or '..' in lane:raise ValueError('invalid lane key')
  if audience=='owner':recipient=OWNER
  if audience=='staff':recipient=STAFF
@@ -304,11 +304,15 @@ def create_question(db,lane,audience,recipient,text,options=None,allow_other=Tru
  text=text.strip()
  if not text or len(text)>1500:raise ValueError('question must have 1-1500 characters')
  options=clean_options(options,allow_other)
- fingerprint=hashlib.sha256(json.dumps([lane,audience,recipient,text,options,allow_other],ensure_ascii=False).encode()).hexdigest()
+ identity=[lane,audience,recipient,text,options,allow_other]
+ if route is not None:identity.append(route)
+ fingerprint=hashlib.sha256(json.dumps(identity,ensure_ascii=False).encode()).hexdigest()
  db.execute('BEGIN IMMEDIATE')
  existing=db.execute("SELECT * FROM questions WHERE fingerprint=? AND status NOT IN ('done','cancelled')",(fingerprint,)).fetchone()
  if existing:db.commit();return event(existing)
  id=uuid.uuid4().hex[:20]
+ if route is not None:
+  runpy.run_path(str(Path(__file__).with_name('helio_obligations.py')))['link_question'](STATE,id,*route)
  db.execute('INSERT INTO questions (id,fingerprint,lane,audience,recipient,question,status,updated,options,components) VALUES (?,?,?,?,?,?,?,?,?,?)',
   (id,fingerprint,lane,audience,recipient,text,'queued',int(time.time()*1000),json.dumps(options),json.dumps(components_for(id,options,allow_other))));db.commit()
  return send_question(db,id)
@@ -404,8 +408,8 @@ def main():
  try:
   if getattr(a,'offset',0)<0:parser.error('--offset must be nonnegative')
   if a.cmd=='ask':
-   result=create_question(db,a.lane,a.audience,a.recipient,a.text,a.option,not a.no_other)
-   result['for']=obligations['link_question'](STATE,result['id'],a.for_topic,a.internal)
+   result=create_question(db,a.lane,a.audience,a.recipient,a.text,a.option,not a.no_other,(a.for_topic,a.internal))
+   result['for']=obligations['question_link'](STATE,result['id'])
   elif a.cmd=='retry':result=send_question(db,a.id)
   elif a.cmd=='recover':result=recover(db,a.id)
   elif a.cmd=='watch':return watch(db,a.lane)
@@ -423,12 +427,16 @@ def main():
      raise ValueError(f"custody question: apply the answer with helio pr phase decide --issue {CUSTODY.fullmatch(row['lane'])[1]} --question {a.id}")
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
     link=obligations['question_link'](STATE,a.id)
-    if link and link['topic'] and not obligations['delivered'](STATE,link['channel'],obligations['relay_event'](a.id)):
+    if link and link['topic'] and not (obligations['delivered'](STATE,link['channel'],obligations['relay_event'](a.id)) or obligations['waived'](STATE,f'question:{a.id}')):
      if not a.no_relay:
       raise ValueError(f"the requester has not been told: reply in their conversation {link['topic']} (channel {link['channel']}) "
                        f"with --event {obligations['relay_event'](a.id)}, close it with helio conversation close {link['topic']} OUTCOME, "
                        "then acknowledge; or acknowledge with --no-relay REASON")
      obligations['waive'](STATE,f'question:{a.id}',a.no_relay)
+    if link and link['topic']:
+     topic=obligations['conversation'](STATE,link['topic'])
+     if topic and topic['status'] in ('open','on_hold'):
+      raise ValueError(f"close the conversation after handling the decision: helio conversation close {link['topic']} OUTCOME")
     # A clicked answer keeps its text until the watcher has posted it publicly; it clears the text afterwards.
     unposted=row['answer_source']=='component' and row['announced_at'] is None
     write(db,a.id,'done','answered',question='',**({} if unposted else {'answer_text':None}));row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()

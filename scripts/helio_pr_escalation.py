@@ -72,7 +72,7 @@ def question(store: Store, qid: str) -> dict | None:
 def ask(store: Store, issue: int, text: str, options: tuple[str, ...] | list[str]) -> tuple[str, str]:
     """The real question command; a recorded but undelivered question exits 1 and still counts (it is retried)."""
     argv = [sys.executable, str(HERE / "helio-questions.py"), "ask", "--lane", lane_key(issue), "--audience", "owner",
-            "--text", text]
+            "--internal", "custody decision applied with helio pr phase decide", "--text", text]
     for option in options:
         argv += ["--option", option]
     result = subprocess.run(argv, capture_output=True, text=True, timeout=120,
