@@ -248,7 +248,8 @@ class MonitorReloadTests(unittest.TestCase):
                                    "helio_plan_source.py", "helio_runtime_policy.py",
                                    "helio_pr_verification.py", "helio_pr_recovery_store.py", "helio_pr_recovery_ci.py",
                                    "helio_pr_phase.py", "helio_pr_recovery_actions.py", "helio_pr_recovery.py",
-                                   "helio_pr_recovery_cli.py", "helio_pr_escalation.py", "helio_health.py", "helio_doctor.py", "helio_merge_train.py"):
+                                   "helio_pr_recovery_cli.py", "helio_pr_escalation.py", "helio_health.py", "helio_doctor.py", "helio_merge_train.py",
+                                   "helio_obligations.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
                     for relative in ("delivery/plan-requests.sql",):
                         destination = self.home / "discord-inbound" / relative

@@ -178,6 +178,8 @@ def check_prs(custody_seen: set[str] | None = None) -> None:
     for line in runpy.run_path(str(Path(__file__).with_name("helio_merge_train.py")))["followups"](
             STATE, REPO, lambda number: readiness["check"](REPO, number, run)):
         print(line, flush=True)
+    for line in runpy.run_path(str(Path(__file__).with_name("helio_obligations.py")))["surface"](STATE, REPO):
+        print(line[:1000], flush=True)
 
 
 ACTIVE_LANE = frozenset(("working", "paused", "done-claimed", "not-done"))

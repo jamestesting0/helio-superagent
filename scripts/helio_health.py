@@ -108,7 +108,11 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
         except (ValueError, KeyError, TypeError):
             custody.append({"repo": repo, "issue": issue, "job": job, "generation": generation,
                             "state": "unknown", "next_owner": "requester"})
+    repo = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
+    here = Path(__file__).resolve().parent
     return {
+        "obligations": runpy.run_path(str(here / "helio_obligations.py"))["owed"](state, repo),
+        "trains": runpy.run_path(str(here / "helio_merge_train.py"))["recoverable"](state, repo),
         "at": int(now),
         "oldest_pending_s": int(now - oldest_ms / 1000) if oldest_ms else None,
         "gaps": (_query(delivery, "SELECT count(*) FROM inbound_gaps WHERE acknowledged_at IS NULL") or [(0,)])[0][0],
@@ -150,6 +154,9 @@ def problems(health: dict, now: float) -> list[str]:
         found.append("housekeeping awaits first-run approval")
     if last and last.get("backup_error"):
         found.append(f"backup failed: {last['backup_error'][:120]}")
+    found += [f"{item['kind']} owed since {datetime.datetime.fromtimestamp(item['since'], datetime.UTC):%Y-%m-%d %H:%M} UTC: "
+              f"{item['send']}" for item in health["obligations"]]
+    found += health["trains"]
     for row in health["pr_custody"]:
         if row.get("waiting_on_owner"):
             found.append(f"issue #{row['issue']} waits on the owner ({row.get('decision') or 'decision'}"
@@ -202,9 +209,7 @@ def main() -> int:
     state = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
     now = time.time()
     health = snapshot(state, Path.home(), now)
-    repo = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
-    found = problems(health, now) + github_problems(state) + runpy.run_path(
-        str(Path(__file__).with_name("helio_merge_train.py")))["recoverable"](state, repo)
+    found = problems(health, now) + github_problems(state)
     if args.json:
         print(json.dumps({**health, "problems": found}))
     else:
