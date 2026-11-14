@@ -53,6 +53,7 @@ def waive(state: Path, key: str, reason: str) -> None:
         raise ValueError("a waiver needs a reason")
     with closing(_own(state)) as db, db:
         db.execute("INSERT INTO waivers VALUES (?,?,?) ON CONFLICT(key) DO NOTHING", (key, reason.strip()[:300], time.time()))
+    reconcile(state, key)
 
 
 def waived(state: Path, key: str) -> bool:
@@ -129,10 +130,29 @@ def activate_question(state: Path, question: str) -> None:
 
 def pr_completion_owed(state: Path, repo: str, issue: int, authority: dict, pr: str) -> bool:
     key = pr_key(repo, issue, pr)
+    _record(state, {"key": key, "kind": "pr-ready", "repo": repo, "issue": issue, "pr": pr,
+                    "channel": authority["channel"], "target": authority["message"], "event": completion_event(repo, pr),
+                    "since": time.time()})
+    return not reconcile(state, key)[1]
+
+
+def reconcile(state: Path, key: str) -> tuple[bool, bool]:
+    """Latch matching delivery before an acknowledgement can outlive its send receipt."""
     with closing(_own(state)) as db:
-        row = db.execute("SELECT settled FROM obligations WHERE key=?", (key,)).fetchone()
-    return not ((row and row["settled"]) or delivered(state, authority["channel"], completion_event(repo, pr),
-                                                    authority["message"]) or waived(state, key))
+        row = db.execute("SELECT * FROM obligations WHERE key=?", (key,)).fetchone()
+    if row is None:
+        return False, False
+    if row["settled"]:
+        return True, True
+    item = json.loads(row["data"])
+    target = item.get("topic") or item["target"]
+    sent = bool(row["relay_settled"]) or delivered(state, item["channel"], item["event"], target) or waived(state, key)
+    topic = conversation(state, item["topic"]) if item.get("topic") else None
+    settled = sent and (not topic or topic["status"] not in ("open", "on_hold"))
+    with closing(_own(state)) as db, db:
+        db.execute("UPDATE obligations SET relay_settled=?,settled=? WHERE key=?",
+                   (int(sent), int(settled), key))
+    return sent, settled
 
 
 def owed(state: Path, repo: str) -> list[dict]:
@@ -158,17 +178,13 @@ def owed(state: Path, repo: str) -> list[dict]:
         item = json.loads(row["data"])
         if item.get("repo", repo) != repo:
             continue
-        sent = bool(row["relay_settled"]) or delivered(state, item["channel"], item["event"], item.get("target")) or waived(state, item["key"])
-        topic = conversation(state, item["topic"]) if item.get("topic") else None
-        settled = sent and (not topic or topic["status"] not in ("open", "on_hold"))
-        with closing(_own(state)) as db, db:
-            db.execute("UPDATE obligations SET relay_settled=?,settled=? WHERE key=?", (int(sent), int(settled), item["key"]))
+        sent, settled = reconcile(state, item["key"])
         if settled:
             continue
         item["send"] = (f"close conversation {item['topic']}; the relay is already settled" if sent else
                         f"reply once in channel {item['channel']} " +
                         (f"to message {item['target']} about PR {item['pr']}" if item.get("target") else
-                         f"to the requester in topic {item['topic']}, then close that conversation") +
+                         f"to topic anchor {item['topic']} for its requester, then close that conversation") +
                         f" with --event {item['event']} (evidence.ts or reply.ts)")
         items.append(item)
     return sorted(items, key=lambda item: -item["since"])

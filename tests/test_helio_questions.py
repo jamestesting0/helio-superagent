@@ -511,6 +511,7 @@ class QuestionChoiceTests(unittest.TestCase):
   with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
    db.execute('CREATE TABLE conversations (channel_id TEXT, user_id TEXT, status TEXT, anchor_message_id TEXT)')
    db.execute("INSERT INTO conversations VALUES ('300','996','open','42')")
+   db.execute("INSERT INTO conversations VALUES ('300','777','resolved','99')")
    db.commit()
   with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
    db.execute('CREATE TABLE reply_sends (target TEXT, text_hash TEXT, state TEXT)')
@@ -528,10 +529,18 @@ class QuestionChoiceTests(unittest.TestCase):
    ack()
   self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'answered')
   with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
-   db.execute("INSERT INTO reply_sends VALUES ('77',?,'sent')",(f'event:300:question-{qid}',))
+   db.execute("INSERT INTO reply_sends VALUES ('99',?,'sent')",(f'event:300:question-{qid}',))
+   db.commit()
+  with self.assertRaisesRegex(ValueError,'the requester has not been told'):
+   ack()
+  with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
+   db.execute("INSERT INTO reply_sends VALUES ('42',?,'sent')",(f'event:300:question-{qid}',))
    db.commit()
   with self.assertRaisesRegex(ValueError,'close the conversation'):
    ack()
+  with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
+   db.execute("DELETE FROM reply_sends")
+   db.commit()
   with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
    db.execute("UPDATE conversations SET status='resolved'")
    db.commit()

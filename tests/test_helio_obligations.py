@@ -88,7 +88,7 @@ class ObligationTests(unittest.TestCase):
             db.execute("UPDATE questions SET status='done'")
         owed = LEDGER["owed"](self.state, REPO)
         self.assertEqual([(o["kind"], o["requester"]) for o in owed], [("question-relay", "996083715862184048")])
-        self.sent("1570931722541867259", "1220331873079922810", LEDGER["relay_event"]("cb1b83058dd74b51b343"))
+        self.sent("1570921095282954431", "1220331873079922810", LEDGER["relay_event"]("cb1b83058dd74b51b343"))
         pending = LEDGER["owed"](self.state, REPO)
         self.assertEqual([item["key"] for item in pending], ["question:cb1b83058dd74b51b343"])
         self.assertIn("relay is already settled", pending[0]["send"])
@@ -109,7 +109,7 @@ class ObligationTests(unittest.TestCase):
         LEDGER["link_question"](self.state, "q", "1570921095282954431", None)
         LEDGER["activate_question"](self.state, "q")
         self.assertEqual([o["key"] for o in LEDGER["owed"](self.state, REPO)], ["question:q"])
-        self.sent("1", REQUEST["channel"], LEDGER["relay_event"]("q"))
+        self.sent("1570921095282954431", REQUEST["channel"], LEDGER["relay_event"]("q"))
         self.assertIn("relay is already settled", LEDGER["owed"](self.state, REPO)[0]["send"])
         with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
             db.execute("DELETE FROM reply_sends")
@@ -178,6 +178,9 @@ class CustodyAckTests(unittest.TestCase):
             db.execute("INSERT INTO reply_sends VALUES (?,?,'sent')",
                        (REQUEST["message"], f"event:{REQUEST['channel']}:{EVENT}"))
         self.assertEqual(self.ack("ready1"), (0, "PR_CUSTODY_EVENT_ACK issue=28 event=ready1\n"))
+        with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
+            db.execute("DELETE FROM reply_sends")
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
 
     def test_a_recorded_reason_may_acknowledge_without_telling_the_requester(self):
         self.assertEqual(self.ack("ready1", "requester withdrew the request")[0], 0)

@@ -433,9 +433,9 @@ def main():
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
     obligations['activate_question'](STATE,a.id)
     link=obligations['question_link'](STATE,a.id)
-    if link and link['topic'] and not (obligations['delivered'](STATE,link['channel'],obligations['relay_event'](a.id)) or obligations['waived'](STATE,f'question:{a.id}')):
+    if link and link['topic'] and not obligations['reconcile'](STATE,f'question:{a.id}')[0]:
      if not a.no_relay:
-      raise ValueError(f"the requester has not been told: reply in their conversation {link['topic']} (channel {link['channel']}) "
+      raise ValueError(f"the requester has not been told: reply to anchor {link['topic']} in channel {link['channel']} "
                        f"with --event {obligations['relay_event'](a.id)}, close it with helio conversation close {link['topic']} OUTCOME, "
                        "then acknowledge; or acknowledge with --no-relay REASON")
      obligations['waive'](STATE,f'question:{a.id}',a.no_relay)

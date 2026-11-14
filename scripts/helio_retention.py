@@ -152,8 +152,10 @@ RULES: tuple[Rule, ...] = (
          ("DELETE FROM decision_events WHERE decision_id NOT IN (SELECT id FROM decisions)",)),
     Rule("decisions.sqlite", "decision_digest", "derived", "Acknowledged weekly digests are kept 180 days.",
          (f"DELETE FROM decision_digest WHERE handled=1 AND created_at < :now_s - {DERIVED_DAYS * DAY_S}",)),
-    Rule("reply-sends.sqlite", "reply_sends", "receipt", "Settled delivery identities are kept 180 days; uncertain sends remain recoverable.",
-         (f"DELETE FROM reply_sends WHERE state='sent' AND started_at < :now_ms - {RECEIPT_DAYS * DAY_MS}",)),
+    Rule("reply-sends.sqlite", "reply_sends", "receipt",
+         "Ordinary delivery identities stay 180 days; obligation identities and uncertain sends stay recoverable.",
+         (f"DELETE FROM reply_sends WHERE state='sent' AND started_at < :now_ms - {RECEIPT_DAYS * DAY_MS} "
+          "AND text_hash NOT GLOB 'event:*:completion-pr-*' AND text_hash NOT GLOB 'event:*:question-*'",)),
     Rule("obligations.sqlite", "question_links", "receipt",
          "Question routing remains with its durable delivery obligation."),
     Rule("obligations.sqlite", "obligations", "receipt",

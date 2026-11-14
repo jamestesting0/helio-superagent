@@ -88,7 +88,8 @@ export async function sendOnce(o: SendOnce): Promise<{ id: string; duplicate: bo
         db.exec("ALTER TABLE reply_sends ADD COLUMN notification_nonce TEXT");
       }
     }).immediate();
-    db.run("DELETE FROM reply_sends WHERE started_at < ? AND state = 'sent'", [o.now() - RETAIN_MS]);
+    db.run(`DELETE FROM reply_sends WHERE started_at < ? AND state = 'sent'
+      AND text_hash NOT GLOB 'event:*:completion-pr-*' AND text_hash NOT GLOB 'event:*:question-*'`, [o.now() - RETAIN_MS]);
     const hash = o.event ? `event:${o.event}` : new Bun.CryptoHasher("sha256").update(o.text).digest("hex");
     const key = [o.target, hash] as const;
     const claim = db.transaction((): Claim => {

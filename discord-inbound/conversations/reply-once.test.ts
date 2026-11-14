@@ -33,6 +33,20 @@ test("one completion event has one publisher across different wording and reopen
   });
 });
 
+test("obligation delivery identities survive pruning before a later acknowledgement can reconcile them", async () => {
+  await withDb(async (path) => {
+    const events = ["300:completion-pr-o-r-29", "300:question-q", "300:completion"];
+    for (const event of events) await sendOnce({ ...base(path), event });
+    let posted = 0;
+    for (const event of events) {
+      const result = await sendOnce({ ...base(path), event, now: () => 1_000_000 + 181 * 86_400_000,
+        send: async () => { posted++; return "901"; } });
+      expect(result.duplicate).toBe(event !== "300:completion");
+    }
+    expect(posted).toBe(1);
+  });
+});
+
 test("uncertain event delivery recovers the original producer's content before another producer takes over", async () => {
   await withDb(async (path) => {
     const original = "Removed the fact. Offline tests passed.";

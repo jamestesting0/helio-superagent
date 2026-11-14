@@ -71,6 +71,16 @@ class RetentionCoverage(Fixture):
 
 
 class RetentionRules(Fixture):
+    def test_delivery_identities_for_unreconciled_obligations_do_not_expire(self):
+        with self.db("reply-sends.sqlite") as db, db:
+            for event in ("300:completion-pr-o-r-29", "300:question-q", "300:completion"):
+                db.execute("INSERT INTO reply_sends(target,text_hash,state,reply_id,started_at) VALUES ('42',?,'sent','900',?)",
+                           (f"event:{event}", (NOW - 200 * DAY) * 1000))
+        HK["retention"](self.state, NOW, apply=True)
+        with self.db("reply-sends.sqlite") as db:
+            self.assertEqual({row[0] for row in db.execute("SELECT text_hash FROM reply_sends WHERE target='42'")},
+                             {"event:300:completion-pr-o-r-29", "event:300:question-q"})
+
     def test_custody_preserves_active_and_unacknowledged_state_and_bound_proof(self):
         with self.db("issue-updates.sqlite") as db, db:
             for issue, terminal, acknowledged in ((10, False, True), (11, True, False), (12, True, True)):
