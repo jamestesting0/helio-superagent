@@ -91,7 +91,7 @@ class AdminService:
                 not isinstance(revision, str) or
                 hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != revision):
             raise Refused("unavailable", "The published runtime policy is invalid; run helio deploy")
-        return {"version": 1, "revision": revision, "values": values}
+        return snapshot
 
     def publish(self) -> PublicPolicy:
         owner = runpy.run_path(str(HERE / "helio_owner_policy.py"))

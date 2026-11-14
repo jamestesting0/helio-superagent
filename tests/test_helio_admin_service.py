@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import runpy
 import stat
+import subprocess
 import tempfile
 import sys
 import unittest
@@ -36,8 +37,7 @@ class AdminServiceTests(unittest.TestCase):
     def publish(self, snapshot):
         directory = self.root / "policy"
         directory.mkdir(exist_ok=True)
-        (directory / "policy.json").write_text(json.dumps(
-            {"version": 1, "revision": snapshot["revision"], "values": snapshot["values"]}))
+        (directory / "policy.json").write_text(json.dumps(snapshot))
 
     def save(self):
         source = C["config_path"](self.home)
@@ -49,6 +49,12 @@ class AdminServiceTests(unittest.TestCase):
         self.assertEqual(response["values"]["HELIO_TRUSTED_USERS"], "11111")
         for secret in ("private", "mongodb://beta", "DORI_DISCORD_TOKEN", "BOT_BETA_TOKEN"):
             self.assertNotIn(secret, json.dumps(response))
+        parser = ROOT / "discord-inbound/admin/protocol.ts"
+        result = subprocess.run(["bun", "-e",
+            f"import {{ policy }} from {json.dumps(str(parser))}; console.log(JSON.stringify(policy(await Bun.stdin.json())));"],
+            input=json.dumps(response), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["timing"], self.service.canonical_policy()["timing"])
 
     def test_an_untrusted_actor_never_reaches_the_runtime_bridge(self):
         with patch.object(self.service, "run_runtime", side_effect=AssertionError("Untrusted runtime call")):
