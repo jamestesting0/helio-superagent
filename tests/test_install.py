@@ -93,7 +93,6 @@ class InstallerTests(unittest.TestCase):
         for name in ("discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md"):
             self.assertEqual(os.readlink(elobot / name), f"docs/{name}")
             self.assertEqual((elobot / name).read_bytes(), (elobot / "docs" / name).read_bytes())
-        self.assertTrue((self.home / "PythonProjects/elo-bot/AGENTS.md").is_file())
         self.assertEqual((self.home / "PythonProjects/elo-bot/.omo/omo.jsonc").read_bytes(),
                          (ROOT / "omo/omo.jsonc").read_bytes())
         self.assertFalse((elobot / "GUIDE.md").exists())
@@ -103,7 +102,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((elobot / ".sync-manifest.json").stat().st_mode), 0o600)
         for name in ("start", "inbound", "ack", "context"):
             self.assertEqual(stat.S_IMODE((elobot / name).stat().st_mode), 0o700)
-        for directory in (self.home / ".dori", elobot, elobot / "docs", elobot / "project-docs",
+        self.assertFalse((elobot / "project-docs").exists())
+        for directory in (self.home / ".dori", elobot, elobot / "docs",
                           self.home / "PythonProjects/elo-bot/.omo"):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
         self.assertFalse((elobot / "env").exists())
@@ -294,26 +294,6 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.home / ".dori/elobot/setup-prompt.md").is_file())
         self.assertEqual(marker.read_text(), "preserve")
 
-    def test_knowledge_setup_uses_bundled_docs_without_original_checkout(self) -> None:
-        result = self.run_installer("--apply")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        memory = self.home / ".omo/memory/agents/elobot-ec289b4c"
-        (memory / "repo/.git").mkdir(parents=True)
-        (memory / "repo/system").mkdir()
-        (memory / "runtime/locks").mkdir(parents=True)
-        script = self.home / ".dori/elobot/knowledge-setup.py"
-        environment = {"HOME": str(self.home), "PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"}
-        result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
-                                check=False, env=environment)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        project_doc = self.home / "PythonProjects/elo-bot/docs/README.md"
-        bundled_doc = self.home / ".dori/elobot/project-docs/README.md"
-        self.assertEqual(project_doc.read_bytes(), bundled_doc.read_bytes())
-        project_doc.write_text("local changes")
-        result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
-                                check=False, env=environment)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(project_doc.read_text(), "local changes")
 
 
 if __name__ == "__main__":

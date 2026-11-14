@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only bug triage context: what main contains and what work already exists.
 
-    helio triage "reveal opponent mention" --path cogs/final_commands.py
+    helio triage "reveal opponent mention" --path elo_bot/extensions/final.py
 
 Prints the current origin/main commit, the commit Elo Bot is actually running
 on Oracle (read-only `helio release inspect`) and what main has on top of it,

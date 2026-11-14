@@ -5,7 +5,7 @@ On the owner side this first regenerates env/beta/permission files from
 ~/.config/helio/helio.env (see scripts/helio_config.py), then updates managed
 files against the recorded baseline and refuses to overwrite local edits.
 """
-import argparse, hashlib, json, os, pwd, runpy, subprocess, sys, tempfile
+import argparse, hashlib, json, os, pwd, runpy, subprocess, tempfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 PAYLOAD=runpy.run_path(str(ROOT/'scripts/helio_payload.py'))
@@ -184,12 +184,6 @@ def run(home, action, update_launcher=False, profile=None):
     raise SystemExit('Inbound dependency update failed; managed files are saved, but restart is withheld:\n'+
                      (dependencies.stdout+dependencies.stderr).strip()[-1500:])
   print('Updated managed files. Restart Helio and its watchers to load changes.')
-  # Startup only reports doc drift; adding missing project docs happens here, never overwriting.
-  script=dst/'knowledge-setup.py'
-  if (dst/'project-docs').is_dir() and script.is_file() and Path(mapping['HELIO_PROJECT']).is_dir():
-   docs=subprocess.run([sys.executable,str(script),'--reconcile-docs'],capture_output=True,text=True,timeout=120,
-                       env={**os.environ,'HOME':str(home),'HELIO_PROJECT':mapping['HELIO_PROJECT']})
-   print((docs.stdout+docs.stderr).strip() or f'KNOWLEDGE_DOCS exit={docs.returncode}')
   if profile=='owner' and home==Path(pwd.getpwnam('james').pw_dir):
    try:
     synchronization=subprocess.run(['/mnt/c/Windows/System32/wsl.exe','-d','Ubuntu-22.04','-u','root','--exec',

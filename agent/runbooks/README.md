@@ -39,16 +39,14 @@ Installed runbooks live in `~/.dori/elobot/docs/`.
 Installed copies keep the old root runbook paths as relative symlinks for
 existing prompts, notes and external references. Edit the files in this repository,
 not the installed copies. `setup-prompt.md` and `work-policy.md` stay at the
-installation root because sessions load them directly. `project-docs/` remains a
-separate bundle copied into the bot checkout by `knowledge-setup.py`; it is not
-runtime state.
+installation root because sessions load them directly. Bot development and
+presentation guidance is tracked in the EloBot checkout's `docs/`.
 
 ## Installed folder map (`~/.dori/elobot/`)
 
 | Location | Purpose |
 |---|---|
 | `docs/` | Installed operator runbooks |
-| `project-docs/` | Bot development and presentation guidance |
 | `start`, `inbound`, `ack`, `context`, `reply.ts`, `thread-target.ts`, `browser-env` | Runtime entrypoints and helpers; keep their paths |
 | `config.json`, `setup-prompt.md`, `work-policy.md` | Runtime configuration and instructions |
 | `trusted-users`, `release-approvers`, `report-channels` | Authorization settings generated from `~/.config/helio/helio.env`; edit them there and run `helio update` |

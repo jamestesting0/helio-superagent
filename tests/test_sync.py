@@ -156,17 +156,6 @@ class SyncTests(unittest.TestCase):
   target.write_text('local change')
   with redirect_stdout(StringIO()), self.assertRaises(SystemExit): SYNC['run'](self.home,'apply')
   self.assertEqual(target.read_text(),'local change')
- def test_update_adds_missing_project_docs_and_reports_edited_ones_without_overwriting(self):
-  quiet(SYNC['run'],self.home,'adopt')
-  docs=self.home/'project/docs'
-  missing=docs/'bot-ui.md'; edited=docs/'copy-style.md'
-  if missing.exists(): missing.unlink()
-  edited.parent.mkdir(parents=True,exist_ok=True); edited.write_text('local edit\n')
-  out=quiet(SYNC['run'],self.home,'apply')
-  self.assertEqual(missing.read_bytes(),(ROOT/'elobot-checkout/docs/bot-ui.md').read_bytes())
-  self.assertEqual(edited.read_text(),'local edit\n')
-  self.assertIn('KNOWLEDGE_DOC_CONFLICT',out)
-  self.assertIn('copy-style.md',out)
  def test_update_ships_the_skill_to_homes_installed_before_it(self):
   quiet(SYNC['run'],self.home,'adopt')
   name='skills/karpathy-guidelines/SKILL.md'; manifest=self.dst/'.sync-manifest.json'

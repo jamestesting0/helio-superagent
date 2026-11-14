@@ -237,7 +237,7 @@ from loading changed code into running processes.
 | [`discord-inbound/`](discord-inbound/) | Authorization, delivery, replay, conversations, moderation and interactions |
 | [`vendor/dori-mode/`](vendor/dori-mode/FORK.md) | Maintained Dori skill and CLI fork |
 | `scripts/`, [`isolation/`](isolation/README.md) | Configuration, installation, diagnostics, host boundary and privileged services |
-| [`omo/`](omo/README.md), `elobot-checkout/` | Configuration and documentation installed into the application checkout |
+| [`omo/`](omo/README.md) | Configuration installed into the application checkout |
 | `tests/` | Offline Python regressions alongside the colocated Bun suites |
 | [`docs/`](docs/) | [Setup](docs/setup.md), [workflow](docs/workflow.md), [architecture](docs/architecture.md), [migration](docs/migration.md) and [operation](docs/operator-guide.md) |
 

@@ -61,11 +61,44 @@ class Matches(ipy.Extension):
 '''
 
 
+GROUPS = '''
+import interactions as ipy
+base = ipy.SlashCommand(name="base", description="")
+set_group = base.group(name="set", description="")
+'''
+
+MIXINS = '''
+from elo_bot.extensions.base.groups import base
+import elo_bot.extensions.base.groups as groups
+from elo_bot.extensions.base import groups as same_groups
+
+class Search:
+    @base.subcommand(sub_cmd_name="find")
+    async def find(self, ctx):
+        if ctx.channel.id != 1:
+            return
+
+class Settings:
+    set_group = groups.set_group
+
+    @set_group.subcommand(sub_cmd_name="name")
+    async def rename(self, ctx):
+        pass
+
+    @same_groups.set_group.subcommand(sub_cmd_name="image")
+    async def image(self, ctx):
+        pass
+'''
+
+
 class ClassifyTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
-        (Path(self.dir.name) / 'cogs').mkdir()
-        (Path(self.dir.name) / 'cogs/matches.py').write_text(COG)
+        extensions = Path(self.dir.name) / 'elo_bot/extensions'
+        (extensions / 'base').mkdir(parents=True)
+        (extensions / 'matches.py').write_text(COG)
+        (extensions / 'base/groups.py').write_text(GROUPS)
+        (extensions / 'base/mixins.py').write_text(MIXINS)
         self.result = m['classify'](Path(self.dir.name))
 
     def tearDown(self):
@@ -73,8 +106,9 @@ class ClassifyTests(unittest.TestCase):
 
     def test_channel_comparisons_bind_a_command_and_destinations_do_not(self):
         bound = {path for path, why in self.result.items() if why}
-        self.assertEqual(set(self.result), {'match queue', 'match base submit', 'match resubmit', 'self store', 'help', 'match delete match', 'match export match'})
-        self.assertEqual(bound, {'match base submit', 'match resubmit', 'self store'})
+        self.assertEqual(set(self.result), {'match queue', 'match base submit', 'match resubmit', 'self store', 'help', 'match delete match', 'match export match',
+                                            'base find', 'base set name', 'base set image'})
+        self.assertEqual(bound, {'match base submit', 'match resubmit', 'self store', 'base find'})
         self.assertIn('in find_match', self.result['match base submit'][0])
 
     def test_reviewed_exception_holds_only_while_the_code_matches(self):

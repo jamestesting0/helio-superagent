@@ -1,4 +1,4 @@
-"""Managed document drift cannot prevent either lead startup mode."""
+"""Lead startup: both modes launch with the monitor specifications, and a damaged runbook stops it."""
 import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import json
 import os
@@ -12,8 +12,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-class StartupDocsTests(unittest.TestCase):
-    def test_start_and_resume_report_drift_without_reconciling_docs(self) -> None:
+class StartupTests(unittest.TestCase):
+    def test_start_and_resume_launch_with_the_monitor_specifications(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
             base = home / ".dori/elobot"
@@ -23,11 +23,6 @@ class StartupDocsTests(unittest.TestCase):
             (project / ".omo/omo.jsonc").write_text(json.dumps({
                 "memory": {"enabled": True, "agent": "EloBot", "sync": {"enabled": False}},
             }))
-            (project / "docs").mkdir()
-            (project / "docs/local.md").write_text("local edits")
-            (base / "project-docs").mkdir()
-            (base / "project-docs/local.md").write_text("managed version")
-            (base / "project-docs/missing.md").write_text("install later")
             memory = home / ".omo/memory/agents/elobot-ec289b4c"
             for path in ("repo/.git", "repo/system", "runtime/locks"):
                 (memory / path).mkdir(parents=True)
@@ -71,11 +66,8 @@ class StartupDocsTests(unittest.TestCase):
                                             capture_output=True, text=True, timeout=10, check=False)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     argv = json.loads(result.stdout.splitlines()[-1])
-                    self.assertIn("KNOWLEDGE_DOC_DRIFT count=2", argv[-1])
                     self.assertNotIn("KNOWLEDGE_MEMORY", argv[-1])
-                    self.assertIn("greeting", argv[-1])
-                    self.assertEqual((project / "docs/local.md").read_text(), "local edits")
-                    self.assertFalse((project / "docs/missing.md").exists())
+                    self.assertTrue((home / ".omo/memory/agents/elobot-31991534").is_symlink())
                     for line in subprocess.run([sys.executable, str(base / "monitor-specs.py"), str(base / "docs/monitor-events.md")],
                                                capture_output=True, text=True, check=True).stdout.splitlines():
                         self.assertIn(line, argv[-1])

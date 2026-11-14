@@ -18,8 +18,8 @@ import re
 import subprocess
 from typing import Final
 
-DEFAULT_DENY: Final = ("requirements*.txt,pyproject.toml,.github/**,database_models/**,"
-                      "common/tokens/**,**/migrations/**,main.py,beta.py,watchdog.py,"
+DEFAULT_DENY: Final = ("requirements*.txt,pyproject.toml,.github/**,elo_bot/db/**,"
+                      "elo_bot/features/tokens/**,**/migrations/**,main.py,beta.py,watchdog.py,"
                       "scripts/**,models/**,assets/**,*.env*")
 POSTS = runpy.run_path(str(Path(__file__).with_name("helio_github_posts.py")))
 PUBLICATION = runpy.run_path(str(Path(__file__).with_name("helio_pr_publication.py")))

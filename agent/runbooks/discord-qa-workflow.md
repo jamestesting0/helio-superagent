@@ -34,7 +34,7 @@ cd {{HELIO_PROJECT}}
 pgrep -fl 'beta\.py|main\.py|watchdog\.py'
 ```
 
-Inspect `beta.py` and `common/constants.py`: the beta token must come from `BOT_BETA_TOKEN`, `DATA_BASES["beta"]` must be `elo_beta`, and `BETA_SYNC_FROM_MAIN` must remain `False`. Never print `.env` values. Do not run `main.py` or `watchdog.py`.
+Inspect `elo_bot/config/settings.py` and `elo_bot/app/bootstrap.py`: the beta token must come from `BOT_BETA_TOKEN`, `DATA_BASES["beta"]` must be `elo_beta`, and `BETA_SYNC_FROM_MAIN` must remain `False`. Never print `.env` values. Do not run `main.py` or `watchdog.py`.
 
 If an existing beta process belongs to this test run and matches the intended code, reuse it. Otherwise coordinate with its owner. Once no conflicting beta process exists, launch it through a persistent background terminal/monitor after reading `~/.dori/elobot/docs/beta-maintenance-workflow.md` for the profile-specific start commands.
 
@@ -176,7 +176,7 @@ Cover applicable cases, not an unrelated exhaustive checklist:
 
 An opened form is not submission, a preview is not confirmation, an API mock is not live execution, and a success embed is not proof of committed state. Inspect all required writes and the response ordering. Refresh outdated slash-command definitions only in the intended test session; an outdated-command error is not a passing result.
 
-Use `docs/discord-qa.md`, `docs/bot-ui.md`, and `docs/copy-style.md` for interaction lessons and presentation conventions, with the current work-policy.md browser/channel rules taking precedence.
+Use the checkout's `docs/bot-ui.md` and `docs/copy-style.md` for presentation conventions, with the current work-policy.md browser/channel rules taking precedence.
 
 ## 7. Build difficult tests from the code's state transitions
 
@@ -186,13 +186,15 @@ For a queue-to-match-to-helper scenario, start with this map in the current chec
 
 | Concern | Code to read |
 |---|---|
-| Queue eligibility, tier selection, district picker | `cogs/match_commands.py`: `queue_player`, `match_queue`, `_send_queue_district_picker`, `queued_district_action` |
-| Opponent selection and durable match creation | `find_opponent`, `match_with_best_queue`, `initiate_match` |
-| Participant confirmation and private thread publication | `_match_confirm_button`, `_confirm_match_participant`, `confirm_match` |
-| Helper/host authorization and stale control checks | `host_match_button`, `check_match_control`, `update_match_control` |
-| Stored bases, live start, results and cleanup | `match_base_store`, helper stored-start/Undo callbacks, `match_start`, result finalization and shared reservation helpers |
-| Viewing/toggling the queue | `cogs/queue_commands.py` |
-| Persistence contracts | `database_models/` models used by the handlers, and their shared writer/reconciliation functions |
+| Queue eligibility, tier selection, district picker | `elo_bot/extensions/match/queue.py`: `match_queue`, `_send_queue_district_picker`, `queued_district_action`; `elo_bot/features/queue/matching.py`: `queue_player` |
+| Opponent selection and durable match creation | `elo_bot/features/queue/matching.py`: `find_opponent`, `match_with_best_queue`; `elo_bot/features/matches/lifecycle.py`: `initiate_match` |
+| Participant confirmation and private thread publication | `elo_bot/extensions/match/lifecycle.py`: `_match_confirm_button`, `_confirm_match_participant`; `elo_bot/features/matches/lifecycle.py`: `confirm_match` |
+| Helper/host authorization and stale control checks | `elo_bot/extensions/match/hosting.py`: `host_match_button`; `elo_bot/features/matches/controls.py`: `check_match_control`, `update_match_control` |
+| Stored bases, live start, results and cleanup | `elo_bot/extensions/match/base_store.py`: `match_base_store`; helper stored-start/Undo callbacks; `elo_bot/extensions/match/hosting.py`: `match_start`; result finalization in `elo_bot/features/results/` and shared reservation helpers in `elo_bot/features/base_store/` |
+| Viewing/toggling the queue | `elo_bot/extensions/queue.py` |
+| Persistence contracts | `elo_bot/db/` models used by the handlers, and their shared writer/reconciliation functions |
+
+`docs/commands.md` in the checkout maps every command, callback and task to its handler; use it to find a flow that is not listed here.
 
 Read the relevant decorators, checks, shared preflight, callback body, and existing regression tests. A command's description or visible button label does not establish its permission rules or persistence behavior. Helper commands do not all have identical authorization.
 
@@ -213,9 +215,34 @@ These are source-derived checkpoints, not live test results. Re-read the named f
 | `match_base_store` / `match_base_autostore` | Both resolve the match from the current thread, but their participant checks differ. Manual store rejects either participant except the bot owner; autostore has an opposing-side/LVL2 exception. Do not copy the expectation from one command onto the other. |
 | `match_start` / `_start_live` | `/match start` requires `LVL2_ROLES`. Preflight rejects missing/finished matches, existing start/host state, and participating hosts except the bot owner; fetches the linked CoC accounts and rejects town halls >=6; checks scout data when requested, clan availability, and available stored slots. Raid-weekend special handling is additionally conditional on the production bot ID. |
 
-Current routing constants also require attention: `COMMAND_CHANNEL=1220331873079922810` and `MATCH_CHANNEL={{DORI_DISCORD_CONTEXT_EXCLUDED}}`. They are not the user's primary slash-test channel. The code read does not establish their current category membership. Verify beta side-effect routing before executing the queue flow; do not assume typing `/match queue` in the right channel confines its DMs, fallback messages, or generated thread there.
+Current routing constants in `elo_bot/config/ids.py` also require attention: `COMMAND_CHANNEL=1220331873079922810` and `MATCH_CHANNEL={{DORI_DISCORD_CONTEXT_EXCLUDED}}`. They are not the user's primary slash-test channel. The code read does not establish their current category membership. Verify beta side-effect routing before executing the queue flow; do not assume typing `/match queue` in the right channel confines its DMs, fallback messages, or generated thread there.
 
 On November 2, 2026, the signed-in Tergum account's Discord channel list placed both configured channels under the permitted `{{HELIO_TEST_CATEGORY}}` competitive category. Recheck once per test session. Other destinations, including the beta state's dashboard messages and any automated jobs, need separate checks. Normal `/match war start` and `/match start` use real configured clans even though they do not themselves invoke the automatic Helper hosting job; select an owner-designated test clan, not an arbitrary available clan.
+
+### Final tournament setup and routing
+
+| Step | Actual behavior |
+|---|---|
+| `/final start season:<number>` | Manager-only; opens registration for one existing, uniquely mapped completed season. Omitting `season` selects the latest completed archive. An active Final or an existing edition for that season blocks creation. |
+| `/final add player:<user> nickname:<label>` | Adds an already registered beta player, up to eight entrants. Use a labelled QA nickname for a test roster. |
+| Bracket setup | Seeds, byes and pairing go through the current `/final bracket` controls before a round is ready. |
+| `/final round create` | Checks readiness only; does not create threads. |
+| `/final round start` | Creates or resumes private match threads; does not start hosting. An entrant's unfinished match blocks provisioning. |
+
+`elo_bot/extensions/final.py:final_start` passes `FINAL_CHANNEL` into `elo_bot/features/finals/lifecycle.py:start_final`, which persists it as `EloFinal.channel_id`; `elo_bot/features/finals/matches.py:prepare_match` copies it to `Match.routing_channel_id`, and `confirm_match` creates a Final match's private thread there. Ordinary matches use `MATCH_CHANNEL`. The command's input channel never decides the thread's parent. Existing editions keep their captured `channel_id`, so changing the constant does not reroute them; brackets, betting announcements and result fallbacks use that captured channel too. Resolve its current name and category before the run.
+
+For a retained owner-testing tournament, first verify a qualifying completed archive and no conflicting active edition in `elo_beta`; a second `/final start` conflicts with an existing one. Record the created edition and label its roster and evidence. Do not manufacture a completed production season or cancel someone else's Final to satisfy setup; if no qualifying archive exists, report that blocker before seeding anything.
+
+Use a bettor outside the selected match: a manager who is also a participant must be denied betting on that match. Useful Final scenarios: bracket setup (saved bracket and rendered attachment agree), predictions (draft, Back/Next, review, submit, closure rejecting later submissions), betting (`/final betting announce`, a nonparticipant confirming, editing and cancelling a stake with wallet, ledger and pool agreeing), and results (seven score lines per player, ephemeral preview, Cancel unchanged, Confirm once, manager correction repairing dependent state).
+
+`tests/integration/_final_fixture.py` creates and drops disposable `elo_final_it_*` databases with synthetic users; it is not a setup script for live `elo_beta`. It needs a loopback MongoDB replica set started as in the checkout's CI workflow:
+
+```bash
+FINAL_TEST_MONGO_URI='mongodb://127.0.0.1:27018/?replicaSet=elo-final-it&directConnection=true' \
+  "$HELIO_PROJECT/.venv/bin/python" -m unittest discover -v -s tests/integration -p 'test_final_*.py'
+```
+
+Missing MongoDB, zero collected tests or a skipped suite is not a passing gate.
 
 ### Example: two participants queue, create a match, then a helper acts
 

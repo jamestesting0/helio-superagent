@@ -20,6 +20,6 @@ from `helio.env` at install and update. An unknown name stops the install. The
 list of names is in `helio.env.example`, plus `{{HOME}}`.
 
 Also installed, from outside this folder: `vendor/dori-mode` messenger modules
-into `~/.dori/elobot/vendor/` (imported by `reply.ts`), `discord-inbound/` into
-`~/.dori/discord-inbound/`, and `elobot-checkout/docs` into `project-docs/`.
+into `~/.dori/elobot/vendor/` (imported by `reply.ts`) and `discord-inbound/` into
+`~/.dori/discord-inbound/`.
 The file lists live in `scripts/helio_payload.py`.

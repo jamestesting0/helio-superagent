@@ -35,7 +35,7 @@ if [ ! -s "$here/skills/karpathy-guidelines/SKILL.md" ]; then
 fi
 monitor_specs="$(python3 "$here/monitor-specs.py" "$here/docs/monitor-events.md")"
 cd "$HELIO_PROJECT"
-knowledge_status="$(python3 "$here/knowledge-setup.py" --check-docs)"
+python3 "$here/knowledge-setup.py" >/dev/null
 
 if [[ "$mode" == resume ]]; then
   session_ref="$(python3 "$here/helio-sessions.py" latest)"
@@ -72,8 +72,4 @@ fi
 startup+=$'\nFollow monitor-events.md, "Arming monitors": one eval cell with a plain for loop (tool.monitor is synchronous in Python; no asyncio). After partial failure, arm only missing monitors. Then batch-read ack pending inbound, ack pending context, helio question list and helio followups list, including continuation pages. Run helio doctor --json and send the owner DM greeting under startup-recovery-workflow.md once receiving status is known. Separate intake readiness, historical work and dated/unprobed dependencies. Read active decisions before work and reconcile recovery before old deliveries. Unfinished recovery does not block new requests.'
 startup+=$'\nMonitor specifications (description, command, filter, options), one tool.monitor call each:\n'"$monitor_specs"
 startup+=$'\n'"$recovery_status"
-doc_drift="$(grep '^KNOWLEDGE_DOC_DRIFT' <<<"$knowledge_status" || true)"
-if [[ -n "$doc_drift" ]]; then
-  startup+=$'\n'"Include this line in the readiness greeting: $doc_drift"
-fi
 exec omo "${session_args[@]}" --no-ask-user --model "$HELIO_LEAD_MODEL" --thinking "$HELIO_LEAD_THINKING" --models "$HELIO_MODEL_ALLOW" --skill "$HELIO_BROWSER_SKILL" --skill "$here/skills/karpathy-guidelines" --append-system-prompt "$here/setup-prompt.md" --append-system-prompt "$here/work-policy.md" "$startup"

@@ -53,10 +53,43 @@ def _kw(call, name):
     return None
 
 
-def _command_vars(tree):
+def _module_name(path: Path, root: Path) -> str:
+    parts = path.relative_to(root).with_suffix('').parts
+    return '.'.join(parts[:-1] if parts[-1] == '__init__' else parts)
+
+
+def _imports(tree, modules):
+    """Resolver for command variables another scanned module defines: `from m import x` and `m.x`."""
+    names, aliases = {}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                full = f'{node.module}.{alias.name}'
+                if full in modules:
+                    aliases[alias.asname or alias.name] = full
+                else:
+                    names[alias.asname or alias.name] = (node.module, alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+
+    def resolve(expr):
+        if isinstance(expr, ast.Name) and expr.id in names and names[expr.id][0] in modules:
+            module, name = names[expr.id]
+            return modules[module](name, float('inf'))
+        if isinstance(expr, ast.Attribute) and isinstance(expr.value, ast.Name) and expr.value.id in aliases:
+            vars_of = modules.get(aliases[expr.value.id])
+            return vars_of(expr.attr, float('inf')) if vars_of else None
+        return None
+    return resolve
+
+
+def _command_vars(tree, imported=lambda expr: None):
     """SlashCommand/group variables in one file, in source order: name -> [(line, (command, group))].
 
     A name can be rebound (two groups assigned to the same variable), so a decorator uses the latest binding above it.
+    Groups defined in another module resolve through `imported`, also when re-bound as a class attribute.
     """
     found = {}
 
@@ -64,20 +97,28 @@ def _command_vars(tree):
         bound = [value for where, value in found.get(name, []) if where <= line]
         return bound[-1] if bound else None
 
+    def resolve(expr, line):
+        return (at(expr.id, line) if isinstance(expr, ast.Name) else None) or imported(expr)
+
     assigns = sorted((n for n in ast.walk(tree) if isinstance(n, ast.Assign) and len(n.targets) == 1
-                      and isinstance(n.targets[0], ast.Name) and isinstance(n.value, ast.Call)), key=lambda n: n.lineno)
+                      and isinstance(n.targets[0], ast.Name)), key=lambda n: n.lineno)
     for node in assigns:
-        func, name = node.value.func, _kw(node.value, 'name')
-        if not name:
-            continue
-        if isinstance(func, ast.Attribute) and func.attr == 'SlashCommand':
-            value = (name, None)
-        elif isinstance(func, ast.Attribute) and func.attr == 'group' and isinstance(func.value, ast.Name) and at(func.value.id, node.lineno):
-            value = (at(func.value.id, node.lineno)[0], name)
+        if isinstance(node.value, ast.Call):
+            func, name = node.value.func, _kw(node.value, 'name')
+            if not name:
+                continue
+            if isinstance(func, ast.Attribute) and func.attr == 'SlashCommand':
+                value = (name, None)
+            elif isinstance(func, ast.Attribute) and func.attr == 'group' and resolve(func.value, node.lineno):
+                value = (resolve(func.value, node.lineno)[0], name)
+            else:
+                continue
+        elif isinstance(node.value, (ast.Name, ast.Attribute)) and resolve(node.value, node.lineno):
+            value = resolve(node.value, node.lineno)
         else:
             continue
         found.setdefault(node.targets[0].id, []).append((node.lineno, value))
-    return at
+    return resolve
 
 
 def _is_current_channel(node):
@@ -126,12 +167,16 @@ def _callees(node):
 
 
 def classify(source_root: Path, depth: int = 4):
-    """For every slash command in Elo Bot's cogs, the reasons it is bound to a channel (empty: usable anywhere)."""
+    """For every slash command in the elo_bot package, the reasons it is bound to a channel (empty: usable anywhere)."""
     functions, commands = {}, {}
-    files = sorted((source_root / 'cogs').rglob('*.py')) + [p for p in (source_root / 'main.py', source_root / 'beta.py') if p.is_file()]
-    for path in files:
-        tree = ast.parse(path.read_text(), str(path))
-        variable_at = _command_vars(tree)
+    trees = {_module_name(path, source_root): ast.parse(path.read_text(), str(path))
+             for path in sorted((source_root / 'elo_bot').rglob('*.py'))}
+    # Groups are declared once (e.g. extensions/match/groups.py) and imported by the mixins that decorate with them.
+    local = {module: _command_vars(tree) for module, tree in trees.items()}
+    modules = {module: (lambda name, line, resolve=resolve: resolve(ast.Name(id=name), line))
+               for module, resolve in local.items()}
+    for module, tree in trees.items():
+        variable_at = _command_vars(tree, _imports(tree, modules))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -143,8 +188,8 @@ def classify(source_root: Path, depth: int = 4):
                 name = func.attr if isinstance(func, ast.Attribute) else getattr(func, 'id', None)
                 if name == 'slash_command':
                     parts = [_kw(deco, 'name'), _kw(deco, 'group_name'), _kw(deco, 'sub_cmd_name')]
-                elif name == 'subcommand' and isinstance(func.value, ast.Name) and variable_at(func.value.id, node.lineno):
-                    root, group = variable_at(func.value.id, node.lineno)
+                elif name == 'subcommand' and variable_at(func.value, node.lineno):
+                    root, group = variable_at(func.value, node.lineno)
                     parts = [root, _kw(deco, 'group_name') or group, _kw(deco, 'sub_cmd_name')]
                 else:
                     continue
@@ -195,7 +240,7 @@ REVIEWED_ANYWHERE = {
 
 def source_root():
     here = Path.cwd()
-    if (here / 'cogs').is_dir() and (here / 'main.py').exists():
+    if (here / 'elo_bot').is_dir() and (here / 'main.py').exists():
         return here
     return Path(os.environ.get('HELIO_PROJECT', Path.home() / 'PythonProjects/elo-bot'))
 

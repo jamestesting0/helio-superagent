@@ -24,7 +24,7 @@ class OwnerProfileTests(unittest.TestCase):
         self.kit.mkdir(parents=True)
         shutil.copytree(ROOT / "scripts", self.kit / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copyfile(ROOT / "helio.env.example", self.kit / "helio.env.example")
-        for name in ("agent", "vendor", "omo", "elobot-checkout", "discord-inbound"):
+        for name in ("agent", "vendor", "omo", "discord-inbound"):
             (self.kit / name).symlink_to(ROOT / name, target_is_directory=True)
         (self.home / "PythonProjects/elo-bot").mkdir()
         self.environment = {

@@ -131,7 +131,6 @@ INBOUND_FILES = (
     "fixtures/clock.ts", "fixtures/delivery-output.ts", "fixtures/discord-client.ts", "fixtures/discord-data.ts",
     "fixtures/discord.ts", "fixtures/now.ts", "fixtures/working.ts", "fixtures/hermetic.ts", "bunfig.toml",
 )
-CHECKOUT_DOCS = ("README.md", "base-fingerprints.md", "bot-ui.md", "copy-style.md", "discord-qa.md")
 PLACEHOLDER = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 
 

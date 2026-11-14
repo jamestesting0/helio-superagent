@@ -44,8 +44,6 @@ def plan(home: Path, project: Path, profile: str) -> list[tuple[Path, bytes, int
           for name in PAYLOAD["VENDOR_FILES"]),
         *((home / ".dori/discord-inbound" / name, (ROOT / "discord-inbound" / name).read_bytes(), 0o644)
           for name in INBOUND_FILES),
-        *((base / "project-docs" / name, (ROOT / "elobot-checkout/docs" / name).read_bytes(), 0o644)
-          for name in PAYLOAD["CHECKOUT_DOCS"]),
         (project / ".omo/omo.jsonc", (ROOT / "omo/omo.jsonc").read_bytes(), 0o644),
         *(((project / ".omo/settings.json", (ROOT / "omo/settings.json").read_bytes(), 0o644),)
           if not (project / ".omo/settings.json").exists() else ()),
@@ -53,8 +51,6 @@ def plan(home: Path, project: Path, profile: str) -> list[tuple[Path, bytes, int
     if not PAYLOAD["CONFIG"]["config_path"](home).is_file():
         data, mode = PAYLOAD["CONFIG"]["generate"](mapping, home)["policy/lane-settings.json"]
         files.append((base / "policy/lane-settings.json", data, mode))
-    if not (project / "AGENTS.md").exists():
-        files.append((project / "AGENTS.md", (ROOT / "elobot-checkout/AGENTS.md").read_bytes(), 0o644))
     return files
 
 
