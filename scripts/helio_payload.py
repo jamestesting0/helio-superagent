@@ -16,7 +16,8 @@ CONFIG = runpy.run_path(str(ROOT / "scripts/helio_config.py"))
 PROFILES = ("isolated", "owner")
 EXECUTABLES = ("start", "inbound", "ack", "context")
 HELPERS = ("knowledge-setup.py", "helio-sessions.py", "monitor-specs.py", "browser-env", "browser-env.test.ts",
-           "reply.ts", "reply.test.ts", "evidence.ts", "evidence.test.ts", "thread-target.ts", "thread-target.test.ts")
+           "reply.ts", "reply.test.ts", "evidence.ts", "evidence.test.ts", "thread-target.ts", "thread-target.test.ts",
+           "discord-text.ts", "discord-text.test.ts")
 RUNBOOKS = ("github-writing-workflow.md", "discord-qa-workflow.md", "beta-maintenance-workflow.md", "oracle-restart-workflow.md", "autofix-workflow.md",
             "issue-plan-workflow.md", "decisions-workflow.md", "issue-truth-workflow.md", "startup-recovery-workflow.md",
             "lead-turns.md", "request-intake.md", "questions.md", "monitor-events.md", "discord-reference.md")

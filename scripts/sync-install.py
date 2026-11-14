@@ -16,7 +16,7 @@ PROFILES=PAYLOAD['PROFILES']
 MANAGED=PAYLOAD['MANAGED']
 RETIRED=PAYLOAD['RETIRED']
 SHIPPED=PAYLOAD['PREVIOUSLY_SHIPPED']
-NEW_PAYLOAD=('helio-sessions.py','monitor-specs.py','evidence.ts','evidence.test.ts',*PAYLOAD['SKILLS'],
+NEW_PAYLOAD=('helio-sessions.py','monitor-specs.py','evidence.ts','evidence.test.ts','discord-text.ts','discord-text.test.ts',*PAYLOAD['SKILLS'],
              *('@vendor/'+name for name in PAYLOAD['VENDOR_MANAGED']))
 def digest(b): return hashlib.sha256(b).hexdigest()
 def atomic(p, data):
@@ -102,7 +102,7 @@ def run(home, action, update_launcher=False, profile=None):
  for name in names:
   if name in documents: data=documents[name]
   elif name=='config.json':
-   for k in ('agentCommand','defaultModel','launchKeywords','launchProfiles','defaultProfile','leadPaneFile','maxWorkers','hibernateAfterMin','runtimeConfigFile'): active[k]=source_config[k]
+   for k in ('agentCommand','defaultModel','launchKeywords','launchProfiles','defaultProfile','leadPaneFile','maxWorkers','hibernateAfterMin','runtimeConfigFile','discordTextHook'): active[k]=source_config[k]
    for hook in ('inspectJobSource','beforeWake','beforeComplete'):
     active.setdefault('hooks',{}).setdefault(hook,source_config['hooks'][hook])
    data=(json.dumps(active,indent=2)+'\n').encode()

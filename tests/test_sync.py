@@ -56,6 +56,12 @@ class SyncTests(unittest.TestCase):
   hooks=json.loads(path.read_text())['hooks']
   self.assertEqual(hooks.get('inspectJobSource'),['helio','recovery','source','{source}','--job','{job}'])
   self.assertEqual({k:v for k,v in hooks.items() if k!='inspectJobSource'},previous)
+ def test_update_enables_the_discord_text_hook_in_an_existing_installation(self):
+  path=self.dst/'config.json'; config=json.loads(path.read_text())
+  config.pop('discordTextHook',None)
+  path.write_text(json.dumps(config,indent=2)+'\n')
+  quiet(SYNC['run'],self.home,'adopt'); quiet(SYNC['run'],self.home,'apply')
+  self.assertEqual(json.loads(path.read_text())['discordTextHook'],'~/.dori/elobot/discord-text.ts')
  def test_update_adds_phase_effect_hooks_to_legacy_installation(self):
   path=self.dst/'config.json'; config=json.loads(path.read_text())
   config['hooks'].pop('beforeWake',None); config['hooks'].pop('beforeComplete',None)

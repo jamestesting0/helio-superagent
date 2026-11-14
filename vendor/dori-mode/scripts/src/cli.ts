@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { loadConfig } from "./config.ts";
+import { expandHome, loadConfig } from "./config.ts";
 import { deadPaneTick, newDeadPaneState } from "./dead-panes.ts";
 import { abandonLane, acknowledgeClaim, claimDone, closeLane, type FlowDeps, objectDone, watchTick } from "./done-flow.ts";
 import { every, monitorLine } from "./monitor.ts";
@@ -338,8 +338,16 @@ try {
         const dc = new Discord(fetchHttp, realClock, token("DORI_DISCORD_TOKEN"));
         const user = to.startsWith("user:") ? to.slice(5) : to === process.env.DORI_DISCORD_OWNER_ID ? to : undefined;
         const channel = user ? await dc.openDm(user) : to;
-        if (edit) await dc.edit(channel, edit, text);
-        else console.log(`SENT ${await dc.send(thread ?? channel, text, (opt("ping") ?? "").split(",").map(id => id.trim()).filter(Boolean))}`);
+        // A deployment may rewrite Discord prose before it is sent, for example to link the people it knows.
+        let content = text;
+        if (config.discordTextHook) {
+          const hookPath = expandHome(config.discordTextHook);
+          const hook: unknown = (await import(hookPath)).formatDiscordText;
+          if (typeof hook !== "function") die(`${hookPath} does not export formatDiscordText(text)`);
+          content = String(await hook(text));
+        }
+        if (edit) await dc.edit(channel, edit, content);
+        else console.log(`SENT ${await dc.send(thread ?? channel, content, (opt("ping") ?? "").split(",").map(id => id.trim()).filter(Boolean))}`);
       } else die(`unknown platform ${platform}`);
       break;
     }

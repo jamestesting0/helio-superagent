@@ -44,6 +44,8 @@ export type DoriConfig = {
   readonly maxWorkers: number;
   readonly hibernateAfterMin: number;
   readonly runtimeConfigFile?: string;
+  /** Module whose `formatDiscordText(text)` rewrites `dori send discord` text before it is sent or edited. */
+  readonly discordTextHook?: string;
   readonly runtimeRevision?: string;
   readonly deadPanePatterns: readonly string[];
   readonly guard: GuardThresholds;
