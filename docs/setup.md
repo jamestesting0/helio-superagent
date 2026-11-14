@@ -265,11 +265,11 @@ The UIDs matter: the launcher and service units reference 999.
 sudo install -d -m 755 /opt/helio-beta-service/scripts /opt/helio-beta-service/packages
 sudo python3.12 -m venv /opt/helio-beta-service/python
 sudo /opt/helio-beta-service/python/bin/pip install --target /opt/helio-beta-service/packages pymongo dnspython certifi python-dotenv
-cd ~/PythonProjects/helio-superagent/scripts
-sudo install -m 644 helio-beta.py helio_beta_backup.py helio_beta_broker.py helio_beta_service.py \
-  helio_beta_vault.py helio_isolated_launcher.py helio_release_service.py helio_approval.py \
-  helio_isolated_admin.py helio_deploy_plan.py helio_owner_policy.py helio_state_backup.py /opt/helio-beta-service/scripts/
+sudo python3 ~/PythonProjects/helio-superagent/scripts/helio_root_bundle.py --apply
 ```
+
+The bundle installer is the one list of protected files (scripts, units and `helio.env.example`);
+`helio deploy` and `helio doctor` report any of them that differ from the kit, with this command.
 
 The services need a Python 3.12 outside `/home` (they run with `ProtectHome`).
 The current laptop uses a standalone CPython build copied to

@@ -13,6 +13,30 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RootBundleTests(unittest.TestCase):
+    def test_drift_names_exactly_the_protected_files_that_differ_from_the_kit(self):
+        module = runpy.run_path(str(ROOT / "scripts/helio_root_bundle.py"))
+        drift = module["drift"]
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            scripts, units = base / "kit/scripts", base / "kit/isolation/systemd"
+            target, installed_units = base / "installed/scripts", base / "installed/units"
+            for directory in (scripts, units, target, installed_units):
+                directory.mkdir(parents=True)
+            for name in module["BUNDLE"]:
+                (scripts / name).write_text(name)
+                (target / name).write_text(name)
+            for name in module["UNITS"]:
+                (units / name).write_text(name)
+                (installed_units / name).write_text(name)
+            (scripts.parent / "helio.env.example").write_text("HELIO_AUTOFIX_DENY=new\n")
+            (target.parent / "helio.env.example").write_text("HELIO_AUTOFIX_DENY=new\n")
+            with patch.dict(drift.__globals__, {"TARGET": target, "UNIT_TARGET": installed_units}):
+                self.assertEqual(drift(scripts), [])
+                # A changed default and a never-installed script are both drift the owner must install.
+                (target.parent / "helio.env.example").write_text("HELIO_AUTOFIX_DENY=old\n")
+                (target / "helio_config.py").unlink()
+                self.assertEqual(drift(scripts), ["helio.env.example", "helio_config.py"])
+
     def test_administration_bootstrap_preserves_other_services_and_their_payloads(self):
         module = runpy.run_path(str(ROOT / "scripts/helio_root_bundle.py"))
         main = module["main"]

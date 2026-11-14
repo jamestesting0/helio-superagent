@@ -45,6 +45,19 @@ def herdr(*args, timeout=15):
     return result.stdout
 
 
+def protected_drift() -> dict:
+    """Root-installed files that no longer match the kit. Deploy never writes them: the owner installs the bundle."""
+    bundle = HERE / 'helio_root_bundle.py'
+    if not bundle.is_file():
+        return {'stale': ['helio_root_bundle.py'], 'message': 'protected service files cannot be compared: '
+                'helio_root_bundle.py is not installed; run: sudo python3 '
+                '~/PythonProjects/helio-superagent/scripts/helio_root_bundle.py --apply'}
+    module = runpy.run_path(str(bundle))
+    stale = module['drift'](Path(SOURCE) / 'scripts')
+    return {'stale': stale, 'message': f"protected service files differ from the kit ({', '.join(stale)}); "
+            f"run: {module['INSTALL']}" if stale else ''}
+
+
 def read_state() -> dict:
     try:
         return json.loads(SAFE['read_agent_file'](HOME, STATE) or b'{}')
@@ -207,6 +220,9 @@ def deploy(restart_after: bool) -> int:
     print(f'Deployed {version} ({len(outcome["changed"])} changed files; backup {archive.name}; node {node or "not found"}).')
     print(plan['ADVICE'][outcome['needs']])
     print('Administration controller: ' + ('activation pending' if state['admin_controller_restart_pending'] else 'unchanged'))
+    stale = protected_drift()
+    if stale['stale']:
+        print('Protected services: ' + stale['message'])
     if restart_after:
         runpy.run_path(str(HERE / 'helio_admin_lifecycle.py'))['report'](True)
     if not live:
@@ -271,15 +287,20 @@ def main() -> int:
         if deployed:
             hours = round((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(deployed)).total_seconds() / 3600, 1)
         source = {'commit': commit, 'uncommitted_files': changed, 'hours_since_deploy': hours}
+        stale = protected_drift()
         if '--json' in args:
             report = json.loads(result.stdout)
             report['administration'] = administration
             report['source'] = source
+            report['protected_bundle'] = stale
+            if stale['stale']:
+                report.setdefault('attention', []).append(stale['message'])
             print(json.dumps(report))
         else:
             print(result.stdout, end='')
             print('administration: ' + json.dumps(administration, sort_keys=True))
             print('source: ' + json.dumps(source, sort_keys=True))
+            print('protected bundle: ' + (stale['message'] if stale['stale'] else 'matches the kit'))
         if result.stderr:
             print(result.stderr, file=sys.stderr, end='')
         return result.returncode

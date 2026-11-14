@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -76,6 +77,20 @@ class AdminService:
             raise Refused("unavailable", "The owner's canonical configuration is invalid")
         return config["policy_snapshot"](values, self.settings.owner_home)
 
+    def published_revision(self) -> str:
+        """The revision the isolated runtime enforces. A proof must carry it, not one recomputed here from this
+        service's own copy of the defaults, or every panel fails whenever that copy drifts from the kit."""
+        try:
+            snapshot = json.loads((self.settings.policy_dir / "policy.json").read_text())
+        except (OSError, ValueError):
+            raise Refused("unavailable", "The runtime policy is not published; run helio deploy") from None
+        values = snapshot.get("values") if isinstance(snapshot, dict) else None
+        revision = snapshot.get("revision") if isinstance(snapshot, dict) else None
+        if (snapshot.get("version") != 1 or not isinstance(values, dict) or not isinstance(revision, str) or
+                hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != revision):
+            raise Refused("unavailable", "The published runtime policy is invalid; run helio deploy")
+        return revision
+
     def publish(self) -> PublicPolicy:
         owner = runpy.run_path(str(HERE / "helio_owner_policy.py"))
         owner["refresh"](str(self.settings.isolated_home), pwd.getpwuid(self.settings.agent_uid))
@@ -104,7 +119,7 @@ class AdminService:
         nonce = secrets.token_hex(16)
         path = requests / (nonce + ".json")
         proof = {"id": nonce, "operation": operation, "actor": actor, "guild": request["guild"],
-                 "expires_at": int(time.time() * 1000) + 75_000, "policy_revision": policy["revision"], "query": query}
+                 "expires_at": int(time.time() * 1000) + 75_000, "policy_revision": self.published_revision(), "query": query}
         with path.open("x") as stream:
             os.chmod(path, 0o644)
             json.dump(proof, stream, separators=(",", ":"))

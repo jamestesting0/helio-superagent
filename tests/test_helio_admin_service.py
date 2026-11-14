@@ -31,6 +31,13 @@ class AdminServiceTests(unittest.TestCase):
         settings = M["Settings"](self.home, self.root / "isolated", self.root / "policy",
                                  self.root / "state", os.getuid(), os.getgid(), 999, 999)
         self.service = M["AdminService"](settings)
+        self.publish(self.service.policy())
+
+    def publish(self, snapshot):
+        directory = self.root / "policy"
+        directory.mkdir(exist_ok=True)
+        (directory / "policy.json").write_text(json.dumps(
+            {"version": 1, "revision": snapshot["revision"], "values": snapshot["values"]}))
 
     def save(self):
         source = C["config_path"](self.home)
@@ -128,6 +135,28 @@ class AdminServiceTests(unittest.TestCase):
                  "query": {"kind": "read", "section": "audit", "filters": {}}}
         with patch.object(self.service, "run_runtime", return_value={"records": []}):
             self.assertNotIn(target, json.dumps(self.service.perform(audit)))
+
+    def test_runtime_proof_carries_the_published_revision_even_when_the_canonical_defaults_drift(self):
+        published = self.service.policy()
+        self.values["HELIO_MAX_WORKERS"] = "7"  # canonical config moves; the runtime still enforces what was published
+        self.save()
+        self.assertNotEqual(self.service.policy()["revision"], published["revision"])
+        proofs = []
+
+        def read_proof(nonce):
+            proofs.append(json.loads((self.root / f"policy/requests/{nonce}.json").read_text()))
+            return {"records": []}
+
+        request = {"kind": "runtime", "actor": "11111", "operation": "read", "guild": "1033924790513311756",
+                   "query": {"kind": "read", "section": "overview", "filters": {}}}
+        with patch.object(self.service, "run_runtime", side_effect=read_proof):
+            self.service.perform(request)
+        self.assertEqual(proofs[0]["policy_revision"], published["revision"])
+        (self.root / "policy/policy.json").unlink()
+        with patch.object(self.service, "run_runtime", side_effect=AssertionError("proof without a published policy")), \
+                self.assertRaises(M["Refused"]) as refusal:
+            self.service.perform({**request, "operation": "again"})
+        self.assertEqual(refusal.exception.code, "unavailable")
 
     def test_runtime_output_bound_does_not_limit_ordinary_database_file_sizes(self):
         path = self.root / "large-runtime-file"

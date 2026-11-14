@@ -17,7 +17,7 @@ ADMIN_BUNDLE = (
     "helio_owner_policy.py", "helio_state_backup.py", "helio_doctor.py", "helio_health.py",
     "helio_admin_service.py", "helio_admin_controller.py", "helio_config.py",
     "helio_admin_journal.py", "helio_admin_process.py", "helio_admin_socket.py",
-    "helio_admin_recovery.py", "helio_admin_lifecycle.py", "helio_admin_install.py",
+    "helio_admin_recovery.py", "helio_admin_lifecycle.py", "helio_admin_install.py", "helio_root_bundle.py",
 )
 BUNDLE = ("helio-beta.py", "helio_beta_backup.py", "helio_beta_broker.py", "helio_beta_service.py",
           "helio_beta_vault.py", "helio_release_service.py", "helio_approval.py", "helio_discord_text.py", *ADMIN_BUNDLE)
@@ -25,6 +25,23 @@ TARGET = Path("/opt/helio-beta-service/scripts")
 UNITS = ("helio-release.service", "helio-beta-maintenance.service", "helio-admin.service", "helio-admin-controller.service")
 UNIT_TARGET = Path("/etc/systemd/system")
 BACKUPS = Path("/var/lib/helio-agent-backups/brokers")
+INSTALL = "sudo python3 ~/PythonProjects/helio-superagent/scripts/helio_root_bundle.py --apply"
+
+
+def files(source: Path, administration_only: bool = False) -> dict[str, tuple[Path, Path]]:
+    """Every protected file this bundle installs: name -> (kit source, installed destination)."""
+    selected = ADMIN_BUNDLE if administration_only else BUNDLE
+    units = tuple(name for name in UNITS if name.startswith("helio-admin")) if administration_only else UNITS
+    mapping = {name: (source / name, TARGET / name) for name in selected}
+    mapping.update({name: (source.parent / "isolation/systemd" / name, UNIT_TARGET / name) for name in units})
+    mapping["helio.env.example"] = (source.parent / "helio.env.example", TARGET.parent / "helio.env.example")
+    return mapping
+
+
+def drift(source: Path) -> list[str]:
+    """Protected files whose installed copy differs from the kit; read-only, so deploy and doctor can report it."""
+    return sorted(name for name, (path, target) in files(source).items()
+                  if path.is_file() and (not target.is_file() or target.read_bytes() != path.read_bytes()))
 
 
 def main() -> int:
@@ -37,17 +54,11 @@ def main() -> int:
         parser.error("Run this owner-side installer as root.")
     source = Path(__file__).resolve().parent
     content = {}
-    destinations = {name: TARGET / name for name in BUNDLE}
-    destinations.update({name: UNIT_TARGET / name for name in UNITS})
-    destinations["helio.env.example"] = TARGET.parent / "helio.env.example"
-    selected = ADMIN_BUNDLE if args.administration_only else BUNDLE
-    units = tuple(name for name in UNITS if name.startswith("helio-admin")) if args.administration_only else UNITS
-    for name in (*selected, *units):
-        path = source / name if name in BUNDLE else source.parent / "isolation/systemd" / name
+    destinations = {name: target for name, (_, target) in files(source).items()}
+    for name, (path, _) in files(source, args.administration_only).items():
         if path.is_symlink() or not path.is_file():
             parser.error(f"Source is not a regular file: {name}")
         content[name] = path.read_bytes()
-    content["helio.env.example"] = (source.parent / "helio.env.example").read_bytes()
     changed = [name for name, data in content.items() if not destinations[name].exists() or destinations[name].read_bytes() != data]
     installed = {name: hashlib.sha256(content[name] if name in content else path.read_bytes()).hexdigest()
                  for name, path in destinations.items() if name in content or path.is_file()}
