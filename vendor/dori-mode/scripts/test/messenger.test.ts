@@ -211,7 +211,7 @@ test("unsolicited Discord messages ping only explicit user recipients", async ()
   const { http, seen } = fakeHttp(() => ok({ id: "123" }));
   const discord = new Discord(http, fakeClock(0), "fake");
 
-  await discord.send("9", "<@111> please review; **[James](<https://discord.com/users/222>)** reported it. @everyone", ["111"]);
+  await discord.send("9", "<@111> please review; **[James](<https://discord.com/users/222?tab=wishlist>)** reported it. @everyone", ["111"]);
 
   expect(JSON.parse(String(seen[0]?.body)).allowed_mentions).toEqual({ parse: [], users: ["111"] });
   await expect(discord.send("9", "@everyone", ["everyone"])).rejects.toBeInstanceOf(UnsafeMessageError);

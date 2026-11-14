@@ -3,7 +3,7 @@ import { clipReferences, githubReferences, messageUrl, referenceLink } from "./r
 
 test("user references escape display names inside a bold profile link", () => {
   expect(referenceLink({ kind: "user", id: "33333", label: "James [staff] *dev* <@44444>" }))
-    .toBe("**[James \\[staff\\] \\*dev\\* \\<@44444\\>](<https://discord.com/users/33333>)**");
+    .toBe("**[James \\[staff\\] \\*dev\\* \\<@44444\\>](<https://discord.com/users/33333?tab=wishlist>)**");
 });
 
 test.each(["99999", "@me"])("message references retain the supplied destination in %s", guild => {

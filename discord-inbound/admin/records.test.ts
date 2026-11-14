@@ -71,7 +71,7 @@ test("trusted-user list rows avoid repeating the name but retain the user link i
 
   expect(listFields(records, "trusted")).toEqual([{ name: "Offline fixture user", value: "Contributor access" }]);
   expect(listFields(records, "trusted", "33333")?.find(field => field.name === "User")?.value)
-    .toBe("**[Offline fixture user](<https://discord.com/users/33333>)**");
+    .toBe("**[Offline fixture user](<https://discord.com/users/33333?tab=wishlist>)**");
 });
 
 test("channel list rows show the policy once and retain the channel link in details", async () => {
@@ -94,7 +94,7 @@ test("blocked-user list rows keep the reason and source without repeating the us
 
   expect(listFields(records, "blocks")).toEqual([{ name: "Offline fixture user", value: "Manual | Repeated unrelated pings" }]);
   expect(listFields(records, "blocks", "33333")?.find(field => field.name === "User")?.value)
-    .toBe("**[Offline fixture user](<https://discord.com/users/33333>)**");
+    .toBe("**[Offline fixture user](<https://discord.com/users/33333?tab=wishlist>)**");
 });
 
 test("compact lane lists retain work, session and completion evidence in the opened item", async () => {

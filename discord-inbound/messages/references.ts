@@ -4,12 +4,14 @@ export type DiscordReference =
 
 export const escapeText = (value: string) => value.replace(/[\\`*_~|[\]()]/g, "\\$&");
 export const escapeLabel = (value: string) => escapeText(value).replace(/[<>]/g, "\\$&");
+/** The wishlist tab keeps Discord from unfurling a profile embed for the link. */
+const userUrl = (user: string) => `https://discord.com/users/${user}?tab=wishlist`;
 export const messageUrl = (guild: string, channel: string, message: string) =>
   `https://discord.com/channels/${guild}/${channel}/${message}`;
 
 export function referenceLink(reference: DiscordReference): string {
   const label = escapeLabel(reference.label.replace(/[\r\n]/g, " ").slice(0, 80));
-  return reference.kind === "user" ? `**[${label}](<https://discord.com/users/${reference.id}>)**` :
+  return reference.kind === "user" ? `**[${label}](<${userUrl(reference.id)}>)**` :
     `[${label}](<${messageUrl(reference.guild, reference.channel, reference.id)}>)`;
 }
 
@@ -36,7 +38,7 @@ export function githubReferences(value: string, escapePlain = false): string {
 export function clipReferences(value: string, maximum: number): string {
   if (value.length <= maximum) return value;
   const end = Math.max(0, maximum - 3);
-  const links = /(?:\*\*)?\[(?:\\.|[^\]\\])*\]\(<https:\/\/(?:discord(?:app)?\.com\/(?:users\/\d+|channels\/(?:@me|\d+)\/\d+\/\d+)|github\.com\/[^>\s]+)>\)(?:\*\*)?/g;
+  const links = /(?:\*\*)?\[(?:\\.|[^\]\\])*\]\(<https:\/\/(?:discord(?:app)?\.com\/(?:users\/\d+(?:\?tab=wishlist)?|channels\/(?:@me|\d+)\/\d+\/\d+)|github\.com\/[^>\s]+)>\)(?:\*\*)?/g;
   for (const match of value.matchAll(links)) {
     if (match.index < end && match.index + match[0].length > end) {
       return `${value.slice(0, match.index).trimEnd()}...`;

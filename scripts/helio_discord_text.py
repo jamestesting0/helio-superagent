@@ -40,9 +40,12 @@ def clip_links(text: str, maximum: int) -> str:
 
 
 def bot_text(content: str, repo: str | None = None, *, pull: bool | None = None) -> str:
-    """Normalize only exact profile links and matching GitHub labels/destinations."""
+    """Normalize only exact profile links and matching GitHub labels/destinations.
+
+    Profile links carry ``?tab=wishlist`` to suppress Discord's embed; results posted before that still parse.
+    """
     content = re.sub(
-        r"\*\*\[(?:\\.|[^\]\\\n])*\]\(<https://discord\.com/users/(\d{1,30})>\)\*\*",
+        r"\*\*\[(?:\\.|[^\]\\\n])*\]\(<https://discord\.com/users/(\d{1,30})(?:\?tab=wishlist)?>\)\*\*",
         lambda match: f"<@{match[1]}>", content,
     )
     if repo is None:

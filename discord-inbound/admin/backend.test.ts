@@ -206,7 +206,7 @@ test("private conversation inspection returns only the acting user's DM topics",
   }, { preconnect: realFetch.preconnect }));
   const response = await executeProof(f.proof({ kind: "read", section: "conversations", filters: {} }));
   expect(response.records.map(row => row.title)).toEqual(["Own request"]);
-  expect(response.records[0]?.summary).toContain("**[Requester](<https://discord.com/users/11111>)**");
+  expect(response.records[0]?.summary).toContain("**[Requester](<https://discord.com/users/11111?tab=wishlist>)**");
   expect(response.records[0]?.url).toBe("https://discord.com/channels/@me/44444/66666");
   expect(JSON.stringify(response)).not.toContain("Other private request");
 });

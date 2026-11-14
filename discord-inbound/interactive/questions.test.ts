@@ -78,7 +78,7 @@ const questionRow = (id: string) => {
 test("thread questions accept only their recipient or the owner", async () => {
   const qid = question(["yes", "no"], "thread");
   await handleInteraction(event(`h1:q:${qid}:o0`, STRANGER, { message: { id: QUESTION_MESSAGE } }), deps());
-  expect(callbacks().at(-1)?.data.content).toBe(`This one's for **[Recipient](<https://discord.com/users/${TRUSTED}>)**.`);
+  expect(callbacks().at(-1)?.data.content).toBe(`This one's for **[Recipient](<https://discord.com/users/${TRUSTED}?tab=wishlist>)**.`);
 });
 
 
@@ -92,7 +92,7 @@ test("an answer acknowledged before its public post keeps its text until the pos
   now += 10 * 60_000;
   await sweep(deps());
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages").at(-1)?.body.content)
-    .toBe(`**[User ${OWNER}](<https://discord.com/users/${OWNER}>)**: 8 hours`);
+    .toBe(`**[User ${OWNER}](<https://discord.com/users/${OWNER}?tab=wishlist>)**: 8 hours`);
   expect(questionRow(qid)).toMatchObject({ status: "done", answer_text: null, announced_at: now });
 });
 
@@ -156,7 +156,7 @@ test("typed replies clear buttons once after restart and identify the answerer",
   await sweep(deps());
   await sweep(deps());
   expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([{
-    content: `Question\nHow long?\nAnswered by **[User ${TRUSTED}](<https://discord.com/users/${TRUSTED}>)** (typed reply)`, components: [], allowed_mentions: { parse: [] },
+    content: `Question\nHow long?\nAnswered by **[User ${TRUSTED}](<https://discord.com/users/${TRUSTED}?tab=wishlist>)** (typed reply)`, components: [], allowed_mentions: { parse: [] },
   }]);
   expect(questionRow(qid).cleared_at).toBe(now);
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(0);
@@ -268,5 +268,5 @@ test("unauthorized option clicks and typed replies leave a question unanswered",
     scope: "answer-only", content: "tomorrow", reply_to: QUESTION_MESSAGE })).toBeUndefined();
   await handleInteraction(event(`h1:q:${qid}:o0`, STRANGER, { message: { id: QUESTION_MESSAGE } }), deps());
   expect(questionRow(qid).status).toBe("awaiting_answer");
-  expect(callbacks().at(-1)?.data.content).toBe(`This one's for **[Owner](<https://discord.com/users/${OWNER}>)**.`);
+  expect(callbacks().at(-1)?.data.content).toBe(`This one's for **[Owner](<https://discord.com/users/${OWNER}?tab=wishlist>)**.`);
 });

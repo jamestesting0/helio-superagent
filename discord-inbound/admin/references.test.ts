@@ -28,7 +28,7 @@ test("detail and confirmation links survive broker parsing while raw source text
     target: item.id, expected: "1", operation: "op", label: "Close", input: { outcome: "answered" } } }, [item], policy);
 
   expect(detail.embeds[0]?.fields).toEqual([
-    { name: "User", value: "**[James \\[staff\\]](<https://discord.com/users/33333>)**" },
+    { name: "User", value: "**[James \\[staff\\]](<https://discord.com/users/33333?tab=wishlist>)**" },
     { name: "Original message", value: "[Original message](<https://discord.com/channels/@me/44444/66666>)" },
     { name: "Request", value: "\\*\\*literal\\*\\* <@33333> \\[fake\\]\\(https://example.com\\)" },
   ]);
@@ -122,7 +122,7 @@ test.each(["auto", "owner"] as const)("blocked-user panels retain the supported 
     const item = record(JSON.parse(JSON.stringify(rows.records[0])));
     const output = renderReferenceRecord(item);
     expect(output.embeds[0]?.fields?.find(field => field.name === "Blocked by")?.value)
-      .toBe(source === "auto" ? "Helio" : "**[Fixture user 22222](<https://discord.com/users/22222>)**");
+      .toBe(source === "auto" ? "Helio" : "**[Fixture user 22222](<https://discord.com/users/22222?tab=wishlist>)**");
     expect(output.allowed_mentions).toEqual({ parse: [] });
     expect(delivery.moderation.list()[0]?.created_by).toBe(source === "auto" ? "helio" : "22222");
   } finally { delivery.close(); }

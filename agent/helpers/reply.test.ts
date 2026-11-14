@@ -35,7 +35,7 @@ test("explicit mentions ping only allowlisted users while profile references sta
     requests.push(request);
     return { status: 200, headers: {}, body: '{"id":"345678901234567890"}' };
   };
-  const text = "<@111> please review. **[James](<https://discord.com/users/222>)** reported it. <@333> @everyone";
+  const text = "<@111> please review. **[James](<https://discord.com/users/222?tab=wishlist>)** reported it. <@333> @everyone";
 
   await sendReply(new Discord(http, clock, "fake-token"), target, text, ["111", "111"]);
 
@@ -64,7 +64,7 @@ test("the installed reply command carries explicit ping intent to Discord withou
       throw new Error("Unexpected offline request: "+url);
     };`);
     const child = Bun.spawn([process.execPath, "--preload", preload, new URL("./reply.ts", import.meta.url).pathname,
-      target.channel_id, target.message_id, "<@111> review; **[James](<https://discord.com/users/222>)** <@333>", "--ping", "111"], {
+      target.channel_id, target.message_id, "<@111> review; **[James](<https://discord.com/users/222?tab=wishlist>)** <@333>", "--ping", "111"], {
       env: { ...process.env, DORI_DISCORD_TOKEN: "offline", DORI_STATE_DIR: "", DORI_POLICY_DIR: "",
         DORI_DISCORD_OWNER_ID: "222", DORI_DISCORD_ALLOWED: target.channel_id, DORI_DISCORD_TRUSTED_IDS: "",
         DORI_DISCORD_TRUSTED_CHANNELS: "", DORI_DISCORD_NORMAL_CHANNELS: target.channel_id,
@@ -75,7 +75,7 @@ test("the installed reply command carries explicit ping intent to Discord withou
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     const body = JSON.parse(stdout.split("\n").find(line => line.startsWith("OFFLINE_BODY "))?.slice("OFFLINE_BODY ".length) ?? "null");
     expect(body.allowed_mentions).toEqual({ parse: [], replied_user: true, users: ["111"] });
-    expect(body.content).toBe("<@111> review; **[James](<https://discord.com/users/222>)** <@333>");
+    expect(body.content).toBe("<@111> review; **[James](<https://discord.com/users/222?tab=wishlist>)** <@333>");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 

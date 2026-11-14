@@ -190,7 +190,7 @@ test("a click reaches the running intake watcher and is answered outside the mes
   });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
-  expect(stdout).toContain(`TEST_CALLBACK {"type":4,"data":{"content":"✅ **[Unavailable user](<https://discord.com/users/99>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · \`9f45e57\`","allowed_mentions":{"parse":[]}}}`);
+  expect(stdout).toContain(`TEST_CALLBACK {"type":4,"data":{"content":"✅ **[Unavailable user](<https://discord.com/users/99?tab=wishlist>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · \`9f45e57\`","allowed_mentions":{"parse":[]}}}`);
   expect(stdout).toContain(`TEST_PATCH /api/v10/channels/100/messages/500 {"components":[]}`);
   const confirm = stdout.split("\n").find((line) => line.startsWith("INBOUND_CONFIRM "));
   expect(JSON.parse(confirm!.slice("INBOUND_CONFIRM ".length))).toMatchObject({ id, outcome: "confirmed", by: "99", result_message_id: "701" });

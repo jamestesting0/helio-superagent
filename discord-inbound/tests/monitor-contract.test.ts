@@ -192,8 +192,8 @@ test.each(["300", null])("authorized turn references include message destination
   const rendered = JSON.parse(renderTurn([raw]).slice("ACK_TURN ".length)).turn.messages[0];
 
   expect(rendered.message_url).toBe(`https://discord.com/channels/${guild ?? "@me"}/104/500`);
-  expect(rendered.author_reference).toBe("**[James \\[staff\\]](<https://discord.com/users/66>)**");
-  expect(rendered.user_references["77"]).toBe("**[Other user](<https://discord.com/users/77>)**");
+  expect(rendered.author_reference).toBe("**[James \\[staff\\]](<https://discord.com/users/66?tab=wishlist>)**");
+  expect(rendered.user_references["77"]).toBe("**[Other user](<https://discord.com/users/77?tab=wishlist>)**");
   expect(rendered.content).toBe("Literal <@77>");
   expect(JSON.stringify(raw)).toBe(before);
 });

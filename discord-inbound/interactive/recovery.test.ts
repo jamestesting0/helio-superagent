@@ -10,7 +10,7 @@ import { lapseNotice } from "./text.ts";
 
 const OWNER = "99", TRUSTED = "77", STRANGER = "66", PROMPT_MESSAGE = "500", QUESTION_MESSAGE = "600";
 const SHA = "9f45e57" + "a".repeat(33);
-const PROOF = "✅ **[User 99](<https://discord.com/users/99>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · `9f45e57`";
+const PROOF = "✅ **[User 99](<https://discord.com/users/99?tab=wishlist>)** confirmed merge [PR #6](<https://github.com/o/r/pull/6>) · `9f45e57`";
 let dir: string, prompts: PromptStore, now: number, lines: string[], warnings: string[], calls: { method: string; path: string; body: any }[];
 let replies: Array<[RegExp, (body: any) => unknown]>;
 let sequence = 1000;
