@@ -122,7 +122,10 @@ def execute(args: argparse.Namespace, store: Store, run: Runner) -> int:
             return 0
         match args.phase_action:
             case "show":
-                print(json.dumps(asdict(wait), indent=2))
+                result = asdict(wait)
+                if wait.data.get("pr"):
+                    result["completion_event"] = OBLIGATIONS["completion_event"](wait.repo, wait.data["pr"])
+                print(json.dumps(result, indent=2))
             case "start":
                 wait = P["start"](store, wait, run)
                 print(f"PHASE_STARTED issue={wait.issue} generation={wait.generation} session={wait.data['started_session']}")
@@ -143,13 +146,13 @@ def execute(args: argparse.Namespace, store: Store, run: Runner) -> int:
                     raise S["Refused"]("custody event is unknown")
                 authority = wait.data.get("authority") or {}
                 if (event.get("status") in ("ready", "settled") and authority.get("message")
-                        and OBLIGATIONS["pr_completion_owed"](store.state, wait.repo, wait.issue, authority)):
+                        and OBLIGATIONS["pr_completion_owed"](store.state, wait.repo, wait.issue, authority, wait.data["pr"])):
                     if not args.no_completion:
                         raise S["Refused"](
                             f"the requester has not been told: reply once to message {authority['message']} in channel "
-                            f"{authority['channel']} with --event completion (evidence.ts or reply.ts), then acknowledge; "
+                            f"{authority['channel']} with --event {OBLIGATIONS['completion_event'](wait.repo, wait.data['pr'])} (evidence.ts or reply.ts), then acknowledge; "
                             "or acknowledge with --no-completion REASON")
-                    OBLIGATIONS["waive"](store.state, OBLIGATIONS["pr_key"](wait.repo, wait.issue), args.no_completion)
+                    OBLIGATIONS["waive"](store.state, OBLIGATIONS["pr_key"](wait.repo, wait.issue, wait.data["pr"]), args.no_completion)
                 notices = [{**item, "acknowledged": True} if item["id"] == args.event else item
                            for item in wait.data["notices"]]
                 S["save"](store, replace(wait, data={**wait.data, "notices": notices}))

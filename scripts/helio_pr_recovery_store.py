@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
+import runpy
 import sqlite3
 import time
 from typing import Literal, Protocol, TypedDict
@@ -227,6 +228,8 @@ def save(store: Store, wait: Wait) -> Wait:
                                  (wait.generation, data, time.time(), wait.repo, wait.issue, wait.revision))
             if changed.rowcount != 1:
                 raise Changed("custody changed before its effect; reconcile the existing intent")
+    runpy.run_path(str(Path(__file__).with_name("helio_obligations.py")))["record_pr"](
+        store.state, wait.repo, wait.issue, wait.data)
     return replace(wait, revision=wait.revision + 1)
 
 

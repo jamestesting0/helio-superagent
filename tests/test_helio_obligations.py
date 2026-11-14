@@ -11,9 +11,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-O = runpy.run_path(str(ROOT / "scripts/helio_obligations.py"))
+LEDGER = runpy.run_path(str(ROOT / "scripts/helio_obligations.py"))
 REPO = "o/r"
 REQUEST = {"channel": "1220331873079922810", "message": "1570912484972302357"}
+PR = f"https://github.com/{REPO}/pull/29"
+EVENT = LEDGER["completion_event"](REPO, PR)
 
 
 class ObligationTests(unittest.TestCase):
@@ -44,60 +46,84 @@ class ObligationTests(unittest.TestCase):
     def test_a_ready_pr_owes_its_requester_one_completion_until_that_exact_send(self):
         """2026-11-13: PR #29 reached ready, the lead read 'the controller owns completion' and nobody told James."""
         self.custody(28, ["waiting"])
-        self.assertEqual(O["owed"](self.state, REPO), [])
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
         self.custody(28, ["waiting", "ready"])
-        owed = O["owed"](self.state, REPO)
+        owed = LEDGER["owed"](self.state, REPO)
         self.assertEqual([(o["kind"], o["issue"]) for o in owed], [("pr-ready", 28)])
-        self.assertIn(f"--event completion", owed[0]["send"])
+        self.assertIn(f"--event {EVENT}", owed[0]["send"])
         self.assertIn(REQUEST["message"], owed[0]["send"])
         # A completion for another request in the same channel shares the event name but discharges nothing here.
-        self.sent("1570887554843025409", REQUEST["channel"], "completion")
-        self.assertEqual(len(O["owed"](self.state, REPO)), 1)
-        self.sent(REQUEST["message"], REQUEST["channel"], "completion")
-        self.assertEqual(O["owed"](self.state, REPO), [])
+        self.sent("1570887554843025409", REQUEST["channel"], EVENT)
+        self.assertEqual(len(LEDGER["owed"](self.state, REPO)), 1)
+        self.sent(REQUEST["message"], REQUEST["channel"], EVENT)
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
 
     def test_a_waiver_with_a_reason_ends_an_obligation_and_an_empty_reason_is_refused(self):
         self.custody(28, ["ready"])
         with self.assertRaises(ValueError):
-            O["waive"](self.state, O["pr_key"](REPO, 28), " ")
-        O["waive"](self.state, O["pr_key"](REPO, 28), "requester withdrew the request")
-        self.assertEqual(O["owed"](self.state, REPO), [])
+            LEDGER["waive"](self.state, LEDGER["pr_key"](REPO, 28, PR), " ")
+        LEDGER["waive"](self.state, LEDGER["pr_key"](REPO, 28, PR), "requester withdrew the request")
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
+
+    def test_readiness_survives_source_pruning_and_settlement_survives_receipt_pruning(self):
+        data = {"pr": PR, "authority": REQUEST, "notices": [{"status": "ready", "at": 10}]}
+        LEDGER["record_pr"](self.state, REPO, 28, data)
+        other = f"https://github.com/{REPO}/pull/30"
+        LEDGER["record_pr"](self.state, REPO, 28, {**data, "pr": other})
+        self.assertEqual({o["pr"] for o in LEDGER["owed"](self.state, REPO)}, {PR, other})
+        self.sent(REQUEST["message"], REQUEST["channel"], EVENT)
+        self.assertEqual([o["pr"] for o in LEDGER["owed"](self.state, REPO)], [other])
+        with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
+            db.execute("DELETE FROM reply_sends")
+        self.assertEqual([o["pr"] for o in LEDGER["owed"](self.state, REPO)], [other])
 
     def test_an_answered_question_for_a_conversation_is_owed_to_that_requester_until_relayed(self):
         """2026-11-14: James answered Rascal's correction question; it was acknowledged and Rascal never heard."""
-        link = O["link_question"](self.state, "cb1b83058dd74b51b343", "1570921095282954431", None)
+        link = LEDGER["link_question"](self.state, "cb1b83058dd74b51b343", "1570921095282954431", None)
         self.assertEqual((link["channel"], link["requester"]), ("1220331873079922810", "996083715862184048"))
         with sqlite3.connect(self.state / "discord-questions.sqlite") as db:
             db.execute("INSERT INTO questions VALUES ('cb1b83058dd74b51b343','awaiting_answer',1794651700000)")
-        self.assertEqual(O["owed"](self.state, REPO), [])
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
         with sqlite3.connect(self.state / "discord-questions.sqlite") as db:
             db.execute("UPDATE questions SET status='done'")
-        owed = O["owed"](self.state, REPO)
+        owed = LEDGER["owed"](self.state, REPO)
         self.assertEqual([(o["kind"], o["requester"]) for o in owed], [("question-relay", "996083715862184048")])
-        self.sent("1570931722541867259", "1220331873079922810", O["relay_event"]("cb1b83058dd74b51b343"))
-        pending = O["owed"](self.state, REPO)
+        self.sent("1570931722541867259", "1220331873079922810", LEDGER["relay_event"]("cb1b83058dd74b51b343"))
+        pending = LEDGER["owed"](self.state, REPO)
         self.assertEqual([item["key"] for item in pending], ["question:cb1b83058dd74b51b343"])
         self.assertIn("relay is already settled", pending[0]["send"])
         with sqlite3.connect(self.state / "discord-conversations.sqlite") as db:
             db.execute("UPDATE conversations SET status='resolved'")
-        self.assertEqual(O["owed"](self.state, REPO), [])
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
 
     def test_a_question_must_say_who_it_is_for(self):
         for topic, internal in ((None, None), ("1", "x"), ("999", None), (None, "  ")):
             with self.subTest(topic=topic, internal=internal), self.assertRaises(ValueError):
-                O["link_question"](self.state, "q1", topic, internal)
-        O["link_question"](self.state, "q2", None, "owner-only deploy decision")
+                LEDGER["link_question"](self.state, "q1", topic, internal)
+        LEDGER["link_question"](self.state, "q2", None, "owner-only deploy decision")
         with sqlite3.connect(self.state / "discord-questions.sqlite") as db:
             db.execute("INSERT INTO questions VALUES ('q2','done',1)")
-        self.assertEqual(O["owed"](self.state, REPO), [])
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
+
+    def test_an_answered_question_obligation_survives_question_pruning(self):
+        LEDGER["link_question"](self.state, "q", "1570921095282954431", None)
+        LEDGER["activate_question"](self.state, "q")
+        self.assertEqual([o["key"] for o in LEDGER["owed"](self.state, REPO)], ["question:q"])
+        self.sent("1", REQUEST["channel"], LEDGER["relay_event"]("q"))
+        self.assertIn("relay is already settled", LEDGER["owed"](self.state, REPO)[0]["send"])
+        with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
+            db.execute("DELETE FROM reply_sends")
+        with sqlite3.connect(self.state / "discord-conversations.sqlite") as db:
+            db.execute("UPDATE conversations SET status='resolved'")
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
 
     def test_the_monitor_line_repeats_hourly_until_the_obligation_ends(self):
         self.custody(28, ["ready"])
-        self.assertEqual(len(O["surface"](self.state, REPO, now=10_000.0)), 1)
-        self.assertEqual(O["surface"](self.state, REPO, now=10_000.0 + 60), [])
-        self.assertTrue(O["surface"](self.state, REPO, now=10_000.0 + 3600)[0].startswith("OBLIGATION_DUE "))
-        self.sent(REQUEST["message"], REQUEST["channel"], "completion")
-        self.assertEqual(O["surface"](self.state, REPO, now=10_000.0 + 7200), [])
+        self.assertEqual(len(LEDGER["surface"](self.state, REPO, now=10_000.0)), 1)
+        self.assertEqual(LEDGER["surface"](self.state, REPO, now=10_000.0 + 60), [])
+        self.assertTrue(LEDGER["surface"](self.state, REPO, now=10_000.0 + 3600)[0].startswith("OBLIGATION_DUE "))
+        self.sent(REQUEST["message"], REQUEST["channel"], EVENT)
+        self.assertEqual(LEDGER["surface"](self.state, REPO, now=10_000.0 + 7200), [])
 
 
 class CustodyAckTests(unittest.TestCase):
@@ -150,12 +176,12 @@ class CustodyAckTests(unittest.TestCase):
         self.assertIn(f"reply once to message {REQUEST['message']}", out)
         with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
             db.execute("INSERT INTO reply_sends VALUES (?,?,'sent')",
-                       (REQUEST["message"], f"event:{REQUEST['channel']}:completion"))
+                       (REQUEST["message"], f"event:{REQUEST['channel']}:{EVENT}"))
         self.assertEqual(self.ack("ready1"), (0, "PR_CUSTODY_EVENT_ACK issue=28 event=ready1\n"))
 
     def test_a_recorded_reason_may_acknowledge_without_telling_the_requester(self):
         self.assertEqual(self.ack("ready1", "requester withdrew the request")[0], 0)
-        self.assertEqual(O["owed"](self.state, REPO), [])
+        self.assertEqual(LEDGER["owed"](self.state, REPO), [])
 
 
 if __name__ == "__main__":

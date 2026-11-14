@@ -1,11 +1,4 @@
-"""What Helio still owes a person, derived from the records that already prove it.
-
-An obligation is open while its source record says someone must hear something and the reply ledger has no
-matching send. The sources stay the single truth: a PR custody notice that reached ready or settled owes the
-requester a `completion` reply; an answered question raised for someone's conversation owes them a relay. This
-module stores only what no other record holds: which conversation a question was raised for, recorded waivers,
-and when each open obligation was last surfaced.
-"""
+"""Durable requester obligations, settled only by a delivery receipt or a recorded waiver."""
 from __future__ import annotations
 
 from contextlib import closing
@@ -15,7 +8,6 @@ from pathlib import Path
 import sqlite3
 import time
 
-COMPLETION = "completion"
 SURFACE_EVERY_S = 3600
 
 
@@ -30,7 +22,9 @@ def _own(state: Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS question_links (question TEXT PRIMARY KEY, channel TEXT, topic TEXT, requester TEXT,
             internal TEXT, created_at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS waivers (key TEXT PRIMARY KEY, reason TEXT NOT NULL, at REAL NOT NULL);
-        CREATE TABLE IF NOT EXISTS surfaced (key TEXT PRIMARY KEY, at REAL NOT NULL);""")
+        CREATE TABLE IF NOT EXISTS surfaced (key TEXT PRIMARY KEY, at REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS obligations (key TEXT PRIMARY KEY, data TEXT NOT NULL,
+            active INTEGER NOT NULL, relay_settled INTEGER NOT NULL DEFAULT 0, settled INTEGER NOT NULL DEFAULT 0);""")
     return db
 
 
@@ -85,6 +79,10 @@ def link_question(state: Path, question: str, topic: str | None, internal: str |
     with closing(_own(state)) as db, db:
         db.execute("INSERT INTO question_links VALUES (:question,:channel,:topic,:requester,:internal,:at) "
                    "ON CONFLICT(question) DO NOTHING", {**link, "at": time.time()})
+    if topic:
+        _record(state, {"key": f"question:{question}", "kind": "question-relay", "question": question,
+                       "topic": topic, "channel": link["channel"], "requester": link["requester"],
+                       "event": relay_event(question), "since": time.time()}, active=False)
     return link
 
 
@@ -98,47 +96,81 @@ def relay_event(question: str) -> str:
     return f"question-{question}"
 
 
-def pr_key(repo: str, issue: int) -> str:
-    return f"pr-ready:{repo}#{issue}"
+def pr_key(repo: str, issue: int, pr: str | None = None) -> str:
+    return f"pr-ready:{repo}#{issue}" + (f":{pr.rsplit('/', 1)[-1]}" if pr else "")
 
 
-def pr_completion_owed(state: Path, repo: str, issue: int, authority: dict) -> bool:
-    """A PR that reached ready or settled owes its requester one completion reply to the authorizing message."""
-    return not (delivered(state, authority["channel"], COMPLETION, authority["message"]) or waived(state, pr_key(repo, issue)))
+def completion_event(repo: str, pr: str) -> str:
+    return f"completion-pr-{repo.replace('/', '-')}-{pr.rsplit('/', 1)[-1]}"
+
+
+def _record(state: Path, item: dict, active: bool = True) -> None:
+    with closing(_own(state)) as db, db:
+        db.execute("INSERT INTO obligations(key,data,active) VALUES (?,?,?) ON CONFLICT(key) DO NOTHING",
+                   (item["key"], json.dumps(item), int(active)))
+
+
+def record_pr(state: Path, repo: str, issue: int, data: dict) -> None:
+    """Called by custody persistence; notices may later be compacted without losing this debt."""
+    authority = data.get("authority") or {}
+    reached = [n for n in data.get("notices", []) if n.get("status") in ("ready", "settled")]
+    pr = data.get("pr")
+    if not reached or not pr or not authority.get("channel") or not authority.get("message"):
+        return
+    _record(state, {"key": pr_key(repo, issue, pr), "kind": "pr-ready", "repo": repo, "issue": issue, "pr": pr,
+                    "channel": authority["channel"], "target": authority["message"], "event": completion_event(repo, pr),
+                    "since": min(n["at"] for n in reached)})
+
+
+def activate_question(state: Path, question: str) -> None:
+    with closing(_own(state)) as db, db:
+        db.execute("UPDATE obligations SET active=1 WHERE key=?", (f"question:{question}",))
+
+
+def pr_completion_owed(state: Path, repo: str, issue: int, authority: dict, pr: str) -> bool:
+    key = pr_key(repo, issue, pr)
+    with closing(_own(state)) as db:
+        row = db.execute("SELECT settled FROM obligations WHERE key=?", (key,)).fetchone()
+    return not ((row and row["settled"]) or delivered(state, authority["channel"], completion_event(repo, pr),
+                                                    authority["message"]) or waived(state, key))
 
 
 def owed(state: Path, repo: str) -> list[dict]:
-    """Every open obligation, newest first, with the exact send that discharges it."""
-    items: list[dict] = []
+    """Backfill existing sources, then reconcile persistent debts against receipts."""
     for row in _read(state / "issue-updates.sqlite", "SELECT issue, data FROM pr_waits WHERE repo=?", (repo,)):
-        data = json.loads(row["data"])
-        authority = data.get("authority") or {}
-        reached = [n for n in data.get("notices", []) if n.get("status") in ("ready", "settled")]
-        if not reached or not authority.get("channel") or not authority.get("message"):
-            continue
-        if pr_completion_owed(state, repo, row["issue"], authority):
-            items.append({"key": pr_key(repo, row["issue"]), "kind": "pr-ready", "issue": row["issue"], "pr": data.get("pr"),
-                          "since": max(n["at"] for n in reached),
-                          "send": f"reply once to message {authority['message']} in channel {authority['channel']} with "
-                                  f"--event {COMPLETION} (evidence.ts or reply.ts): the PR is ready"})
+        record_pr(state, repo, row["issue"], json.loads(row["data"]))
     answered = {row["id"]: row for row in _read(state / "discord-questions.sqlite",
                                                "SELECT id, status, updated FROM questions WHERE status IN ('answered','done')")}
     with closing(_own(state)) as db:
         links = db.execute("SELECT * FROM question_links WHERE topic IS NOT NULL").fetchall()
     for link in links:
         question = answered.get(link["question"])
-        key = f"question:{link['question']}"
-        if not question:
+        if question:
+            _record(state, {"key": f"question:{link['question']}", "kind": "question-relay",
+                           "question": link["question"], "channel": link["channel"], "topic": link["topic"],
+                           "requester": link["requester"], "event": relay_event(link["question"]),
+                           "since": question["updated"] / 1000 if question["updated"] > 1e11 else question["updated"]})
+            activate_question(state, link["question"])
+    with closing(_own(state)) as db:
+        rows = db.execute("SELECT * FROM obligations WHERE active=1 AND settled=0").fetchall()
+    items = []
+    for row in rows:
+        item = json.loads(row["data"])
+        if item.get("repo", repo) != repo:
             continue
-        sent = delivered(state, link["channel"], relay_event(link["question"])) or waived(state, key)
-        topic = conversation(state, link["topic"])
-        if sent and (not topic or topic["status"] not in ("open", "on_hold")):
+        sent = bool(row["relay_settled"]) or delivered(state, item["channel"], item["event"], item.get("target")) or waived(state, item["key"])
+        topic = conversation(state, item["topic"]) if item.get("topic") else None
+        settled = sent and (not topic or topic["status"] not in ("open", "on_hold"))
+        with closing(_own(state)) as db, db:
+            db.execute("UPDATE obligations SET relay_settled=?,settled=? WHERE key=?", (int(sent), int(settled), item["key"]))
+        if settled:
             continue
-        items.append({"key": key, "kind": "question-relay", "question": link["question"], "topic": link["topic"],
-                      "requester": link["requester"], "since": question["updated"] / 1000 if question["updated"] > 1e11 else question["updated"],
-                      "send": (f"close conversation {link['topic']}; the relay is already settled" if sent else
-                               f"tell the requester the decision in channel {link['channel']} (topic {link['topic']}) with "
-                               f"--event {relay_event(link['question'])}, then close the conversation")})
+        item["send"] = (f"close conversation {item['topic']}; the relay is already settled" if sent else
+                        f"reply once in channel {item['channel']} " +
+                        (f"to message {item['target']} about PR {item['pr']}" if item.get("target") else
+                         f"to the requester in topic {item['topic']}, then close that conversation") +
+                        f" with --event {item['event']} (evidence.ts or reply.ts)")
+        items.append(item)
     return sorted(items, key=lambda item: -item["since"])
 
 
@@ -146,8 +178,9 @@ def surface(state: Path, repo: str, now: float | None = None) -> list[str]:
     """OBLIGATION_DUE lines for the monitor: each open obligation at most once per hour, until it is discharged."""
     now = time.time() if now is None else now
     lines = []
+    items = owed(state, repo)
     with closing(_own(state)) as db, db:
-        for item in owed(state, repo):
+        for item in items:
             last = db.execute("SELECT at FROM surfaced WHERE key=?", (item["key"],)).fetchone()
             if last and now - last["at"] < SURFACE_EVERY_S:
                 continue

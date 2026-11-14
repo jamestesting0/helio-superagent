@@ -90,7 +90,7 @@ question with buttons on the `custody-issueN` lane. Act by state:
 | Event | Your action |
 |---|---|
 | `waiting`, `repair` | Acknowledge; the controller acts. |
-| `ready`, `settled` | Send the requester's one completion to the authorizing message (`authority` in `helio pr phase show`) with evidence.ts or reply.ts `--event completion`, then acknowledge. `helio pr phase ack` refuses until that send is recorded; `--no-completion REASON` only when the requester must not be told. A later `ready` after a repair needs no second announcement. |
+| `ready`, `settled` | Send the requester's one completion to the authorizing message (`authority` in `helio pr phase show`) with evidence.ts or reply.ts `--event KEY`, using that output's `completion_event`, then acknowledge. `helio pr phase ack` refuses until that send is recorded; `--no-completion REASON` only when the requester must not be told. A later `ready` after a repair needs no second announcement. |
 | `decision` "Asked owner (QID)" or "Owner answered QID" | When answered, apply it: `helio pr phase decide --issue N --question QID` (add `--option LABEL` for a typed reply; `--title`, `--body-file`, `--restored-body-file` when the option creates an issue). Never `helio question ack` a custody question. |
 | `decision` "Parked until the owner decides" | Nothing until the owner speaks; then apply his message: `helio pr phase decide --issue N --message M --channel C --option LABEL`. |
 | `decision` "edited outside Helio" | Review the issue and adopt it with `helio issue update ... --question QID` or `--message M --channel C` naming who asked; only an owner source reworks the PR, others become the owner's scope question. |
