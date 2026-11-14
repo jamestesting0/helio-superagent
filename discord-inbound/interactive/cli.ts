@@ -215,7 +215,10 @@ export async function main(argv: readonly string[]): Promise<number> {
         `/channels/${row.channel_id}/messages?limit=100`);
       const found = recent.filter((message) => message.author?.id === me.id &&
         (message.components ?? []).some((group) => (group.components ?? []).some((c) => c.custom_id?.includes(`:${id}:`))));
-      if (found.length === 1) store.sent(id, found[0]!.id, Date.now());
+      if (found.length === 1) {
+        store.sent(id, found[0]!.id, Date.now());
+        store.supersede(row);
+      }
       else store.failed(id, "delivery_unknown", found.length ? "several matching messages; inspect manually" : "no matching recent message");
       return report(store.get(id)!);
     }

@@ -122,6 +122,29 @@ test("use consumes a confirmation once; cancel only stops an undecided prompt", 
   expect(main(["use", id])).rejects.toThrow("is used");
 });
 
+test("recovering a delivered replacement retires the older confirmed sibling before it can lapse", async () => {
+  const argv = ["ask", "--action", "pr", "--target", "o/r#6", "--revision", SHA, "--channel", "100"];
+  expect(await main(argv)).toBe(0);
+  const older = posts[0]!.body.nonce;
+  const s = store();
+  const at = Date.now();
+  try {
+    s.begin(older, "99", at, { app: "88", token: "tok", accept: true, expected: "shown" });
+    s.finish(older, "99", "confirmed", at, "700", true);
+  } finally { s.close(); }
+  posts.length = 0;
+  failPost = 502;
+  expect(await main(["ask", "--action", "pr", "--target", "o/r#6", "--revision", "b".repeat(40), "--channel", "100"])).toBe(1);
+  const replacement = posts[0]!.body.nonce;
+  expect(await main(["recover", replacement])).toBe(0);
+  const recovered = store();
+  try {
+    expect(recovered.get(older)?.status).toBe("superseded");
+    recovered.expireDue(at + 13 * 3_600_000);
+    expect(recovered.needingNotice()).toEqual([]);
+  } finally { recovered.close(); }
+});
+
 test.each(["merge", "restart"])("a clicked %s approval is usable once at eleven hours and lapses at twelve", async (action) => {
   const decided = Date.now(), early = "1".repeat(20), late = "2".repeat(20);
   const confirm = (id: string, at: number) => {
