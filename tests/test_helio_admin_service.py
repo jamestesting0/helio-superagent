@@ -31,7 +31,7 @@ class AdminServiceTests(unittest.TestCase):
         settings = M["Settings"](self.home, self.root / "isolated", self.root / "policy",
                                  self.root / "state", os.getuid(), os.getgid(), 999, 999)
         self.service = M["AdminService"](settings)
-        self.publish(self.service.policy())
+        self.publish(self.service.canonical_policy())
 
     def publish(self, snapshot):
         directory = self.root / "policy"
@@ -140,7 +140,8 @@ class AdminServiceTests(unittest.TestCase):
         published = self.service.policy()
         self.values["HELIO_MAX_WORKERS"] = "7"  # canonical config moves; the runtime still enforces what was published
         self.save()
-        self.assertNotEqual(self.service.policy()["revision"], published["revision"])
+        self.assertNotEqual(self.service.canonical_policy()["revision"], published["revision"])
+        self.assertEqual(self.service.perform({"kind": "policy"}), published)
         proofs = []
 
         def read_proof(nonce):

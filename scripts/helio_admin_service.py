@@ -70,26 +70,28 @@ class AdminService:
         self.settings = settings
         self.operations = JOURNAL["Operations"](settings.state)
 
-    def policy(self) -> PublicPolicy:
+    def canonical_policy(self) -> PublicPolicy:
         config = runpy.run_path(str(HERE / "helio_config.py"))
         values = config["load"](self.settings.owner_home)
         if config["problems"](values):
             raise Refused("unavailable", "The owner's canonical configuration is invalid")
         return config["policy_snapshot"](values, self.settings.owner_home)
 
-    def published_revision(self) -> str:
-        """The revision the isolated runtime enforces. A proof must carry it, not one recomputed here from this
-        service's own copy of the defaults, or every panel fails whenever that copy drifts from the kit."""
+    def policy(self) -> PublicPolicy:
+        """Panels and proofs use the values and revision enforced by the isolated runtime."""
         try:
             snapshot = json.loads((self.settings.policy_dir / "policy.json").read_text())
         except (OSError, ValueError):
             raise Refused("unavailable", "The runtime policy is not published; run helio deploy") from None
         values = snapshot.get("values") if isinstance(snapshot, dict) else None
         revision = snapshot.get("revision") if isinstance(snapshot, dict) else None
-        if (not isinstance(snapshot, dict) or snapshot.get("version") != 1 or not isinstance(values, dict) or not isinstance(revision, str) or
+        if (not isinstance(snapshot, dict) or snapshot.get("version") != 1 or not isinstance(values, dict) or
+                not all(isinstance(key, str) and isinstance(value, str) for key, value in values.items()) or
+                not {"DORI_DISCORD_OWNER_ID", "HELIO_TRUSTED_USERS", "HELIO_ADMIN_GUILD"} <= values.keys() or
+                not isinstance(revision, str) or
                 hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != revision):
             raise Refused("unavailable", "The published runtime policy is invalid; run helio deploy")
-        return revision
+        return {"version": 1, "revision": revision, "values": values}
 
     def publish(self) -> PublicPolicy:
         owner = runpy.run_path(str(HERE / "helio_owner_policy.py"))
@@ -98,6 +100,7 @@ class AdminService:
 
     def runtime(self, request: Mapping[str, Json], policy: PublicPolicy) -> Json:
         actor = string(request, "actor", 30)
+        authorize(self.canonical_policy(), actor)
         authorize(policy, actor)
         if string(request, "guild", 30) != policy["values"]["HELIO_ADMIN_GUILD"]:
             raise Refused("denied", "This administration request belongs to a different server")
@@ -119,7 +122,7 @@ class AdminService:
         nonce = secrets.token_hex(16)
         path = requests / (nonce + ".json")
         proof = {"id": nonce, "operation": operation, "actor": actor, "guild": request["guild"],
-                 "expires_at": int(time.time() * 1000) + 75_000, "policy_revision": self.published_revision(), "query": query}
+                 "expires_at": int(time.time() * 1000) + 75_000, "policy_revision": policy["revision"], "query": query}
         with path.open("x") as stream:
             os.chmod(path, 0o644)
             json.dump(proof, stream, separators=(",", ":"))
@@ -127,6 +130,7 @@ class AdminService:
             os.fsync(stream.fileno())
         try:
             result = self.run_runtime(nonce)
+            authorize(self.canonical_policy(), actor, mutation and query.get("action") == "lanes.abandon")
             authorize(self.policy(), actor, mutation and query.get("action") == "lanes.abandon")
             if query.get("kind") == "read" and query.get("section") == "audit" and isinstance(result, dict):
                 records = result.get("records")
@@ -247,6 +251,7 @@ class AdminService:
 
     def reconcile(self, request: Mapping[str, Json]) -> dict[str, Json]:
         policy = self.policy()
+        authorize(self.canonical_policy(), string(request, "actor", 30), request.get("kind") == "configure")
         authorize(policy, string(request, "actor", 30), request.get("kind") == "configure")
         return RECOVERY["reconcile"](self.settings.owner_home, request, policy, self.configure, self.runtime)
 
@@ -263,6 +268,7 @@ class AdminService:
                 return self.runtime(request, policy)
             case "operation":
                 actor = string(request, "actor", 30)
+                authorize(self.canonical_policy(), actor)
                 authorize(policy, actor)
                 return self.operations.get(actor, string(request, "operation", 100), self.reconcile)
             case _:
@@ -276,6 +282,7 @@ class AdminService:
             return self.dispatch(request)
         policy = self.policy()
         actor = string(request, "actor", 30)
+        authorize(self.canonical_policy(), actor, request.get("kind") == "configure")
         authorize(policy, actor, request.get("kind") == "configure")
         return self.operations.perform(request, actor, self.dispatch, self.reconcile)
 
