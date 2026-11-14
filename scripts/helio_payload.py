@@ -118,7 +118,7 @@ INBOUND_FILES = (
     # learning
     "learning/context-replay.ts", "learning/context-replay.test.ts", "learning/learning-scope.test.ts", "learning/learning-scope.ts",
     # interactive
-    "interactive/cli-flow.test.ts", "interactive/cli.ts", "interactive/handler.ts", "interactive/question-store.ts", "interactive/questions.ts", "interactive/transport.ts",
+    "interactive/cli-flow.test.ts", "interactive/cli.ts", "interactive/handler.ts", "interactive/question-store.ts", "interactive/questions.ts", "interactive/satisfaction.ts", "interactive/transport.ts",
     "interactive/questions.test.ts", "interactive/recovery.test.ts",
     "interactive/interactive.test.ts", "interactive/store.ts", "interactive/text.ts",
     # tests

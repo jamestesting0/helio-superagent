@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { CallError, discordCall, expireNow, handleInteraction, parseInteraction, sweep, type Deps } from "./handler.ts";
 import { LAPSE_MS, PromptStore, QuestionStore, CONFIRM_TTL_MS } from "./store.ts";
 import * as interactions from "./handler.ts";
+import { carriedOut, mergedOnGitHub } from "./satisfaction.ts";
 import { lapseNotice, planButtons, subjects } from "./text.ts";
 
 const OWNER = "99", TRUSTED = "77", STRANGER = "66", PROMPT_MESSAGE = "500", QUESTION_MESSAGE = "600";
@@ -198,7 +199,7 @@ test("a lapsed approval whose PR already merged on GitHub is closed without a no
   const id = prompt();
   await handleInteraction(event(`h1:c:${id}:confirm`, OWNER), deps());
   now += LAPSE_MS;
-  const merged = { ...deps(), carriedOut: (row: { target: string }) => interactions.mergedOnGitHub(row as never, async (pr) =>
+  const merged = { ...deps(), carriedOut: (row: { target: string }) => mergedOnGitHub(row as never, async (pr) =>
     pr === "o/r#6" ? "MERGED" : "OPEN") };
   await sweep(merged);
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toEqual([]);
@@ -206,7 +207,7 @@ test("a lapsed approval whose PR already merged on GitHub is closed without a no
   const restart = prompt("confirm", "restart");
   await handleInteraction(event(`h1:c:${restart}:confirm`, OWNER), deps());
   now += LAPSE_MS;
-  await sweep(merged);  // a restart cannot be proven from GitHub, so it still reports
+  await sweep({ ...deps(), carriedOut: async () => false });  // GitHub alone cannot prove a restart
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(1);
 });
 
@@ -217,6 +218,42 @@ test("every prompt names its subjects; a train covers each member and, with a re
   expect(subjects("confirm", "restart", "elobot")).toEqual(["service:elobot"]);
   expect(subjects("plan", "plan", "o/r#6")).toEqual(["plan:o/r#6"]);
   expect(() => subjects("confirm", "deploy", "x")).toThrow("no subjects for action deploy");
+});
+
+test("satisfaction proves each action and every part of a merge-and-restart train", async () => {
+  const row = prompts.get(prompt());
+  if (!row) throw new Error("missing fixture prompt");
+  const checks = {
+    prState: async () => "MERGED",
+    opened: async (_repo: string, issue: number, revision: string) => issue === 6 && revision === SHA,
+    running: async () => SHA,
+    trainTip: () => SHA,
+  };
+  for (const action of ["merge", "train", "train-restart", "pr", "restart"]) {
+    expect(await carriedOut({ ...row, action }, checks)).toBe(true);
+  }
+  expect(await carriedOut({ ...row, action: "pr", revision: "a".repeat(40) }, checks)).toBe(false);
+  expect(await carriedOut({ ...row, action: "restart", revision: "a".repeat(40) }, checks)).toBe(false);
+  expect(await carriedOut({ ...row, action: "train-restart" }, { ...checks, running: async () => undefined })).toBe(false);
+  expect(await carriedOut({ ...row, action: "train" }, { ...checks, prState: async () => "OPEN" })).toBe(false);
+});
+
+test("using one PR approval cannot retire or satisfy a train that also owes another PR", async () => {
+  const train = prompts.get(prompt());
+  const single = prompts.get(prompt());
+  if (!train || !single) throw new Error("missing fixture prompts");
+  const db = new Database(join(dir, "discord-prompts.sqlite"));
+  try {
+    db.query("UPDATE prompts SET action='train',target='o/r#6,7' WHERE id=?").run(train.id);
+    const full = prompts.get(train.id);
+    if (!full) throw new Error("missing train");
+    expect(prompts.supersede(single)).toBe(0);
+    now += 60_000;
+    await handleInteraction(event(`h1:c:${single.id}:confirm`, OWNER), deps());
+    expect(prompts.use(single.id, now)).toBe(true);
+    expect(prompts.satisfied(full)).toBe(false);
+    expect(prompts.get(train.id)?.status).toBe("open");
+  } finally { db.close(); }
 });
 
 

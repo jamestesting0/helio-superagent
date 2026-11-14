@@ -174,9 +174,11 @@ export class PromptStore {
 
   /** Whether another prompt about the same subject was used after this one was asked. */
   satisfied(row: Prompt): boolean {
-    const mine = new Set(subjects(row.kind, row.action, row.target));
-    return this.db.query<Prompt, [string, number]>("SELECT * FROM prompts WHERE id!=? AND status='used' AND used_at>?")
-      .all(row.id, row.created_at).some((other) => subjects(other.kind, other.action, other.target).some((s) => mine.has(s)));
+    const used = this.db.query<Prompt, [string, number]>("SELECT * FROM prompts WHERE id!=? AND status='used' AND used_at>?")
+      .all(row.id, row.created_at);
+    return subjects(row.kind, row.action, row.target).every((subject) => used.some((other) =>
+      (!subject.startsWith("service:") || other.revision === row.revision) &&
+      subjects(other.kind, other.action, other.target).includes(subject)));
   }
 
   toClose(): Prompt[] {
@@ -247,7 +249,7 @@ export class PromptStore {
     let changed = 0;
     for (const other of this.db.query<Prompt, [string]>(
       `SELECT * FROM prompts WHERE id!=? AND used_at IS NULL AND status IN ${unfinished}`).all(row.id)) {
-      if (subjects(other.kind, other.action, other.target).some((s) => mine.has(s))) {
+      if (subjects(other.kind, other.action, other.target).every((s) => mine.has(s))) {
         changed += this.run(`UPDATE prompts SET status='superseded' WHERE id=? AND used_at IS NULL AND status IN ${unfinished}`, other.id);
       }
     }

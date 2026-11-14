@@ -1,5 +1,5 @@
 import { QuestionStore, type Prompt } from "./store.ts";
-import { CLOSE_SUFFIX, NOTICE, lapseNotice, subjects, resultLine } from "./text.ts";
+import { CLOSE_SUFFIX, NOTICE, lapseNotice, resultLine } from "./text.ts";
 import { monitorLine } from "../delivery/monitor-summary.ts";
 import type { Answer } from "../conversations/question-answer.ts";
 import { announceQuestion, onQuestion } from "./questions.ts";
@@ -156,25 +156,6 @@ async function closePrompt(deps: Deps, row: Prompt): Promise<void> {
   await edit(deps, `prompt:${row.id}`, () => deps.call("PATCH", `/channels/${row.channel_id}/messages/${row.message_id}`, {
     ...(suffix ? { content: `${githubReferences(row.content)}\n${suffix}`, allowed_mentions: { parse: [] } } : {}), components: [],
   }), () => deps.prompts.cleared(row.id, deps.now()));
-}
-
-/** Whether every PR a lapsed approval named is already merged. Restarts cannot be proven from here, so they report. */
-export async function mergedOnGitHub(row: Prompt, state: (pr: string) => Promise<string | undefined> = githubState): Promise<boolean> {
-  const about = subjects(row.kind, row.action, row.target);
-  if (!about.length || about.some((subject) => !subject.startsWith("pr:"))) return false;
-  for (const subject of about) if (await state(subject.slice(3)) !== "MERGED") return false;
-  return true;
-}
-
-async function githubState(pr: string): Promise<string | undefined> {
-  const hash = pr.lastIndexOf("#");
-  const child = Bun.spawn(["gh", "pr", "view", pr.slice(hash + 1), "--repo", pr.slice(0, hash), "--json", "state", "-q", ".state"],
-    { stdout: "pipe", stderr: "ignore" });
-  const timer = setTimeout(() => child.kill(), 15_000);
-  try {
-    const output = (await new Response(child.stdout).text()).trim();
-    return await child.exited === 0 ? output : undefined;
-  } finally { clearTimeout(timer); }
 }
 
 /** Expiry and lapse need no network: the exact timer runs this even while a sweep waits on Discord. */
