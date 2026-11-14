@@ -461,16 +461,19 @@ class Scheduling(Fixture):
     def test_a_worktree_kept_for_an_open_pr_is_reaped_again_within_hours(self):
         """2026-11-14: health still said "PR #20 is OPEN" the day after it merged, from the daily snapshot."""
         last = self.state / "housekeeping-last.json"
-        last.write_text(json.dumps({"at": NOW, "mode": "applied", "worktrees": {"kept": [
-            {"key": "issue19", "reason": "PR o/r#20 is OPEN"}]}, "backup": "kept"}))
+        original = {"at": NOW, "mode": "applied", "worktrees": {"kept": [
+            {"key": "issue19", "reason": "PR o/r#20 is OPEN"}]}, "backup": "kept"}
         merged = [sys.executable, "-c", 'import json; print(json.dumps([{"key": "issue19", "path": "/w", '
                   '"action": "removed", "reason": "PR o/r#20 is MERGED"}]))']
-        self.assertIsNone(HK["refresh_worktrees"](self.state, NOW + 6 * 3600 - 1, merged))
-        refreshed = HK["refresh_worktrees"](self.state, NOW + 6 * 3600, merged)
-        self.assertEqual(refreshed["removed"], [{"key": "issue19", "reason": "PR o/r#20 is MERGED"}])
-        report = json.loads(last.read_text())
-        self.assertEqual((report["at"], report["backup"], report["worktrees_at"]), (NOW, "kept", int(NOW + 6 * 3600)))
-        self.assertIsNone(HK["refresh_worktrees"](self.state, NOW + 30 * 3600, merged))  # nothing is held for a PR now
+        for at, after_merge in ((NOW + 6 * 3600, False), (NOW + 1, True)):
+            with self.subTest(after_merge=after_merge):
+                last.write_text(json.dumps(original))
+                self.assertIsNone(HK["refresh_worktrees"](self.state, NOW, merged))
+                refreshed = HK["refresh_worktrees"](self.state, at, merged, after_merge=after_merge)
+                self.assertEqual(refreshed["removed"], [{"key": "issue19", "reason": "PR o/r#20 is MERGED"}])
+                report = json.loads(last.read_text())
+                self.assertEqual((report["at"], report["backup"], report["worktrees_at"]), (NOW, "kept", int(at)))
+                self.assertIsNone(HK["refresh_worktrees"](self.state, NOW + 30 * 3600, merged))
 
 
 if __name__ == "__main__":

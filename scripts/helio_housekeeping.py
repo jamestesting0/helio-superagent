@@ -358,7 +358,7 @@ def notable(result: dict) -> bool:
 WORKTREE_REFRESH_S = 6 * 3600
 
 
-def refresh_worktrees(state: Path, now: float, dori: list[str]) -> dict | None:
+def refresh_worktrees(state: Path, now: float, dori: list[str], *, after_merge: bool = False) -> dict | None:
     """Re-reap worktrees kept only because their PR was open, so a merge clears them within hours instead of a day;
     the rest of housekeeping (and its backup) stays daily."""
     path = state / "housekeeping-last.json"
@@ -368,7 +368,7 @@ def refresh_worktrees(state: Path, now: float, dori: list[str]) -> dict | None:
     kept = (last.get("worktrees") or {}).get("kept") or []
     if not any(" is OPEN" in str(row.get("reason")) for row in kept if isinstance(row, dict)):
         return None
-    if now - last.get("worktrees_at", last.get("at", 0)) < WORKTREE_REFRESH_S:
+    if not after_merge and now - last.get("worktrees_at", last.get("at", 0)) < WORKTREE_REFRESH_S:
         return None
     last.update(worktrees=worktrees(last.get("mode") == "applied", dori), worktrees_at=int(now))
     path.write_text(json.dumps(last))

@@ -761,6 +761,9 @@ def finish(world: World, train: dict, status: str, **fields: object) -> None:
     train.update(status=status, **fields)
     save(world, train)  # recorded first: a rerun only repeats the idempotent unlock
     world.run(["helio", "confirm", "unlock", train["id"]], ok=(0, 1))
+    if status == "done" and any(member.get("merged") for member in train["members"]):
+        runpy.run_path(str(HERE / "helio_housekeeping.py"))["refresh_worktrees"](
+            world.state, world.now(), ["dori"], after_merge=True)
 
 
 def includes(world: World, running: str | None, tip: str) -> bool:
