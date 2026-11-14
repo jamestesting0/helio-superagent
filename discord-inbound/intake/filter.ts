@@ -20,7 +20,7 @@ export interface FilterConfig {
   readonly scopeCategory?: string;
   readonly ignoredChannels?: ReadonlySet<string>;
   /** Helio's open question in this channel is waiting on this person. */
-  readonly awaitingAnswer?: (channelId: string, userId: string) => boolean;
+  readonly awaitingAnswer?: (channelId: string, userId: string, at?: number) => boolean;
   /** The message belongs to an active or recently resolved topic, so a reply to it continues that subject. */
   readonly topicMessage?: (messageId: string) => boolean;
   readonly workingAnchor?: (channelId: string, userId: string, messageId: string) => string | undefined;
@@ -217,18 +217,21 @@ function addressing(msg: IncomingMessage, cfg: FilterConfig, isBugReport: boolea
   // counts only for a message that replies to nothing.
   const mentioned = cfg.botId !== undefined && !quotedMentions.includes(cfg.botId) && (facts.text_mention_ids.includes(cfg.botId) ||
     (msg.message_reference === undefined && msg.mentions?.some((user) => user.id === cfg.botId) === true));
-  const additionTo = isBugReport ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
   const repliedTo = msg.message_reference?.type === 1 ? undefined : msg.message_reference?.message_id;
-  const followUp = !isBugReport && !mentioned &&
-    (additionTo !== undefined || repliesToHelio || cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true ||
-      (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true));
-  const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned, quotedMentions);
   const parent = repliedTo !== undefined ? msg.referenced_message : undefined;
-  const parentPingedHelio = cfg.botId !== undefined && facts.parent_mention_ids.includes(cfg.botId);
-  const toHelio = mentioned || repliesToHelio || parentPingedHelio || additionTo !== undefined || facts.names_helio ||
-    cfg.awaitingAnswer?.(msg.channel_id, msg.author.id) === true || (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true);
   const opener = facts.leading_mention_id;
   const toPerson = (parent != null && parent.author.id !== cfg.botId) || (opener !== null && opener !== cfg.botId);
+  // Implicit admission (the person's working window, or an answer Helio's question waits for) never covers a message
+  // addressed to someone else; explicit replies to Helio or into a topic, and pings, still reach Helio.
+  const additionTo = isBugReport || toPerson ? undefined : cfg.workingAnchor?.(msg.channel_id, msg.author.id, msg.id);
+  const sentAt = Date.parse(msg.timestamp);
+  const awaited = !toPerson && cfg.awaitingAnswer?.(msg.channel_id, msg.author.id, Number.isFinite(sentAt) ? sentAt : undefined) === true;
+  const followUp = !isBugReport && !mentioned &&
+    (additionTo !== undefined || repliesToHelio || awaited || (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true));
+  const forOwner = msg.guild_id !== undefined && msg.author.id !== cfg.ownerId && !isBugReport && forTheOwner(msg, cfg, mentioned, quotedMentions);
+  const parentPingedHelio = cfg.botId !== undefined && facts.parent_mention_ids.includes(cfg.botId);
+  const toHelio = mentioned || repliesToHelio || parentPingedHelio || additionTo !== undefined || facts.names_helio ||
+    awaited || (repliedTo !== undefined && cfg.topicMessage?.(repliedTo) === true);
   const addressee: Addressee = toHelio ? "helio" : toPerson ? "other" : "none";
   return { mentioned, additionTo, repliesToHelio, followUp, forOwner, addressee };
 }

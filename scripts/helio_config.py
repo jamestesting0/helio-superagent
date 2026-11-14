@@ -46,7 +46,9 @@ FLAGS = ("HELIO_ANSWER_FOR_OWNER", "HELIO_AUTOFIX", "HELIO_PR_CUSTODY")
 CHOICES = {"HELIO_LANE_PROFILE": ("direct", "thorough")}
 COUNTS = ("HELIO_OWNER_PRESENT_MINUTES", "HELIO_AUTOFIX_MAX_LINES", "HELIO_AUTOFIX_MAX_FILES", "HELIO_AUTOFIX_MAX_OPEN",
           "HELIO_PING_LIMIT_PER_HOUR", "HELIO_AUTOBLOCK_STRIKES", "HELIO_AUTOBLOCK_WINDOW_H", "HELIO_MAX_WORKERS",
-          "HELIO_HIBERNATE_AFTER_MIN", "HELIO_CONVERSATION_NUDGE_HOURS", "HELIO_CONVERSATION_TIMEOUT_HOURS")
+          "HELIO_HIBERNATE_AFTER_MIN", "HELIO_CONVERSATION_TIMEOUT_HOURS")
+# Settings that no longer do anything; an existing helio.env may still contain them and keeps loading.
+RETIRED = ("HELIO_CONVERSATION_NUDGE_HOURS",)
 COUNT = re.compile(r"[1-9][0-9]{0,4}")
 # Repository-relative globs: no spaces, absolute paths or parent references.
 GLOB = re.compile(r"(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9_.*?/\[\]-]+")
@@ -66,7 +68,6 @@ LISTS = (("trusted-users", "HELIO_TRUSTED_USERS"), ("report-channels", "HELIO_RE
          ("release-approvers", "HELIO_RELEASE_APPROVERS"))
 POLICY_KEYS: Final = tuple(key for key in RUNTIME if key not in SECRETS) + tuple(key for _, key in LISTS)
 TIMING: Final = {
-    "HELIO_CONVERSATION_NUDGE_HOURS": ("Conversation reminder", "hours", 1, 99999),
     "HELIO_CONVERSATION_TIMEOUT_HOURS": ("Conversation timeout", "hours", 1, 99999),
     "HELIO_PING_LIMIT_PER_HOUR": ("Ping limit", "per hour", 1, 99999),
     "HELIO_AUTOBLOCK_STRIKES": ("Automatic block threshold", "pings", 1, 99999),
@@ -139,7 +140,7 @@ def expand(value: str, home: Path) -> str:
 
 
 def resolve(values: dict[str, str], home: Path) -> dict[str, str]:
-    merged = {**defaults(), **values}
+    merged = {**defaults(), **{key: value for key, value in values.items() if key not in RETIRED}}
     for key in PATHS:
         merged[key] = expand(merged[key], home)
     merged["DORI_DISCORD_BUG_REPORT_SOURCE"] = f"{merged['HELIO_BUG_REPORT_BOT']}:{merged['HELIO_BUG_REPORT_CHANNEL']}"
@@ -148,7 +149,7 @@ def resolve(values: dict[str, str], home: Path) -> dict[str, str]:
 
 def problems(values: dict[str, str], require_secrets: bool = True) -> list[str]:
     found = []
-    unknown = sorted(set(values) - set(defaults()))
+    unknown = sorted(set(values) - set(defaults()) - set(RETIRED))
     if unknown:
         found.append("unknown keys (typo?): " + ", ".join(unknown))
     merged = {**defaults(), **values}
@@ -179,9 +180,6 @@ def problems(values: dict[str, str], require_secrets: bool = True) -> list[str]:
             found.append(f"{key} lists channels missing from DORI_DISCORD_ALLOWED")
     if set(merged["DORI_DISCORD_TRUSTED_CHANNELS"].split(",")) & set(merged["DORI_DISCORD_NORMAL_CHANNELS"].split(",")) - {""}:
         found.append("Trusted and normal channel lists must not overlap")
-    nudge, timeout = (merged[key] for key in ("HELIO_CONVERSATION_NUDGE_HOURS", "HELIO_CONVERSATION_TIMEOUT_HOURS"))
-    if COUNT.fullmatch(nudge) and COUNT.fullmatch(timeout) and int(nudge) >= int(timeout):
-        found.append("HELIO_CONVERSATION_NUDGE_HOURS must be less than HELIO_CONVERSATION_TIMEOUT_HOURS")
     window = merged["HELIO_AUTOBLOCK_WINDOW_H"]
     if COUNT.fullmatch(window) and int(window) > 24:
         found.append("HELIO_AUTOBLOCK_WINDOW_H cannot exceed the 24-hour strike retention window")

@@ -76,9 +76,9 @@ The existing `agent-messenger` Gateway connection remains the event source.
 ## Configuration and migration
 
 `~/.config/helio/helio.env` remains the canonical source. New values are
-`HELIO_ADMIN_GUILD`, `HELIO_CONVERSATION_NUDGE_HOURS`, and
-`HELIO_CONVERSATION_TIMEOUT_HOURS`; old files inherit their template defaults
-until explicitly set.
+`HELIO_ADMIN_GUILD` and `HELIO_CONVERSATION_TIMEOUT_HOURS`; old files inherit
+their template defaults until explicitly set. `HELIO_CONVERSATION_NUDGE_HOURS` is
+retired (Helio no longer sends reminders); an existing line is ignored.
 
 Settings writes use the same lock as rendering and policy publication. A revision
 conflict leaves the current canonical file intact. Stable operation receipts

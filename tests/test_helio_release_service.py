@@ -45,6 +45,31 @@ class ButtonReleaseTests(unittest.TestCase):
     self.setUp();change()
     if name in ('clicked after expiry','stale click'):self.result['interaction_metadata']['interacted_message_id']=self.prompt['id'];self.prompt_id=self.prompt['id']
     with self.assertRaises(M['Refused']):self.verify()
+ def test_a_train_click_restarts_exactly_its_listed_merges(self):
+  line=lambda n,sha:f'#{n} · `{sha[:7]}` Change {n}'
+  h18,h20,m18='1'*40,'2'*40,'3'*40
+  self.prompt['content']='\n'.join(['Merge 2 PRs and restart Elo Bot?',line(18,h18),line(20,h20),'Tested together: unit and integration tests passed.'])
+  self.result['content']=f'✅ <@{TRUSTED}> approved merging #18 and #20 and restarting Elo Bot'
+  pulls={18:{'merged':True,'merge_commit_sha':m18,'head':{'sha':h18}},20:{'merged':True,'merge_commit_sha':REV,'head':{'sha':h20}}}
+  shipped=[{'sha':h18},{'sha':m18},{'sha':h20},{'sha':REV}]
+  def github(repo,path):
+   if path.startswith('/pulls/') and path.endswith('/commits?per_page=100&page=1'):return [{'sha':h18 if '/18/' in path else h20}]
+   if path.startswith('/pulls/'):return pulls[int(path.split('/')[2])]
+   if path=='/branches/main':return {'commit':{'sha':REV}}
+   return {'status':'ahead','merge_base_commit':{'sha':OLD},'total_commits':len(shipped),'commits':list(shipped)}
+  scope=M['APPROVAL']['require_only'].__globals__
+  with patch.dict(scope,{'github_json':github}):
+   self.assertEqual(M['verify_confirmation'](CHANNEL,self.result_id,REV,self.config,self.fetch,running_revision=OLD),(TRUSTED,self.prompt_id))
+   shipped.append({'sha':'d'*40})
+   with self.assertRaisesRegex(M['Refused'],'other commits would ship'):
+    M['verify_confirmation'](CHANNEL,self.result_id,REV,self.config,self.fetch,running_revision=OLD)
+   shipped.pop();pulls[20]['head']['sha']='4'*40
+   with self.assertRaisesRegex(M['Refused'],'different head than the approved'):
+    M['verify_confirmation'](CHANNEL,self.result_id,REV,self.config,self.fetch,running_revision=OLD)
+   # A member the train left out (changed after approval) stays open; the rest still ships, and nothing of it does.
+   pulls[20].update(merged=False,merge_commit_sha=None,head={'sha':'4'*40});pulls[18]['merge_commit_sha']=REV
+   shipped[:]=[{'sha':h18},{'sha':REV}]
+   self.assertEqual(M['verify_confirmation'](CHANNEL,self.result_id,REV,self.config,self.fetch,running_revision=OLD),(TRUSTED,self.prompt_id))
  def test_one_prompt_restarts_once_even_with_another_result_message(self):
   calls=[]
   def run(*args,**kwargs):calls.append(args);return SimpleNamespace(returncode=0)

@@ -31,10 +31,13 @@ case "${1:-}" in
     export DORI_DISCORD_TRUSTED_IDS="$(<"$base/trusted-users")" HELIO_RELEASE_CHECK="$HOME/helio-agent/scripts/release-check.py"
     exec bun "$HOME/.dori/discord-inbound/interactive/cli.ts" "$@" ;;
   release-check) shift; source "$base/env"; exec python3 "$HOME/helio-agent/scripts/release-check.py" "$@" ;;
+  merge) shift; source "$base/env"
+    export DORI_DISCORD_TRUSTED_IDS="$(<"$base/trusted-users")"
+    exec python3 "$HOME/helio-agent/scripts/helio-merge.py" "$@" ;;
   release) shift; exec python3 "$HOME/helio-agent/scripts/helio_release_client.py" "$@" ;;
   update) shift; exec python3 "$HOME/helio-agent/scripts/sync-install.py" "$@" ;;
   status) exec python3 "$HOME/helio-agent/scripts/helio-status.py" ;;
   permissions) printf '%s\n' "In the normal WSL shell, edit HELIO_TRUSTED_USERS, HELIO_REPORT_CHANNELS or HELIO_RELEASE_APPROVERS in ~/.config/helio/helio.env" "(comma-separated Discord IDs), run: helio update, then exit and relaunch the isolated workspace." ;;
   "") printf '%s\n' 'In Herdr, run: helio start (new) or helio resume (previous)'; exec herdr --session elobot ;;
-  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|triage|autofix|bugfix|plan|work|pr|decide|issue|followups|conversation|recovery|blacklist|housekeeping|health|metrics|confirm|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
+  *) printf '%s\n' 'Usage: helio [start|resume|dori <args>|beta|question|browser|triage|autofix|bugfix|plan|work|pr|decide|issue|followups|conversation|recovery|blacklist|housekeeping|health|metrics|confirm|merge|doctor|status|update|release-check|release|permissions]' >&2; exit 2 ;;
 esac

@@ -198,3 +198,34 @@ test("an authorized reply reaches plan feedback through the running intake watch
     });
   } finally { after.close(); }
 });
+
+test("a merge train posts one prompt for every PR, and its approval is bound once with the release lock", async () => {
+  const file = join(dir, "train.md"), train = "a".repeat(20), other = "b".repeat(20);
+  await Bun.write(file, "Merge 2 PRs and restart Elo Bot?\n[PR #18](<https://github.com/o/r/pull/18>) · `2532d55` A\n[PR #20](<https://github.com/o/r/pull/20>) · `bc113f3` B");
+  const argv = ["train", "--train", train, "--target", "o/r#18,20", "--revision", SHA, "--text-file", file, "--channel", "100", "--restart"];
+  expect(await main(argv)).toBe(0);
+  expect(await main(argv)).toBe(0);
+  expect(posts).toHaveLength(1);
+  expect(posts[0]!.body.components[0].components.map((b: { label: string }) => b.label)).toEqual(["Merge and restart", "Cancel"]);
+  expect(posts[0]!.body.content.match(/pull\/18/g)).toHaveLength(1);
+  const s = store();
+  try {
+    s.begin(train, "99", Date.now(), { app: "88", token: "tok", accept: true, expected: "shown" });
+    s.finish(train, "99", "confirmed", Date.now(), "700", true);
+    s.db.run("INSERT INTO release_locks VALUES ('o/r',?,1)", [other]);
+  } finally { s.close(); }
+  const log = spyOn(console, "log");
+  try {
+    expect(await main(["bind", "--prompt", train, "--train", train])).toBe(3);
+    const waiting = store();
+    try { expect(waiting.get(train)?.status).toBe("confirmed"); waiting.unlock("o/r", other); } finally { waiting.close(); }
+    expect(await main(["bind", "--prompt", train, "--train", train])).toBe(0);
+    expect(await main(["bind", "--prompt", train, "--train", train])).toBe(0);
+    expect(await main(["bind", "--prompt", train, "--train", other])).toBe(2);
+  } finally { log.mockRestore(); }
+  const bound = store();
+  try {
+    expect(bound.get(train)?.status).toBe("used");
+    expect(bound.binding(train)).toMatchObject({ approval: `prompt:${train}`, approver: "99" });
+  } finally { bound.close(); }
+});

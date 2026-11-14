@@ -53,15 +53,18 @@ def connect() -> sqlite3.Connection:
         columns = {row[1] for row in db.execute("PRAGMA table_info(authorizations)")}
         for name, ddl in (("source_hash", "source_hash TEXT"), ("kind", "kind TEXT NOT NULL DEFAULT 'request'"),
                           ("holds", "holds TEXT NOT NULL DEFAULT ''"), ("blocked", "blocked TEXT"),
-                          ("blocked_question", "blocked_question TEXT")):
+                          ("blocked_question", "blocked_question TEXT"), ("blocked_kind", "blocked_kind TEXT")):
             if name not in columns:
                 db.execute(f"ALTER TABLE authorizations ADD COLUMN {ddl}")
         db.execute("""CREATE TABLE IF NOT EXISTS bugfixes (
             repo TEXT NOT NULL, issue INTEGER NOT NULL, route TEXT NOT NULL, status TEXT NOT NULL, reason TEXT,
             message TEXT, channel TEXT, lane TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             PRIMARY KEY(repo, issue))""")
-        if "blocked_question" not in {row[1] for row in db.execute("PRAGMA table_info(bugfixes)")}:
+        bugfix_columns = {row[1] for row in db.execute("PRAGMA table_info(bugfixes)")}
+        if "blocked_question" not in bugfix_columns:
             db.execute("ALTER TABLE bugfixes ADD COLUMN blocked_question TEXT")
+        if "blocked_kind" not in bugfix_columns:
+            db.execute("ALTER TABLE bugfixes ADD COLUMN blocked_kind TEXT")
         db.execute("""CREATE TABLE IF NOT EXISTS work_events (
             repo TEXT NOT NULL, issue INTEGER NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, emitted_at TEXT NOT NULL,
             PRIMARY KEY(repo, issue, kind))""")
@@ -121,33 +124,47 @@ def consume(repo: str, issue: int, message: str) -> None:
                        (repo, issue, repo, issue, message))
 
 
-def block(repo: str, issue: int, reason: str, now: datetime.datetime, question: str | None = None) -> bool:
+def block(repo: str, issue: int, reason: str, now: datetime.datetime, question: str | None = None,
+          kind: str | None = None) -> bool:
     """Park unfinished work on a genuine blocker; `unblock` or a newer authorization clears it."""
     with closing(connect()) as db, db:
         db.execute("BEGIN IMMEDIATE")
         newest = db.execute("""SELECT message FROM authorizations WHERE repo=? AND issue=? AND used=0
                                ORDER BY recorded_at DESC LIMIT 1""", (repo, issue)).fetchone()
         if newest:
-            db.execute("UPDATE authorizations SET blocked=?,blocked_question=? WHERE repo=? AND issue=? AND message=?",
-                       (reason, question, repo, issue, newest[0]))
-        changed = db.execute("""UPDATE bugfixes SET status='blocked',reason=?,blocked_question=?,updated_at=?
-                                WHERE repo=? AND issue=? AND status IN ('starting','started','queued')""",
-                             (reason, question, now.isoformat(), repo, issue)).rowcount
+            db.execute("UPDATE authorizations SET blocked=?,blocked_question=?,blocked_kind=? WHERE repo=? AND issue=? AND message=?",
+                       (reason, question, kind, repo, issue, newest[0]))
+        changed = db.execute("""UPDATE bugfixes SET status='blocked',reason=?,blocked_question=?,blocked_kind=?,updated_at=?
+                                WHERE repo=? AND issue=? AND (status IN ('starting','started','queued')
+                                  OR (status='blocked' AND ? IS NOT NULL))""",
+                             (reason, question, kind, now.isoformat(), repo, issue, question)).rowcount
+        # (an already-blocked bug fix may gain the requester's question, so its answer clears it)
         return bool(newest) or bool(changed)
 
 
-def unblock(repo: str, issue: int, now: datetime.datetime, named: str | None = None) -> bool:
+def unblock(repo: str, issue: int, now: datetime.datetime, named: str | None = None, kind: str | None = None) -> bool:
     """Clear recorded blockers, including one left on a request that submit already used; with `named`, only those
     recorded with that question. Holds are untouched."""
     with closing(connect()) as db, db:
         db.execute("BEGIN IMMEDIATE")
-        cleared = db.execute("""UPDATE authorizations SET blocked=NULL,blocked_question=NULL
-                                WHERE repo=? AND issue=? AND blocked IS NOT NULL AND (? IS NULL OR blocked_question=?)""",
-                             (repo, issue, named, named)).rowcount
-        resumed = db.execute("""UPDATE bugfixes SET status='started',reason=NULL,blocked_question=NULL,updated_at=?
-                                WHERE repo=? AND issue=? AND status='blocked' AND (? IS NULL OR blocked_question=?)""",
-                             (now.isoformat(), repo, issue, named, named)).rowcount
+        cleared = db.execute("""UPDATE authorizations SET blocked=NULL,blocked_question=NULL,blocked_kind=NULL
+                                WHERE repo=? AND issue=? AND blocked IS NOT NULL AND (? IS NULL OR blocked_question=?)
+                                AND (? IS NULL OR blocked_kind=?)""",
+                             (repo, issue, named, named, kind, kind)).rowcount
+        resumed = db.execute("""UPDATE bugfixes SET status='started',reason=NULL,blocked_question=NULL,blocked_kind=NULL,
+                                updated_at=? WHERE repo=? AND issue=? AND status='blocked' AND (? IS NULL OR blocked_question=?)
+                                AND (? IS NULL OR blocked_kind=?)""",
+                             (now.isoformat(), repo, issue, named, named, kind, kind)).rowcount
         return bool(cleared or resumed)
+
+
+def clarification(repo: str, issue: int) -> str | None:
+    """The reason of a recorded worker clarification (not a decision) that the lead may answer, if any."""
+    with closing(connect()) as db:
+        row = db.execute("""SELECT blocked FROM authorizations WHERE repo=? AND issue=? AND blocked IS NOT NULL
+                            AND blocked_kind='clarification' AND blocked_question IS NULL ORDER BY recorded_at DESC LIMIT 1""",
+                         (repo, issue)).fetchone()
+    return row[0] if row else None
 
 
 GRANT_PERMISSIONS = ("create", "implement")

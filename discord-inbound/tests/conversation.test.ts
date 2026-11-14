@@ -182,7 +182,9 @@ test.each(["old", "fresh", "rest"])("intake excludes unclaimed chatter and retai
   const opened = Date.parse("2026-11-02T11:00:00Z");
   try {
     // Unthreaded follow-ups reach Helio only while its question waits on this person here.
-    store.applyReply(store.open("100", "99", "9", "Match timeout", opened), { disposition: "question", waiting_on: "Which match?" }, opened);
+    // Asked ten minutes before the follow-ups at 12:00, so they fall inside the question's 30-minute window.
+    store.applyReply(store.open("100", "99", "9", "Match timeout", opened), { disposition: "question", waiting_on: "Which match?" },
+      Date.parse("2026-11-02T11:50:00Z"));
     const stdout = await intake(dir, mode);
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
@@ -221,7 +223,7 @@ test.each([10, 1000])("transcript payload keeps newest entries within count and 
       content: "x".repeat(length), timestamp: "2026-11-02T11:00:00Z",
     }, 12000).entry);
     for (const entry of entries) store.claim("100", "99", entry, Date.parse("2026-11-02T11:00:00Z"), { channel: "100", audience: "public" });
-    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which match?" }, Date.parse("2026-11-02T11:00:00Z"));
+    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "Which match?" }, Date.parse("2026-11-02T11:50:00Z"));
     await intake(dir, "old");
     const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
     try {
@@ -233,7 +235,29 @@ test.each([10, 1000])("transcript payload keeps newest entries within count and 
   } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("startup sweep reports a stale conversation once after catch-up", async () => {
+test.each([false, true])("a late reply to Helio's question reopens its silently closed topic through intake (full=%s)", async (full) => {
+  const dir = await mkdtemp(join(tmpdir(), "conversation-late-answer-"));
+  const store = new Conversations(join(dir, "discord-conversations.sqlite"));
+  const asked = Date.now() - 80 * 3_600_000;
+  try {
+    // Helio asked in 81 (a reply to 80); nobody answered, so upkeep closed the topic silently at 72 hours.
+    store.open("100", "99", "80", "Match timeout", asked);
+    store.append("100", "99", describeMessage({ id: "81", channel_id: "100", author: { id: "88", username: "Helio", bot: true },
+      content: "What happened next?", timestamp: new Date(asked).toISOString(), message_reference: { message_id: "80" } }, 12000).entry, asked);
+    store.applyReply(store.get("100", "99")!, { disposition: "question", waiting_on: "What happened next?" }, asked);
+    store.resolveIfCurrent(store.get("100", "99")!, "timed_out", asked + 72 * 3_600_000);
+    if (full) { store.open("100", "99", "70", "Other", asked); store.open("101", "99", "71", "Third", asked); }
+    await intake(dir, "rest");
+    const queue = new Delivery(join(dir, "discord-delivery.sqlite"));
+    try {
+      const late = queue.pending("inbound").map((item) => JSON.parse(item.payload)).find((item) => item.message_id === "82");
+      expect(late?.resumes_topic).toBe("80");
+    } finally { queue.close(); }
+    expect(store.topic("80")?.status).toBe(full ? "resolved" : "open");
+  } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("startup sweep closes a stale question silently after catch-up", async () => {
   const dir = await mkdtemp(join(tmpdir(), "conversation-startup-timeout-"));
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));
   try {
@@ -241,12 +265,8 @@ test("startup sweep reports a stale conversation once after catch-up", async () 
     const row = store.open("100", "55", "9", "stale", opened);
     store.applyReply(row, { disposition: "question", waiting_on: "Which error?" }, opened);
     const stdout = await intake(dir, "old");
-    const notices = stdout.split("\n").filter((line) => line.startsWith("INBOUND_CONVERSATION_TIMEOUT "))
-      .map((line) => JSON.parse(line.slice("INBOUND_CONVERSATION_TIMEOUT ".length)));
-    expect(notices).toEqual([{
-      channel_id: "100", user_id: "55", anchor_message_id: "9", topic: "stale", opened_at: Date.parse("2026-10-29T12:00:00Z"),
-      sent: "901", read: "helio conversation show 9",
-    }]);
+    expect(stdout).not.toContain("INBOUND_CONVERSATION_TIMEOUT");
+    expect([store.latest("100", "55")?.status, store.latest("100", "55")?.outcome]).toEqual(["resolved", "timed_out"]);
   } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }
 });
 

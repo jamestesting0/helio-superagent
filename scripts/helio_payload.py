@@ -111,7 +111,7 @@ INBOUND_FILES = (
     "conversations/terminal-notification.ts", "conversations/terminal-notification.test.ts",
     "conversations/followup-status.ts", "conversations/closure.ts", "conversations/topics.test.ts",
     "conversations/reply-settlement.ts", "conversations/fulfillment.test.ts",
-    "conversations/notice-store.ts", "conversations/notice-races.test.ts",
+    "conversations/notice-store.ts",
     "conversations/pending-input.ts",
     "conversations/reconcile-topic.ts", "conversations/reconcile-final.ts",
     "conversations/working-store.ts", "conversations/working.test.ts", "conversations/working.ts",

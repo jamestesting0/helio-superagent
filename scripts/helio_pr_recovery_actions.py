@@ -23,6 +23,7 @@ S = runpy.run_path(str(HERE / "helio_pr_recovery_store.py"))
 CI = runpy.run_path(str(HERE / "helio_pr_recovery_ci.py"))
 P = runpy.run_path(str(HERE / "helio_pr_phase.py"))
 ESCALATION = runpy.run_path(str(HERE / "helio_pr_escalation.py"))
+TRAIN = runpy.run_path(str(HERE / "helio_merge_train.py"))
 Runner = Callable[[list[str]], str]
 
 
@@ -60,6 +61,10 @@ def transfer(store: Store, qid: str, lane: str) -> None:
 
 
 def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
+    if wait.data.get("branch") in TRAIN["frozen"](store.state, store.repo):
+        return note(store, wait, "an approved merge train is merging this PR")  # nothing may push to it meanwhile
+    if wait.data.get("dispatch_cause"):  # names only why this call could not start the worker
+        wait = S["save"](store, replace(wait, data={**wait.data, "dispatch_cause": None}))
     current = P["lane"](store, wait)
     if (wait.data["intent"] and wait.data["intent"]["kind"] == "wake" and
             (current.get("phase") or {}).get("generation") == wait.generation and current.get("status", "working") == "working"):
@@ -76,8 +81,9 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
         return wait
     current = P["lane"](store, wait)
     if current.get("status") == "paused":
-        return wait
-    if wait.data["intent"] is None:
+        return note(store, wait, "the worker lane is paused")
+    # A completed phase leaves intent "complete"; a later repair starts the next generation exactly like an idle one.
+    if wait.data["intent"] is None or wait.data["intent"]["kind"] == "complete":
         observation = wait.data["pending"]
         if observation is None:
             return wait
@@ -100,7 +106,7 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
     if queued is not None:
         if queued.get("phase") != descriptor:
             raise S["Refused"]("queued phase does not match the pending repair intent")
-        return wait
+        return note(store, wait, "the worker launch is queued for a free slot")
     failures = list(wait.data.get("startup_failures") or [])
     if current.get("launchState") == "failed" and current.get("revision") != wait.data.get("startup_failed_revision"):
         wait = startup_failed(store, wait, str(current.get("launchError") or "no detail"), current.get("revision"), now)
@@ -109,7 +115,7 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
         return ESCALATION["escalate"](store, wait, "startup-failed",
             f"The worker failed to start three times: {str(current.get('launchError') or 'no detail')[:300]}", now)
     if failures and now - failures[-1] < 5 * 60:
-        return wait  # Retries are at least five minutes apart.
+        return note(store, wait, "the next worker start retry is due within five minutes")
     lanes = runpy.run_path(str(HERE / "helio_task_lane.py"))
     task = lanes["Task"](store.repo, wait.issue, wait.data["title"], wait.data["route"],
                          "Continue the original recorded task; authorization hooks and submit gates remain binding.",
@@ -125,6 +131,11 @@ def dispatch(store: Store, wait: Wait, run: Runner, now: float) -> Wait:
     # failed launch counts toward the bounded retries above.
     run(["dori", "resume", wait.data["lane"], "--brief", str(brief), "--phase", json.dumps(descriptor)])
     return wait  # Delivery is acknowledged only by phase start, not by enqueue or process launch.
+
+
+def note(store: Store, wait: Wait, reason: str) -> Wait:
+    """Why a repair did not start yet, so a stall names its real cause instead of "dispatch did not start"."""
+    return S["save"](store, replace(wait, data={**wait.data, "release_refusal": reason, "dispatch_cause": reason}))
 
 
 def startup_failed(store: Store, wait: Wait, detail: str, revision: object, now: float) -> Wait:

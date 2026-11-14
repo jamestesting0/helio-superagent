@@ -102,6 +102,49 @@ class WorkflowDeliveryTests(unittest.TestCase):
         self.invoke("evidence.ts", "The same completed handoff.", extra=flags)
         self.assertEqual(len(self.messages()), 1)
 
+    def late_answer(self, full: bool) -> tuple[subprocess.CompletedProcess, dict]:
+        """Helio asked in 81; nobody answered and the topic closed silently. Owner message 82 answers it late: the real
+        intake delivers it, then the real reply.ts answers it."""
+        inbound = self.installed / ".dori/discord-inbound"
+        seed = f"""import {{ Conversations }} from {json.dumps(str(inbound / 'conversations/conversations.ts'))};
+            import {{ describeMessage }} from {json.dumps(str(inbound / 'messages/reply-context.ts'))};
+            const s = new Conversations({json.dumps(str(self.state / 'discord-conversations.sqlite'))});
+            const asked = Date.now() - 80 * 3_600_000;
+            s.open('100', '99', '80', 'Match timeout', asked);
+            s.append('100', '99', describeMessage({{ id: '81', channel_id: '100', author: {{ id: '88', username: 'Helio', bot: true }},
+              content: 'What happened next?', timestamp: new Date(asked).toISOString(), message_reference: {{ message_id: '80' }} }}, 12000).entry, asked);
+            s.applyReply(s.get('100', '99'), {{ disposition: 'question', waiting_on: 'What happened next?' }}, asked);
+            s.resolveIfCurrent(s.get('100', '99'), 'timed_out', asked + 72 * 3_600_000);
+            if ({json.dumps(full)}) {{ s.open('100', '99', '70', 'Other', asked); s.open('101', '99', '71', 'Third', asked); }}
+            s.dispose();"""
+        subprocess.run(["bun", "-e", seed], env=self.env, capture_output=True, check=True, timeout=20)
+        env = {**self.env, "DORI_DISCORD_ALLOWED": "100", "DORI_DISCORD_TRUSTED_CHANNELS": "", "DORI_DISCORD_NORMAL_CHANNELS": "",
+               "DORI_DISCORD_TRUSTED_IDS": "", "DORI_DISCORD_REPORT_CHANNELS": "", "DORI_TEST_CONVERSATIONS": "rest",
+               "DORI_DISCORD_TOKEN": "test"}
+        preload = str(ROOT / "discord-inbound/fixtures/discord.ts")
+        # The fixture replaces the gateway by its source path, so intake runs from the (identical) source tree.
+        intake = subprocess.run(["bun", "--preload", preload, str(ROOT / "discord-inbound/inbound.ts")], env=env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(intake.returncode, 0, intake.stderr)
+        text = self.home / "late.txt"
+        text.write_text("Thanks, that explains it; the match is fixed now.")
+        reply = subprocess.run(["bun", "--preload", preload, str(self.base / "reply.ts"), "100", "82", "--text-file", str(text),
+                                "--event", "final:82", "--disposition", "final"], env=env, capture_output=True, text=True, timeout=60)
+        with sqlite3.connect(self.state / "discord-conversations.sqlite") as db:
+            db.row_factory = sqlite3.Row
+            topic = dict(db.execute("SELECT * FROM conversations WHERE anchor_message_id='80'").fetchone())
+        return reply, topic
+
+    def test_a_late_answer_reopens_its_silently_closed_topic_and_the_reply_settles_it(self):
+        reply, topic = self.late_answer(full=False)
+        self.assertEqual(reply.returncode, 0, reply.stdout + reply.stderr)
+        self.assertEqual((topic["status"], topic["outcome"]), ("resolved", "answered"))
+
+    def test_a_late_answer_with_no_free_topic_slot_is_still_answered(self):
+        reply, topic = self.late_answer(full=True)
+        self.assertEqual(reply.returncode, 0, reply.stdout + reply.stderr)
+        self.assertEqual((topic["status"], topic["outcome"]), ("resolved", "timed_out"))
+
     def test_progress_and_questions_have_explicit_states(self):
         self.open_topic()
         self.invoke("reply.ts", "Still checking.", event="progress:1", extra=("--disposition", "progress"))

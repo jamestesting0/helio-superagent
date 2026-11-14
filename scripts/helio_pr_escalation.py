@@ -133,7 +133,7 @@ def park(store: Store, wait: Wait, reason: str, now: float) -> Wait:
 
 
 def follow(store: Store, wait: Wait, now: float) -> Wait:
-    """An asked question: report its answer, re-ask once after expiry, then park (no clock, no wakes)."""
+    """An asked question: report its answer, or park silently once it expires (no re-ask, no clock, no wakes)."""
     escalation = wait.data.get("escalation")
     if not escalation or not escalation.get("question") or (wait.data.get("blocked") or {}).get("parked"):
         return wait
@@ -144,11 +144,8 @@ def follow(store: Store, wait: Wait, now: float) -> Wait:
                                             f"helio pr phase decide --issue {wait.issue} --question {escalation['question']}", now))
     if status not in ("expired", "withdrawn", "cancelled"):
         return wait
-    if escalation.get("reasked"):
-        return park(store, wait, f"no answer to two questions (last {escalation['question']})", now)
-    qid, _ = ask(store, wait.issue, wording(wait, escalation["detail"], escalation["options"], again=True), escalation["options"])
-    return S["save"](store, S["notice"](replace(wait, data={**wait.data, "escalation": {**escalation, "question": qid, "reasked": True}}),
-                                        "decision", f"Asked owner again ({qid}) after 72 hours without an answer", now))
+    # Helio never chases the owner: an unanswered question parks; it stays listed in helio status and health.
+    return park(store, wait, f"no answer to {escalation['question']}", now)
 
 
 def progress_key(wait: Wait) -> str:
@@ -185,6 +182,8 @@ def clock(store: Store, wait: Wait, condition: Condition, now: float, *, busy: b
             close(stop)
             since = (data.get("worker_progress") or {}).get("at", now) if kind == "no-progress" else now
             data["stop"] = {"kind": kind, "since": since, "detail": detail[:500], "lead_at": None, "owner_at": None}
+        elif stop["detail"] != detail[:500]:  # same stall, better-known cause: the escalation decides on the current one
+            data["stop"] = {**stop, "detail": detail[:500]}
     data["stops"] = stops
     if data != wait.data:
         wait = S["save"](store, replace(wait, data=data))
@@ -202,9 +201,19 @@ def clock(store: Store, wait: Wait, condition: Condition, now: float, *, busy: b
         if stop["kind"] == "no-progress" and not wait.data.get("blocked"):
             wait = S["save"](store, replace(wait, data={**wait.data, "blocked": {
                 "reason": stop["detail"][:300], "at": now, "stage": "controller", "kind": "no-progress", "question": None}}))
+        if stop["detail"].startswith(INTERNAL_STALL) and any(cause in stop["detail"] for cause in INTERNAL_CAUSES):
+            # Helio's own dispatch is stuck: the owner has no decision to make. One owner-only incident, no question.
+            return S["save"](store, S["notice"](wait, wait.data["status"], f"Owner-only incident (Helio fault): stopped {int(elapsed // 60)} min: "
+                                                f"{stop['detail'][:300]}. The controller keeps retrying; no decision is needed.", now))
         kind = stop["kind"] if stop["kind"] in OPTIONS else "stalled"
         wait = escalate(store, wait, kind, f"Stopped {int(elapsed // 60)} min: {stop['detail']}", now, busy=busy)
     return wait
+
+
+# Set by helio_pr_recovery.repair(): a repair that could not start for a reason inside Helio.
+INTERNAL_STALL = "an approved repair is waiting for the worker to be released"
+# Causes inside Helio; a busy or owner-paused worker still reaches the owner as a decision.
+INTERNAL_CAUSES = ("dispatch did not start", "launch is queued for a free slot", "start retry is due")
 
 
 def worker_tree(run: Runner, cwd: str) -> tuple[str, str]:

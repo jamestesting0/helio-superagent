@@ -16,6 +16,53 @@ from state_fixture import build_state
 ROOT = Path(__file__).resolve().parent.parent
 
 
+class GitHubAccessTests(unittest.TestCase):
+    """2026-11-13: a host-side check misreported Helio's valid token; doctor probes from inside Helio instead."""
+
+    def probe(self, returncode: int, stdout: str, stderr: str = ""):
+        doctor = runpy.run_path(str(ROOT / "scripts/helio_doctor.py"))
+        run = lambda *args, **kwargs: SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+        now = doctor["datetime"].datetime(2026, 12, 8, tzinfo=doctor["datetime"].timezone.utc)
+        return doctor["github_access"]("o/r", run, now)
+
+    def response(self, push: bool, expires: str | None = None) -> str:
+        headers = ["HTTP/2.0 200 OK", "X-Oauth-Scopes: repo, workflow"] + (
+            [f"Github-Authentication-Token-Expiration: {expires}"] if expires else [])
+        return "\r\n".join(headers) + "\r\n\r\n" + json.dumps({"permissions": {"push": push}})
+
+    def test_a_valid_non_expiring_token_that_can_push_is_healthy(self):
+        report, problems = self.probe(0, self.response(True))
+        self.assertEqual((report["ok"], report["scopes"], problems), (True, "repo, workflow", []))
+
+    def test_failure_missing_push_and_near_expiry_are_each_reported(self):
+        self.assertIn("GitHub access failed", self.probe(1, "", "HTTP 401: Bad credentials")[1][0])
+        self.assertIn("cannot push", self.probe(0, self.response(False))[1][0])
+        self.assertIn("expires 2026-12-13", self.probe(0, self.response(True, "2026-12-13 13:39:30 UTC"))[1][0])
+        self.assertEqual(self.probe(0, self.response(True, "2027-01-30 13:39:30 UTC"))[1], [])
+
+
+class GitHubIncidentTests(unittest.TestCase):
+    def test_a_credential_problem_is_one_owner_incident_with_the_fix_until_it_changes(self):
+        health = runpy.run_path(str(ROOT / "scripts/helio_health.py"))
+        results = [({"login": "helio"}, ["GitHub token expires 2026-12-13 13:39:30 UTC; replace it before then"])]
+        probe = lambda repo: results[-1]
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            first = health["github_incident"](state, "o/r", probe, 0)
+            self.assertTrue(first.startswith("HELIO_INCIDENT "))
+            incident = json.loads(first.split(" ", 1)[1])
+            self.assertEqual((incident["audience"], incident["kind"]), ("owner", "github-credential"))
+            self.assertIn("gh auth login --with-token", incident["fix"])
+            self.assertIsNone(health["github_incident"](state, "o/r", probe, 10))          # hourly at most
+            self.assertIsNone(health["github_incident"](state, "o/r", probe, 3700))        # unchanged: no repeat
+            self.assertEqual(health["github_problems"](state), results[-1][1])
+            results.append(({}, ["GitHub access unavailable: TimeoutExpired"]))
+            self.assertIsNone(health["github_incident"](state, "o/r", probe, 7400))        # network, not credentials
+            self.assertEqual(health["github_problems"](state), results[0][1])           # last known result kept
+            results.append(({"login": "helio"}, ["GitHub access failed for o/r: HTTP 401: Bad credentials"]))
+            self.assertIn("Bad credentials", health["github_incident"](state, "o/r", probe, 11100))
+
+
 class DoctorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -472,8 +472,9 @@ class WorkStartTests(StateCase):
         with self.assertRaises(self.plan["Refused"]):
             self.plan["block_work"](self.args(reason="no failing test"))
         self.grant()
-        self.assertEqual(self.plan["block_work"](self.args(reason="no  failing\ntest")),
-                         ['WORK_BLOCKED issue=21 stage=pre-submit reason="no failing test"'])
+        [blocked] = self.plan["block_work"](self.args(reason="no  failing\ntest"))
+        self.assertTrue(blocked.startswith('WORK_BLOCKED issue=21 stage=pre-submit reason="no failing test" next='), blocked)
+        self.assertIn("helio question ask", blocked)  # a decision is asked at once, never left parked
         with self.assertRaisesRegex(self.plan["Refused"], "blocked"):
             self.plan["start_work"](self.args(), self.github, None)
         self.assertEqual(self.started, [])

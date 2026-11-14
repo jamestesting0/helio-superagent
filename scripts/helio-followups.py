@@ -175,6 +175,9 @@ def check_prs(custody_seen: set[str] | None = None) -> None:
         print(line, flush=True)
     for line in readiness["watch"](REPO, run, set(recovery["S"]["issues"](store))):
         print(line, flush=True)
+    for line in runpy.run_path(str(Path(__file__).with_name("helio_merge_train.py")))["followups"](
+            STATE, REPO, lambda number: readiness["check"](REPO, number, run)):
+        print(line, flush=True)
 
 
 ACTIVE_LANE = frozenset(("working", "paused", "done-claimed", "not-done"))
@@ -370,6 +373,8 @@ def main() -> int:
         decisions = runpy.run_path(str(Path(__file__).with_name("helio_decision_upkeep.py")))
         issue_sync = runpy.run_path(str(Path(__file__).with_name("helio_issue_sync.py")))
         housekeeping = runpy.run_path(str(Path(__file__).with_name("helio_housekeeping.py")))
+        credential = runpy.run_path(str(Path(__file__).with_name("helio_health.py")))
+        doctor = runpy.run_path(str(Path(__file__).with_name("helio_doctor.py")))
         while True:
             try:
                 digest = decisions["check"](STATE, REPO)
@@ -392,6 +397,12 @@ def main() -> int:
                 print(f"FOLLOWUP_WARN issue sync pending: {warning}"[:1000], flush=True)
             for line in issue_sync["reminders"](STATE, REPO, int(time.time())):
                 print(line, flush=True)
+            try:
+                incident = credential["github_incident"](STATE, REPO, lambda repo: doctor["github_access"](repo), time.time())
+                if incident:
+                    print(incident[:1000], flush=True)
+            except OSError as error:
+                print(f"FOLLOWUP_WARN GitHub credential check unavailable: {type(error).__name__}", flush=True)
             if housekeeping["due"](STATE, time.time()):
                 daily_upkeep(housekeeping)
             first = False

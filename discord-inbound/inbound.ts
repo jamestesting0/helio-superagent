@@ -346,7 +346,10 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
   if (prior && !inbound) warn(`pending recovery withheld by current authorization message_id=${msg.id}; retained pending`);
   if (inbound) {
     if (!delivery.contains("inbound", msg.id) || recovering) {
-      const staged = { ...inbound, backlog, ...(backlog ? { recovered: true } : {}), discord_origin: authorizationMetadata(msg) };
+      // A late answer to a question that closed silently resumes that topic (or at least names it).
+      const resumed = inbound.reply_to ? conversations.resumeTimedOut(inbound.reply_to, Date.now()) : undefined;
+      const staged = { ...inbound, backlog, ...(backlog ? { recovered: true } : {}), ...(resumed ? { resumes_topic: resumed } : {}),
+        discord_origin: authorizationMetadata(msg) };
       const sentAt = requestTimestamp(inbound.sent_at);
       if (sentAt === undefined) {
         const payload = JSON.stringify({ ...staged, attachments: [] });
@@ -577,19 +580,9 @@ enqueue("catch-up", async () => {
     await refreshPolicy();
     await reconcileBlocks({ delivery, conversations, rest, stateDir, warn });
     await sweepConversations({
-      store: conversations, rest, now: Date.now(), emit: (line) => console.log(line),
+      store: conversations, now: Date.now(), emit: (line) => console.log(line),
       hasNewInput: row => newerInputPending(delivery.pending("inbound"), conversations, row,
         [row.latest_input_id ?? row.anchor_message_id]),
-      canContact: async (row, guild) => {
-        // The person Helio's question waits on, in the channel where it was asked.
-        const person = row.waiting_on_user ?? row.user_id, where = row.question_channel_id ?? row.channel_id;
-        if (blockedAuthor(person)) return false;
-        if (!guild) return person === cfg.ownerId || cfg.trustedIds?.has(person) === true;
-        if (cfg.scopeCategory && !await insideCategory(where, cfg.scopeCategory, channelInfo)) return false;
-        if (await insideAllowed(where, cfg.ignoredChannels ?? new Set(), parentOf) ||
-            await insideAllowed(where, cfg.blockedChannels ?? new Set(), parentOf)) return false;
-        return insideAllowed(where, cfg.allowed, parentOf);
-      },
     });
     await sweepWorking({ store: conversations, delivery, rest, now: Date.now(), warn });
     await reactPendingBlocks(delivery, rest, warn);

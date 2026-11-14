@@ -299,6 +299,23 @@ describe("explicit pings and quiet follow-ups", () => {
     expect((await classify(chatter, { ...scoped, awaitingAnswer: () => true }, lookup))?.attention).toBe("review");
     expect(countsTowardCatchUp(chatter, { ...scoped, awaitingAnswer: () => false })).toBe(false);
   });
+
+  test("an awaited or working-window message addressed to someone else is not caught", async () => {
+    // 2026-11-13: owner messages to other people were admitted because Helio was waiting on the owner.
+    const toPerson = msg({ channel_id: NORMAL, authorId: OWNER, content: "<@235648483003072512> would you be the second trusted user?" });
+    const waiting = { ...scoped, awaitingAnswer: () => true, workingAnchor: () => "1" };
+    expect(await classify(toPerson, waiting, lookup)).toBeNull();
+    expect(countsTowardCatchUp(toPerson, waiting)).toBe(false);
+    const plain = msg({ channel_id: NORMAL, authorId: OWNER, content: "the second queue" });
+    expect((await classify(plain, waiting, lookup))?.attention).toBe("review");
+  });
+
+  test("the awaited-answer check receives the message's own send time", async () => {
+    const seen: (number | undefined)[] = [];
+    const sent = msg({ channel_id: NORMAL, authorId: OWNER, content: "the second queue" });
+    await classify(sent, { ...scoped, awaitingAnswer: (_c, _u, at) => { seen.push(at); return false; } }, lookup);
+    expect(seen[0]).toBe(Date.parse(sent.timestamp));
+  });
 });
 
 describe("trusted-chat addressee", () => {

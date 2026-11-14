@@ -130,7 +130,50 @@ test("a question answered in another channel waits on that person there", async 
     expect((await guard(delivery, store, path, asked, other, { disposition: "question", waiting_on: "Which queue?" })).code).toBe(0);
     const row = store.topic(anchor)!;
     expect([row.waiting_on_user, row.question_channel_id, row.question_message_id]).toEqual(["77", other, asked]);
-    expect([store.awaitingAnswer(other, "77"), store.awaitingAnswer(normal, "66")]).toEqual([true, false]);
+    const asked_at = T0 + 1000;
+    expect([store.awaitingAnswer(other, "77", asked_at + 60_000), store.awaitingAnswer(normal, "66", asked_at + 60_000)]).toEqual([true, false]);
+    // An unthreaded message counts as the answer only within 30 minutes of the question.
+    expect(store.awaitingAnswer(other, "77", asked_at + 31 * 60_000)).toBe(false);
+  });
+});
+
+test("question windows end at the answer but keep their history for catch-up", async () => {
+  await withStores(async (delivery, store, path) => {
+    const anchor = idAt(T0), asked = idAt(T0, 1);
+    store.open(normal, "66", anchor, "Queue stuck", T0);
+    stage(delivery, asked, { author_id: "66", content: "still stuck" });
+    expect((await guard(delivery, store, path, asked, normal, { disposition: "question", waiting_on: "Which queue?" })).code).toBe(0);
+    const asked_at = T0 + 1000, answer = idAt(asked_at + 5 * 60_000);
+    store.observeInput(normal, "66", answer, asked_at + 5 * 60_000);
+    // A backlog message sent before the answer still falls inside the window; later chatter does not.
+    expect(store.awaitingAnswer(normal, "66", asked_at + 3 * 60_000)).toBe(true);
+    expect(store.awaitingAnswer(normal, "66", asked_at + 6 * 60_000)).toBe(false);
+    // Gate review: answers processed newest first (10 then 5 minutes after the question) still end it at the earliest.
+    const second = idAt(T0, 9);
+    stage(delivery, second, { author_id: "66", content: "still stuck" });
+    expect((await guard(delivery, store, path, second, normal, { disposition: "question", waiting_on: "Which one?" })).code).toBe(0);
+    store.observeInput(normal, "66", idAt(asked_at + 10 * 60_000), asked_at + 10 * 60_000);
+    store.observeInput(normal, "66", idAt(asked_at + 5 * 60_000, 1), asked_at + 10 * 60_000);
+    expect(store.awaitingAnswer(normal, "66", asked_at + 7 * 60_000)).toBe(false);
+    expect(store.awaitingAnswer(normal, "66", asked_at + 4 * 60_000)).toBe(true);
+  });
+});
+
+test("a late reply resumes a topic that closed silently, and still names it when no slot is free", async () => {
+  await withStores(async (_delivery, store) => {
+    const anchor = idAt(T0);
+    const row = store.open(normal, "66", anchor, "Queue stuck", T0);
+    store.applyReply(row, { disposition: "question", waiting_on: "Which queue?" }, T0);
+    store.resolveIfCurrent(store.topic(anchor)!, "timed_out", T0 + 72 * 3_600_000);
+    expect(store.resumeTimedOut(anchor, T0 + 73 * 3_600_000)).toBe(anchor);
+    expect(store.topic(anchor)?.status).toBe("open");
+    store.resolveIfCurrent(store.topic(anchor)!, "timed_out", T0 + 74 * 3_600_000);
+    store.open(normal, "66", idAt(T0, 5), "Other", T0);
+    store.open(other, "66", idAt(T0, 6), "Third", T0);
+    expect(store.resumeTimedOut(anchor, T0 + 75 * 3_600_000)).toBe(anchor);
+    expect(store.topic(anchor)?.status).toBe("resolved");
+    store.resolveIfCurrent(store.topic(idAt(T0, 5))!, "answered", T0);
+    expect(store.resumeTimedOut(idAt(T0, 5), T0 + 1000)).toBeUndefined();
   });
 });
 

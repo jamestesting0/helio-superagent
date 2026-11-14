@@ -286,11 +286,12 @@ export class Delivery {
     }).immediate();
   }
 
-  /** Only an explicit ping by an ordinary user in an untrusted chat counts toward the automatic blacklist. */
+  /** An explicit ping or a reply to Helio by an ordinary user in an untrusted chat counts toward the automatic blacklist. */
   private strikeFor(id: string, payload: Record<string, unknown>, reason: string): BlockResult {
-    const { role, channel_policy, pinged, author_id, channel_id } = payload;
+    const { role, channel_policy, pinged, replied_to_helio, author_id, channel_id } = payload;
     const at = requestTimestamp(payload.sent_at);
-    if (role !== "STAFF_QUESTION" || channel_policy !== "normal" || pinged !== true || at === undefined ||
+    if (role !== "STAFF_QUESTION" || channel_policy !== "normal" || (pinged !== true && replied_to_helio !== true) ||
+        at === undefined ||
         typeof author_id !== "string" || typeof channel_id !== "string" ||
         !this.moderation.strike(id, author_id, channel_id, at, reason)) return { dismissed: [] };
     const { strikes, windowMs } = this.moderation.settings;

@@ -1,14 +1,17 @@
-"""Read-only startup snapshot. No acknowledgements, repairs, migrations or network probes."""
+"""Read-only startup snapshot. No acknowledgements, repairs or migrations; the only network probe is one read-only
+GitHub API call checking Helio's own credential, made only when run inside Helio."""
 from __future__ import annotations
 
 import argparse
 from contextlib import closing
 import datetime
 import json
+import os
 from pathlib import Path
 import runpy
 import shlex
 import sqlite3
+import subprocess
 import time
 
 
@@ -201,6 +204,46 @@ def snapshot(home: Path, *, runtime_home: Path | None = None, processes: list[di
     }
 
 
+def github_access(repo: str, run=subprocess.run, now: datetime.datetime | None = None) -> tuple[dict, list[str]]:
+    """Helio's own GitHub credential, probed from where Helio runs: valid, able to push, and not about to expire."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    try:
+        result = run(["gh", "api", "-i", f"repos/{repo}"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"ok": False}, [f"GitHub access unavailable: {type(error).__name__}"]
+    head, _, body = result.stdout.replace("\r\n", "\n").partition("\n\n")
+    if result.returncode:
+        detail = ((result.stderr or head).strip().splitlines()[-1:] or ["no detail"])[0][:200]
+        if not any(f"HTTP {code}" in detail for code in (401, 403, 404)):  # DNS, timeout, 5xx: GitHub, not the token
+            return {"ok": False}, [f"GitHub access unavailable: {detail}"]
+        return {"ok": False}, [f"GitHub access failed for {repo}: {detail}"]
+    headers = {key.strip().lower(): value.strip() for key, _, value in
+               (line.partition(":") for line in head.splitlines()[1:])}
+    try:
+        push = bool(json.loads(body).get("permissions", {}).get("push"))
+    except ValueError:
+        push = False
+    report: dict = {"ok": push, "scopes": headers.get("x-oauth-scopes"), "expires": headers.get("github-authentication-token-expiration")}
+    problems = [] if push else [f"GitHub token cannot push to {repo}; merges and CI runs will fail"]
+    scopes = {scope.strip() for scope in (report["scopes"] or "").split(",") if scope.strip()}
+    if report["scopes"] is not None and "repo" not in scopes:
+        problems.append("GitHub token lacks the repo scope that merge trains need to start CI runs")
+    try:
+        login = run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=30)
+        report["login"] = login.stdout.strip() if not login.returncode else None
+    except (OSError, subprocess.SubprocessError):
+        report["login"] = None
+    if report["expires"]:
+        try:
+            expires = datetime.datetime.strptime(report["expires"].replace(" UTC", ""), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=datetime.timezone.utc)
+            if expires - now < datetime.timedelta(days=7):
+                problems.append(f"GitHub token expires {report['expires']}; replace it before then")
+        except ValueError:
+            problems.append(f"GitHub token expiry unreadable: {report['expires'][:60]}")
+    return report, problems
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
@@ -208,6 +251,10 @@ def main() -> int:
     parser.add_argument("--runtime-home", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     report = snapshot(args.home, runtime_home=args.runtime_home)
+    if args.runtime_home is None:  # only where Helio itself runs; the host namespace cannot reach GitHub as Helio
+        github, problems = github_access(os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot"))
+        report["dependencies"]["github"] = github
+        report["attention"].extend(problems)
     if args.json:
         print(json.dumps(report))
     else:

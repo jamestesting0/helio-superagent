@@ -1,6 +1,7 @@
 """Every way a managed lane can stop ends in recovery, one owner question, parking or termination (never-stuck plan)."""
 import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import contextlib
+import types
 from dataclasses import replace
 import datetime
 import hashlib
@@ -306,6 +307,107 @@ class NeverStuckTests(lifecycle.LifecycleCase):
         self.assertEqual((json.loads(self.custody.lane_path.read_text())["status"], wait.generation, wait.data["intent"]["kind"]),
                          ("hibernated", 2, "wake"))
 
+    def test_a_repair_after_the_lane_closed_starts_a_new_generation(self):
+        """PR #27 (2026-11-13): a completed, closed lane kept intent 'complete' and every later repair silently stalled."""
+        self.handed_off()
+        self.custody.mode = "pass"
+        self.custody.poll(1)
+        self.assertEqual(self.wait().data["intent"]["kind"], "complete")
+        lane = json.loads(self.custody.lane_path.read_text())
+        lane.update(status="closed", closedAt="2026-11-12T09:28:03Z", revision=lane["revision"] + 1)
+        self.custody.lane_path.write_text(json.dumps(lane))
+        self.custody.poll(2)
+        self.custody.mode = "assertion"
+        self.custody.poll(3)
+        self.custody.poll(4)  # a repeated tick must not start a second generation
+        wait = self.wait()
+        self.assertEqual((wait.generation, wait.data["intent"]["kind"]), (2, "wake"))
+        self.assertEqual(json.loads(self.custody.lane_path.read_text())["status"], "working")
+        self.assertNotIn("dispatch did not start", (wait.data["stop"] or {}).get("detail", ""))
+
+    def test_a_stall_inside_helio_reports_one_incident_and_never_asks_the_owner(self):
+        self.handed_off()
+        wait = self.wait()
+        stop = {"kind": "stalled", "detail": E["INTERNAL_STALL"] + ": dispatch did not start", "since": 1_700_000_000.0,
+                "lead_at": None, "owner_at": None}
+        wait = S["save"](self.custody.store, replace(wait, data={**wait.data, "stop": stop, "progress_key": E["progress_key"](wait)}))
+        wait = E["clock"](self.custody.store, wait, ("stalled", stop["detail"]), 1_700_000_000.0 + 91 * 60)
+        self.assertIsNone((wait.data.get("escalation") or {}).get("question"))
+        self.assertEqual(self.questions(), [])
+        self.assertEqual(sum(item["detail"].startswith("Owner-only incident") for item in wait.data["notices"]), 1)
+
+    def test_the_lead_clears_a_stop_clock_stall_that_has_no_blocker(self):
+        """PR #27: the stall lived in `stop`, and `--lead` only looked at `blocked`, so the documented command refused."""
+        self.handed_off()
+        self.custody.pr_state = "UNKNOWN"
+        self.custody.poll(1)
+        self.custody.poll(32)
+        self.assertEqual((self.wait().data["stop"]["kind"], self.wait().data.get("blocked")), ("stalled", None))
+        code, line = self.helio("work", "unblock", "--issue", "7", "--lead", "--reason", "diagnosed GitHub readiness")
+        self.assertEqual(code, 0, line)
+        self.assertIn("WORK_UNBLOCKED issue=7 by=lead", line)
+        self.assertIsNone(self.wait().data["stop"])
+
+    def test_a_new_request_for_a_task_in_custody_joins_it_instead_of_looping(self):
+        """PR #27: `work start` refused as a different source and told the lead to rerun a command that failed the same way."""
+        self.handed_off()
+        code, line = self.helio("work", "start", "--issue", "7", "--from-authorization")
+        self.assertEqual(code, 0, line)
+        self.assertIn("WORK_IN_CUSTODY issue=7", line)
+        self.assertNotIn("--from-authorization", line)
+
+    def test_a_fresh_request_joining_custody_keeps_the_lane_binding_and_access_follows_it(self):
+        """Gate review 2026-11-13: re-pointing custody's source broke the lane binding on the next tick."""
+        self.handed_off()
+        S, P = self.plan["PR_RECOVERY_CLI"]["S"], self.plan["PR_RECOVERY_CLI"]["P"]
+        original = "discord:1500000000000000000:1400000000000000000"
+        S["save"](self.custody.store, replace(self.wait(), data={**self.wait().data, "route": "work", "authority": None,
+                                                                 "source": original}))
+        lane = json.loads(self.custody.lane_path.read_text())
+        self.custody.lane_path.write_text(json.dumps({**lane, "source": original}))
+        fresh = types.SimpleNamespace(channel="1500000000000000000", message="1400000000000000001", author=OWNER,
+                                      source_hash="h", holds=(), blocked=None)
+        self.plan["join_custody"](self.custody.store, self.wait(), fresh, None)
+        wait = self.wait()
+        self.assertEqual((wait.data["source"], wait.data["request_source"]),
+                         (original, "discord:1500000000000000000:1400000000000000001"))
+        P["lane"](self.custody.store, wait)  # the lane keeps the source that launched it
+        verified = []
+        with unittest.mock.patch.dict(P["WORK"], {"available": lambda *a, **k: fresh}), \
+                unittest.mock.patch.dict(P["AUTH"], {"verify": verified.append, "require_unheld": lambda *a: None}):
+            P["access"](self.custody.store, wait, self.custody.run)
+        self.assertEqual(verified[0]["message"], "1400000000000000001")
+
+    def test_a_worker_clarification_is_answered_by_the_lead_and_reaches_the_worker(self):
+        """Issue #28 (2026-11-13): two instructions conflicted, the worker blocked without a question, and nobody but the
+        owner could clear it. A clarification is answered by the lead and wakes the worker with the answer."""
+        self.handed_off()
+        wait = self.wait()
+        S["save"](self.custody.store, replace(wait, data={**wait.data, "acknowledgment": None}))
+        code, line = self.helio("work", "block", "--issue", "7", "--kind", "clarification",
+                                "--reason", "a prose-only change: which test proves it?")
+        self.assertEqual(code, 0, line)
+        self.assertIn("WORK_CLARIFY issue=7", line)
+        self.assertEqual(self.wait().data["blocked"]["need"], "clarification")
+        code, line = self.helio("work", "unblock", "--issue", "7", "--lead", "--reason", "verify the rendered output; no prose test")
+        self.assertEqual(code, 0, line)
+        self.assertIn("by=lead-answer", line)
+        wait = self.wait()
+        self.assertIsNone(wait.data["blocked"])
+        # Delivered, not just recorded: a new generation whose wake brief carries the answer, even for a live worker.
+        self.assertGreater(wait.generation, 1)
+        self.assertIn("lead answer: verify the rendered output", wait.data["intent"]["observation"])
+
+    def test_a_worker_decision_is_never_cleared_by_the_lead(self):
+        self.handed_off()
+        wait = self.wait()
+        S["save"](self.custody.store, replace(wait, data={**wait.data, "acknowledgment": None}))
+        code, line = self.helio("work", "block", "--issue", "7", "--kind", "decision", "--reason", "keep or drop the old command?")
+        self.assertIn("next=", line)
+        code, line = self.helio("work", "unblock", "--issue", "7", "--lead", "--reason", "drop it")
+        self.assertEqual(code, 1, line)
+        self.assertIsNotNone(self.wait().data["blocked"])
+
     def test_the_lead_clears_a_diagnosed_stall_but_never_a_worker_blocker(self):
         self.helio("work", "block", "--issue", "7", "--reason", "needs a product decision")
         self.custody.poll(0)
@@ -347,22 +449,18 @@ class NeverStuckTests(lifecycle.LifecycleCase):
         self.assertEqual(self.wait().data["escalation"]["kind"], "follow-up")
         self.assertEqual([row["lane"] for row in self.questions()], ["custody-issue7"])
 
-    # E3: expiry, re-ask, parking and a late answer
+    # E3: expiry, parking (never a re-ask) and a late answer
 
-    def test_an_unanswered_question_is_asked_again_once_then_parked_and_a_later_message_resumes(self):
+    def test_an_unanswered_question_parks_without_asking_again_and_a_later_message_resumes(self):
         self.handed_off()
         self.custody.pr_state = "CLOSED"
         self.custody.poll(1)
         first = self.wait().data["escalation"]["question"]
         self.set_question(first, status="expired")
         self.custody.poll(2)
-        second = self.wait().data["escalation"]["question"]
-        self.assertNotEqual(second, first)
-        self.set_question(second, status="expired")
-        self.custody.poll(3)
         self.assertTrue(self.wait().data["blocked"]["parked"])
         self.custody.poll(200)
-        self.assertEqual(len(self.questions()), 2)
+        self.assertEqual(len(self.questions()), 1)
         code, line = self.helio("pr", "phase", "decide", "--issue", "7", "--message", "1400000000000000000", "--channel",
                                 "1500000000000000000", "--option", "Reopen the PR and continue", discord=owner_message)
         self.assertEqual(code, 0, line)
@@ -568,9 +666,11 @@ class NeverStuckTests(lifecycle.LifecycleCase):
         self.assertEqual([item["decision"] for item in upkeep["waiting_on_owner"](self.custody.store.state)], ["follow-up"])
         self.set_question(first, status="expired")
         self.custody.poll(3)
-        self.assertNotEqual(self.wait().data["escalation"]["question"], first)
-        qid = self.tap("No follow-up")
-        self.assertEqual(self.decide(qid)[0], 0)
+        self.assertTrue(self.wait().data["blocked"]["parked"])  # never asked again; a later owner message decides
+        self.assertEqual(len(self.questions()), 1)
+        code, line = self.helio("pr", "phase", "decide", "--issue", "7", "--message", "1400000000000000000", "--channel",
+                                "1500000000000000000", "--option", "No follow-up", discord=owner_message)
+        self.assertEqual(code, 0, line)
         self.custody.poll(4)
         self.assertTrue(self.wait().data["terminal"])
 

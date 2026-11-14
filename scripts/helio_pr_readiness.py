@@ -72,9 +72,7 @@ def inspect(repo: str, pull: Pull, run: Runner) -> tuple[str, Observation]:
     repair: list[str] = []
     waiting: list[str] = []
     base, head = pull["baseRefOid"], pull["headRefOid"]
-    comparison = json.loads(run(["gh", "api", f"repos/{repo}/compare/{base}...{head}?per_page=1"]))
-    if comparison["merge_base_commit"]["sha"] != base:
-        repair.append("main advanced; merge it into the task branch and verify the new head")
+    # Being behind main is not a repair: `helio merge` tests the exact combination with current main before merging.
     if pull["isDraft"]:
         waiting.append("draft PR")
     try:

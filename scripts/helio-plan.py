@@ -51,6 +51,7 @@ LANE = runpy.run_path(str(HERE / "helio_task_lane.py"))
 PROOF = runpy.run_path(str(HERE / "helio_regression_proof.py"))
 VERIFICATION = runpy.run_path(str(HERE / "helio_pr_verification.py"))
 PR_RECOVERY_CLI = runpy.run_path(str(HERE / "helio_pr_recovery_cli.py"))
+MERGE_TRAIN = runpy.run_path(str(HERE / "helio_merge_train.py"))
 CLI = runpy.run_path(str(HERE / "helio_cli.py"))
 ExampleParser, positive = CLI["ExampleParser"], CLI["positive"]
 REPO = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
@@ -707,16 +708,22 @@ def work_authority(grant) -> str:
 def start_work(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> list[str]:
     """Record (or reuse) the work authority, then launch its lane with a rendered brief and PR-based Done."""
     lines: list[str] = []
+    store = custody_store()
+    custody = PR_RECOVERY_CLI["S"]["load"](store, args.issue)
     if getattr(args, "grant", None):
         lines = [record_grant(args.issue, args.grant, args.now)]
     elif not args.from_authorization:
         if not (args.message and args.channel):
             raise Refused("work start needs --message and --channel, --grant, or --from-authorization")
         lines = authorize_work(args, gh, discord(args.message, args.channel))
+    if custody is not None and not custody.data.get("terminal") and not lines:
+        return join_custody(store, custody, None, args.now)  # no new request: re-evaluate the task in custody
     try:
         grant = WORK["available"](REPO, args.issue, args.now, include_used=True)
     except WORK["Refused"] as error:
         raise Refused(str(error)) from None
+    if custody is not None and not custody.data.get("terminal"):
+        return lines + join_custody(store, custody, grant, args.now)
     if args.from_authorization and grant.blocked:
         raise Refused(f"issue #{args.issue} work is blocked ({grant.blocked}); a new request from the requester supersedes it")
     issue = gh.issue(args.issue)
@@ -730,8 +737,37 @@ def start_work(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> 
     try:
         key, launch = LANE["start"](task, Path(os.environ["HELIO_PROJECT"]).expanduser().resolve())
     except RuntimeError as error:
-        raise Refused(f"lane launch failed: {error}; rerun helio work start --issue {args.issue} --from-authorization") from None
+        # Retrying helps only a failed launch; a task managed under another source would fail the same way again.
+        hint = "" if "is already managed" in str(error) else f"; rerun helio work start --issue {args.issue} --from-authorization"
+        raise Refused(f"lane launch failed: {error}{hint}") from None
     return lines + [f"WORK_STARTED issue={args.issue} key={key} holds={','.join(grant.holds) or 'none'} launch={launch}"]
+
+
+def custody_tick(store: object, wait: object, now: float) -> tuple[object, str]:
+    """One controller step now instead of at the watcher's next cycle; a failure is left to that cycle."""
+    S = PR_RECOVERY_CLI["S"]
+    try:
+        wait = PR_RECOVERY_CLI["C"]["tick"](store, wait, lambda argv, _stdin=None: command(argv), now)
+        return wait, f"state={wait.data.get('status')}"
+    except (S["Refused"], RuntimeError, OSError, ValueError) as error:
+        return wait, "tick=deferred reason=" + json.dumps(str(error)[:200])
+
+
+def join_custody(store: object, wait: object, grant: object, at: datetime.datetime | None) -> list[str]:
+    """A validated new request for a task already in PR custody becomes its current source (its holds and releases
+    apply from now on) and the controller re-evaluates at once; no second lane is launched."""
+    S = PR_RECOVERY_CLI["S"]
+    now = (at or datetime.datetime.now(datetime.timezone.utc)).timestamp()
+    # The lane stays bound to the source that launched it; the newest validated request is what access() checks.
+    current = wait.data.get("request_source") or wait.data["source"]
+    source = f"discord:{grant.channel}:{grant.message}" if grant is not None else current
+    if wait.data["route"] != "autofix" and wait.data["authority"] is None and source != current:
+        wait = S["save"](store, S["notice"](replace(wait, data={**wait.data, "request_source": source}),
+                                            "decision", f"New request {source} joined this task", now))
+    wait, after = custody_tick(store, wait, now)
+    stop = (wait.data.get("stop") or {}).get("kind")
+    return [f"WORK_IN_CUSTODY issue={wait.issue} generation={wait.generation} stop={stop or 'none'} "
+            f"pr={wait.data.get('pr') or 'none'} {after} next=\"helio pr phase show --issue {wait.issue}\""]
 
 
 def custody_store() -> object:
@@ -746,16 +782,23 @@ def block_work(args: argparse.Namespace) -> list[str]:
     except WORK["Refused"]:
         stage = "post-submit"
     question = getattr(args, "question", None)
-    marked = WORK["block"](REPO, args.issue, reason, args.now, question)
+    need = "clarification" if getattr(args, "kind", "decision") == "clarification" and not question else None
+    marked = WORK["block"](REPO, args.issue, reason, args.now, question, need)
     store = custody_store()
     wait = PR_RECOVERY_CLI["S"]["load"](store, args.issue)
     if wait is not None and not wait.data["terminal"] and wait.data["acknowledgment"] != wait.generation:
-        PR_RECOVERY_CLI["P"]["block"](store, wait, reason, stage, question, args.now.timestamp())
+        PR_RECOVERY_CLI["P"]["block"](store, wait, reason, stage, question, args.now.timestamp(), need)
         marked = True
     if not marked:
         raise Refused(f"issue #{args.issue} has no unfinished authorized or bug-fix work to block")
+    if need:  # the worker needs a how-to answer, never a silent stop
+        return [f"WORK_CLARIFY issue={args.issue} stage={stage} question={json.dumps(reason)} "
+                f"next=\"helio work unblock --issue {args.issue} --lead --reason ANSWER\" (within the task's scope; a product, "
+                "scope or authority choice goes to the requester instead)"]
     return [f"WORK_BLOCKED issue={args.issue} stage={stage} reason={json.dumps(reason)}"
-            + (f" clear=helio work unblock --issue {args.issue} --question {question}" if question else "")]
+            + (f" clear=helio work unblock --issue {args.issue} --question {question}" if question else
+               f" next=\"ask the requester now with helio question ask, then helio work block --issue {args.issue} "
+               "--reason R --question ID\"")]
 
 
 def answered_question(issue: int, question: str) -> str:
@@ -959,20 +1002,54 @@ def decide(args: argparse.Namespace, gh: GitHub, discord: DiscordReader) -> list
 
 
 def lead_unblock(args: argparse.Namespace) -> list[str]:
-    """The lead clears a watchdog or stall blocker it diagnosed; worker blockers and owner decisions are refused."""
+    """The lead clears a watchdog or stall blocker it diagnosed, or answers a worker's clarification within the task's
+    existing authority. Worker decisions, holds and anything the owner was asked are refused."""
     if not args.reason or not args.reason.strip():
-        raise Refused("--lead needs --reason with what was diagnosed")
+        raise Refused("--lead needs --reason with what was diagnosed or the answer")
     store = custody_store()
     S, P = PR_RECOVERY_CLI["S"], PR_RECOVERY_CLI["P"]
     wait = S["load"](store, args.issue)
-    blocked = (wait.data.get("blocked") if wait else None) or {}
-    if blocked.get("stage") != "controller" or blocked.get("kind") not in ("stalled", "no-progress") or blocked.get("parked"):
-        raise Refused("--lead clears only a controller stall or no-progress blocker; this one needs its answer or the owner")
+    answer = " ".join(args.reason.split())[:600]
+    if wait is None:
+        if not WORK["clarification"](REPO, args.issue):
+            # A bug-fix lane without custody has no relaunch that carries an answer: ask the requester instead.
+            raise Refused(f"issue #{args.issue} has no custody record or work-request clarification to answer; ask the "
+                          "requester with helio question ask and record it with helio work block --question ID")
+        WORK["unblock"](REPO, args.issue, args.now, kind="clarification")
+        return [f"WORK_UNBLOCKED issue={args.issue} by=lead-answer changed=true "
+                f"next=\"helio work start --issue {args.issue} --from-authorization --note-file FILE_WITH_THE_ANSWER\""]
+    if (wait.data.get("blocked") or {}).get("need") == "clarification" and not wait.data["blocked"].get("parked") \
+            and not (wait.data.get("escalation") or {}).get("question"):
+        now = args.now.timestamp()
+        WORK["unblock"](REPO, args.issue, args.now, kind="clarification")
+        wait = P["unblock"](store, S["save"](store, replace(wait, data={**wait.data, "escalation": None})),
+                            "lead answer: " + answer, now, deliver=True)
+        wait, after = custody_tick(store, wait, now)  # the worker wakes with the answer in its brief
+        return [f"WORK_UNBLOCKED issue={args.issue} by=lead-answer changed=true generation={wait.generation} {after}"]
+    blocked = wait.data.get("blocked") or {}
+    stop = wait.data.get("stop") or {}
+    controller_block = (blocked.get("stage") == "controller" and blocked.get("kind") in ("stalled", "no-progress")
+                        and not blocked.get("parked"))
+    # The stop clock records a stall in `stop` before anything becomes a blocker; the lead may clear that too.
+    clock_stall = not blocked and stop.get("kind") in ("stalled", "no-progress")
+    if not (controller_block or clock_stall):
+        held = f"a {blocked.get('stage') or 'worker'} blocker" if blocked else "no stall"
+        raise Refused(f"--lead clears only a controller stall or no-progress stop; issue #{args.issue} has {held}: "
+                      "this one needs its answer or the owner")
     if (wait.data.get("escalation") or {}).get("question"):
         raise Refused("the owner was already asked; apply the answer with helio pr phase decide")
-    wait = S["save"](store, replace(wait, data={**wait.data, "escalation": None}))
-    wait = P["unblock"](store, wait, "lead: " + " ".join(args.reason.split())[:200], args.now.timestamp())
-    return [f"WORK_UNBLOCKED issue={args.issue} by=lead changed=true generation={wait.generation}"]
+    now = args.now.timestamp()
+    reason = " ".join(args.reason.split())[:200]
+    data = {**wait.data, "escalation": None}
+    if stop:  # both shapes end the running stop, so the next stall starts a fresh clock
+        data.update(stop=None, stops=[*(wait.data.get("stops") or []), {"kind": stop["kind"], "since": stop["since"], "until": now}][-20:])
+    if clock_stall:
+        wait = S["save"](store, S["notice"](replace(wait, data=data), "decision", "Stall cleared by lead: " + reason, now))
+    else:
+        wait = P["unblock"](store, S["save"](store, replace(wait, data=data)), "lead: " + reason, now)
+    # The controller acts now (for PR #27 this dispatches the waiting repair) instead of at its next watch cycle.
+    wait, after = custody_tick(store, wait, now)
+    return [f"WORK_UNBLOCKED issue={args.issue} by=lead changed=true generation={wait.generation} {after}"]
 
 
 def unblock_work(args: argparse.Namespace, discord: DiscordReader) -> list[str]:
@@ -1014,6 +1091,8 @@ def submit(args: argparse.Namespace, gh: GitHub, suite: Callable[[Path, str], Su
     if previous and (previous == args.issue or gh.issue(previous).get("state") != "CLOSED"):
         raise Refused("follow-up predecessor is not a distinct closed issue; inspect the current relationship")
     tree, branch = task_worktree(project, TaskIssue(args.issue, previous), args.worktree)
+    if branch in MERGE_TRAIN["frozen"](Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state"))), REPO):
+        raise Refused(f"{branch} is being merged by an approved merge train; wait for MERGE_TRAIN_DONE or STOPPED")
     existing = gh.open_pr(branch)
     numbered = re.match(r"helio/issue-?(\d+)(?:$|[-_])", branch)
     if numbered and int(numbered.group(1)) != args.issue and not existing:
@@ -1182,6 +1261,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     blocker.add_argument("--issue", type=positive, required=True)
     blocker.add_argument("--reason", required=True)
     blocker.add_argument("--question", help="the helio question ID whose answer resolves this blocker")
+    blocker.add_argument("--kind", choices=("clarification", "decision"), default="decision",
+                         help="clarification: a how-to question Helio answers; decision: needs the requester or owner")
     unblocker = work_commands.add_parser("unblock", example='helio work unblock --issue 23 --question 6d1eabfab39a478db83b')
     unblocker.add_argument("--issue", type=positive, required=True)
     evidence = unblocker.add_mutually_exclusive_group(required=False)
@@ -1190,8 +1271,8 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
     unblocker.add_argument("--channel")
     unblocker.add_argument("--named", action="store_true", help="only blockers recorded with this --question")
     unblocker.add_argument("--lead", action="store_true",
-                           help="clear a controller stall/no-progress blocker after diagnosis (never a worker or owner decision)")
-    unblocker.add_argument("--reason", help="what the lead diagnosed; required with --lead")
+                           help="clear a controller stall after diagnosis, or answer a worker clarification (never a decision)")
+    unblocker.add_argument("--reason", help="what the lead diagnosed, or its answer; required with --lead")
     prs = commands.add_parser("pr").add_subparsers(dest="pr_command", required=True, parser_class=ExampleParser)
     PR_RECOVERY_CLI["register"](prs)
     inspection = prs.add_parser("check").add_mutually_exclusive_group(required=True)
@@ -1309,7 +1390,7 @@ def main(argv: list[str] | None = None, gh: GitHub | None = None, discord: Disco
         except (OSError, sqlite3.Error) as error:
             print(f"ISSUE_SYNC_PENDING issue={args.issue}: {type(error).__name__}; run helio issue sync")
     ok = ("PLAN_POSTED", "PLAN_APPROVED", "PLAN_ADOPTED", "PLAN_NONE", "PLAN_PR", "PLAN_DROPPED", "PLANS_AWAITING", "PLAN_REQUEST",
-          "WORK_AUTHORIZED", "WORK_STARTED", "WORK_BLOCKED", "WORK_UNBLOCKED", "{")
+          "WORK_AUTHORIZED", "WORK_STARTED", "WORK_IN_CUSTODY", "WORK_BLOCKED", "WORK_CLARIFY", "WORK_UNBLOCKED", "{")
     return 0 if lines and lines[0].startswith(ok) else 1
 
 

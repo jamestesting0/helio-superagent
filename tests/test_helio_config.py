@@ -187,13 +187,13 @@ class HelioConfigTests(unittest.TestCase):
                 self.assertEqual(values["DORI_DISCORD_IGNORED_CHANNELS"], "22222" if policy == "ignored" else "")
                 self.assertEqual(CONFIG["problems"](values), [])
 
-    def test_timer_edit_rejects_a_nudge_after_the_timeout(self):
+    def test_a_settings_file_with_the_retired_nudge_timer_still_loads_and_never_exports_it(self):
         self.write_settings()
-        revision = CONFIG["policy_revision"](CONFIG["load"](self.home), self.home)
-        with self.assertRaises(CONFIG["ConfigConflict"]):
-            CONFIG["change"](self.home, "timer-1", "653894110884921366", revision,
-                             "timeout.set", "HELIO_CONVERSATION_NUDGE_HOURS", "100")
-        self.assertNotIn("HELIO_CONVERSATION_NUDGE_HOURS", CONFIG["load"](self.home))
+        path = CONFIG["config_path"](self.home)
+        path.write_text(path.read_text() + "HELIO_CONVERSATION_NUDGE_HOURS=24\n")
+        values = CONFIG["load"](self.home)
+        self.assertEqual(CONFIG["problems"](values), [])
+        self.assertNotIn("HELIO_CONVERSATION_NUDGE_HOURS", CONFIG["resolve"](values, self.home))
 
     def test_render_refuses_a_world_readable_settings_file(self):
         self.write_settings()

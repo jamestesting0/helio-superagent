@@ -248,7 +248,7 @@ class MonitorReloadTests(unittest.TestCase):
                                    "helio_plan_source.py", "helio_runtime_policy.py",
                                    "helio_pr_verification.py", "helio_pr_recovery_store.py", "helio_pr_recovery_ci.py",
                                    "helio_pr_phase.py", "helio_pr_recovery_actions.py", "helio_pr_recovery.py",
-                                   "helio_pr_recovery_cli.py", "helio_pr_escalation.py"):
+                                   "helio_pr_recovery_cli.py", "helio_pr_escalation.py", "helio_health.py", "helio_doctor.py", "helio_merge_train.py"):
                         (helpers / helper).write_text((ROOT / "scripts" / helper).read_text())
                     for relative in ("delivery/plan-requests.sql",):
                         destination = self.home / "discord-inbound" / relative
@@ -257,7 +257,7 @@ class MonitorReloadTests(unittest.TestCase):
                     self.executable("dori", "#!/bin/sh\necho '[]'\n")
                 argv = [sys.executable, str(script)]
                 if name == "followups":
-                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*|*"pr list"*|*"issue list"*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
+                    self.executable("gh", '#!/bin/sh\ncase "$*" in\n*--slurp*|*"pr list"*|*"issue list"*) echo \'[]\';;\n*"api user"*) echo helio-bot;;\n*"api -i"*) printf \'HTTP/2.0 200 OK\\r\\n\\r\\n{"permissions":{"push":true}}\\n\';;\n*) echo \'{"state":"CLOSED","stateReason":"COMPLETED"}\';;\nesac\n')
                     # One open topic subscription, created through the real conversation schema.
                     subprocess.run(["bun", str(ROOT / "discord-inbound/conversation.ts"), "migrate"],
                                    env=self.env, capture_output=True, check=True, timeout=60)

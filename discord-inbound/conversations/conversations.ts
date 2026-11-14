@@ -1,6 +1,6 @@
 import type { describeMessage } from "../messages/reply-context.ts";
 import { conversationDatabase } from "./conversation-db.ts";
-import { WorkingStore } from "./working-store.ts";
+import { WorkingStore, WORKING_WINDOW_MS, snowflakeTime } from "./working-store.ts";
 import type { ReplyMeaning } from "./reply-settlement.ts";
 import { NoticeStore, type NoticeIntent } from "./notice-store.ts";
 import { TopicReconciliation } from "./reconcile-topic.ts";
@@ -132,6 +132,8 @@ export class Conversations extends WorkingStore {
       // Text goes now; message IDs stay until archiving so a later reply still finds its topic.
       this.db.query("UPDATE transcript SET entry=NULL WHERE channel_id=? AND user_id=? AND opened_at=?")
         .run(row.channel_id, row.user_id, row.opened_at);
+      // A closed topic no longer waits on anyone; a later reply to Helio still arrives as a reply.
+      this.db.run("DELETE FROM question_windows WHERE anchor_message_id=?", [row.anchor_message_id]);
       return { ...row, status: "resolved", outcome, closed_at: now, resolved_at: now,
         summary, hold_reason: null, issue: issue ?? row.issue, revision: row.revision + 1 };
     }).immediate();
@@ -190,6 +192,18 @@ export class Conversations extends WorkingStore {
     if (!current) return null;
     if (current.status === "open" || current.status === "on_hold") return current;
     return now !== undefined && current.status === "resolved" && (current.resolved_at ?? 0) > now - 7 * DAY_MS ? current : null;
+  }
+
+  /**
+   * A reply into a topic that closed silently because nobody answered picks it up again. Without a free topic slot the
+   * topic stays closed; the caller still delivers the message and names the topic so Helio has its context.
+   */
+  resumeTimedOut(messageId: string, now: number): string | undefined {
+    const row = this.topicOfMessage(messageId, now);
+    if (!row || row.status !== "resolved" || row.outcome !== "timed_out") return undefined;
+    try { this.reopen(row.channel_id, row.user_id, now, row.anchor_message_id); }
+    catch (error) { if (!(error instanceof RangeError)) throw error; }
+    return row.anchor_message_id;
   }
 
   /** Any retained topic by its anchor, following merges. */
@@ -345,16 +359,27 @@ export class Conversations extends WorkingStore {
       ORDER BY c.resolved_at DESC LIMIT 1`).get(user, now - 7 * DAY_MS, channel, channel);
   }
 
-  /** Helio's delivered question waits on this person, asked in this channel. */
-  awaitingAnswer(channel: string, user: string): boolean {
-    return this.list().some(row => this.state(row) === "waiting_on_requester" &&
-      (row.waiting_on_user ?? row.user_id) === user && (row.question_channel_id ?? row.channel_id) === channel);
+  /**
+   * An unthreaded message from this person in this channel, sent at `at`, may answer Helio's question: it falls in a
+   * question window (30 minutes from the question, ended early by their answer, a newer question, a hold or closure).
+   * Windows are kept after they end, so catch-up judges a message by the window that applied when it was sent.
+   */
+  awaitingAnswer(channel: string, user: string, at = Date.now()): boolean {
+    return this.db.query(`SELECT 1 FROM question_windows WHERE user_id=? AND channel_id=? AND opened_at<=?
+      AND ?<=min(opened_at+?, coalesce(closed_at, opened_at+?)) LIMIT 1`)
+      .get(user, channel, at, at, WORKING_WINDOW_MS, WORKING_WINDOW_MS) !== null;
+  }
+
+  /** A window ends at the earliest answer or event, whatever order they are processed in (catch-up, recovery). */
+  private endWindows(anchor: string, at: number): void {
+    this.db.run(`UPDATE question_windows SET closed_at=min(coalesce(closed_at, ?), ?)
+      WHERE anchor_message_id=? AND opened_at<=?`, [at, at, anchor, at]);
   }
 
   /** The conversation-backed admission callbacks every intake reader shares. */
   intakeCallbacks() {
     return {
-      awaitingAnswer: (channel: string, user: string) => this.awaitingAnswer(channel, user),
+      awaitingAnswer: (channel: string, user: string, at?: number) => this.awaitingAnswer(channel, user, at),
       workingAnchor: (channel: string, user: string, messageId: string) => this.workingAnchor(channel, user, messageId),
       topicMessage: (messageId: string) => this.topicOfMessage(messageId, Date.now()) !== null,
     };
@@ -447,6 +472,7 @@ export class Conversations extends WorkingStore {
 
   /** New participant input puts the topic back on Helio and clears its question. */
   private inputFor(row: Conversation, messageId: string, now: number): void {
+    this.endWindows(row.anchor_message_id, snowflakeTime(messageId));
     if (row.latest_input_id && BigInt(messageId) <= BigInt(row.latest_input_id)) return;
     this.db.run(`UPDATE conversations SET latest_input_id=?,revision=revision+1,last_activity=max(last_activity,?),
       waiting_on='',question_started_at=NULL,reply_disposition=NULL,nudged_at=NULL,waiting_on_user=NULL
@@ -520,6 +546,7 @@ export class Conversations extends WorkingStore {
     const row = this.requireOpen(channel, user, topic);
     this.db.query("UPDATE conversations SET revision=revision+1,status='on_hold',hold_reason=? WHERE channel_id=? AND user_id=? AND opened_at=?")
       .run(reason, row.channel_id, row.user_id, row.opened_at);
+    this.endWindows(row.anchor_message_id, Date.now());
   }
 
   resume(channel: string, user: string, topic?: string): void {
@@ -619,7 +646,7 @@ export class Conversations extends WorkingStore {
   }
 
   /** Compare the covered human revision; a retry recognizes its own already-applied receipt. */
-  applyReply(row: TopicRevision, meaning: ReplyMeaning, now: number, key?: string): "applied" | "newer-input" {
+  applyReply(row: TopicRevision, meaning: ReplyMeaning, now: number, key?: string, askedAt = now): "applied" | "newer-input" {
     return this.db.transaction(() => {
       let current = this.byAnchor(row.channel_id, row.user_id, row.anchor_message_id);
       if (key && current?.last_reply_key === key) return "applied";
@@ -640,11 +667,16 @@ export class Conversations extends WorkingStore {
         question_generation=question_generation+?,last_reply_key=?,job=coalesce(job,?),issue=coalesce(issue,?),
         waiting_on_user=?,question_channel_id=?,question_message_id=?,
         revision=revision+? WHERE channel_id=? AND user_id=? AND opened_at=?`,
-      [meaning.disposition, asking ? meaning.waiting_on! : "", asking ? now : null, asking ? 1 : 0,
+      [meaning.disposition, asking ? meaning.waiting_on! : "", asking ? askedAt : null, asking ? 1 : 0,
         key ?? null, meaning.job ?? null, meaning.issue ?? null,
         asking ? row.asked_user ?? row.user_id : null, asking ? row.reply_channel ?? row.channel_id : null,
         asking ? row.asked_message ?? row.anchor_message_id : null, meaning.disposition === "final" ? 0 : 1,
         row.channel_id, row.user_id, row.opened_at]);
+      this.endWindows(row.anchor_message_id, askedAt);
+      if (asking) {
+        this.db.run("INSERT OR REPLACE INTO question_windows VALUES (?,?,?,?,NULL)",
+          [row.anchor_message_id, row.asked_user ?? row.user_id, row.reply_channel ?? row.channel_id, askedAt]);
+      }
       // Linking an issue through a reply is the same as `conversation set --issue`: an older topic with it absorbs this one.
       if (meaning.issue && !current.issue) {
         const linked = this.linkTopicIssue(this.topic(row.anchor_message_id)!, meaning.issue, now);
@@ -681,6 +713,8 @@ export class Conversations extends WorkingStore {
         SELECT 1 FROM followups f WHERE f.anchor_message_id=conversations.anchor_message_id AND f.status<>'done')`).run(now - 30 * DAY_MS);
       this.db.exec(`DELETE FROM closure_notes WHERE NOT EXISTS (
         SELECT 1 FROM conversations c WHERE c.anchor_message_id=closure_notes.anchor_message_id)`);
+      this.db.exec(`DELETE FROM question_windows WHERE NOT EXISTS (
+        SELECT 1 FROM conversations c WHERE c.anchor_message_id=question_windows.anchor_message_id)`);
       this.db.exec(`DELETE FROM topic_participants WHERE NOT EXISTS (
         SELECT 1 FROM conversations c WHERE c.anchor_message_id=topic_participants.anchor_message_id)`);
       this.db.query("DELETE FROM conversation_notices WHERE created_at<=?").run(now - 37 * DAY_MS);

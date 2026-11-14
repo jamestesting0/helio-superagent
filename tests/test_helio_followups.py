@@ -286,8 +286,9 @@ globalThis.fetch = async(input, init) => {
                 "mergeStateStatus": "CLEAN", "statusCheckRollup": passing}
         cases = [
             ({}, "FOLLOWUP_PR_READY"),
-            ({"headRefOid": parent}, "FOLLOWUP_PR_REPAIR"),
-            ({"headRefOid": parent, "baseRefOid": parent}, "FOLLOWUP_PR_REPAIR"),
+            # Behind main is ready: `helio merge` tests the combination with current main (2026-11-13, PR #20).
+            ({"headRefOid": parent}, "FOLLOWUP_PR_READY"),
+            ({"headRefOid": parent, "baseRefOid": parent}, "FOLLOWUP_PR_READY"),
             ({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}, "FOLLOWUP_PR_REPAIR"),
             ({"mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}, "FOLLOWUP_PR_WAIT"),
             ({"statusCheckRollup": [{"name": "unit", "status": "IN_PROGRESS"}]}, "FOLLOWUP_PR_WAIT"),
@@ -315,14 +316,10 @@ globalThis.fetch = async(input, init) => {
             {**pull, "headRefOid": parent},
             {**pull, "number": 21},
         ])
-        self.env["FOLLOWUP_UNAVAILABLE_HEAD"] = parent
         result = self.cli("check")
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
-        self.assertEqual(len(lines), 2, result.stdout)
-        warning, ready = lines
-        self.assertTrue(warning.startswith("FOLLOWUP_WARN pr=20 "), warning)
-        self.assertTrue(ready.startswith("FOLLOWUP_PR_READY "), ready)
+        self.assertEqual([line.split(" ", 1)[0] for line in lines], ["FOLLOWUP_PR_READY", "FOLLOWUP_PR_READY"], result.stdout)
 
     def test_checkout_only_evidence_never_announces_live(self):
         bins = Path(self.env["PATH"].split(":")[0])

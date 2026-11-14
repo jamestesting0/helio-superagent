@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { snowflakeTime } from "./working-store.ts";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Conversations, TopicRevision } from "./conversations.ts";
@@ -90,8 +91,14 @@ export class ReplySettlements {
         "SELECT id,payload FROM delivery WHERE stream='inbound' AND payload IS NOT NULL").all(); }
       finally { queue.close(); }
     }
+    // A question's answer window starts when Discord shows Helio's reply, even when this settles later (recovery).
+    const sent = this.db.query("SELECT 1 FROM sqlite_master WHERE name='reply_sends'").get() ? (JSON.parse(receipt.required_sends) as RequiredSend[])
+      .map(send => this.db.query<{ reply_id: string }, [string, string]>(
+        "SELECT reply_id FROM reply_sends WHERE target=? AND text_hash=? AND state='sent' AND reply_id IS NOT NULL").get(send.target, `event:${send.event}`)?.reply_id)
+      .filter((id): id is string => !!id && /^\d+$/.test(id)).map(snowflakeTime) : [];
+    const askedAt = sent.length ? Math.min(now, ...sent) : now;
     const outcomes = refs.map(row => newerInputPending(pending, store, row, row.covered ?? [row.anchor_message_id]) ?
-      "newer-input" : store.applyReply(row, meaning, now, key));
+      "newer-input" : store.applyReply(row, meaning, now, key, askedAt));
     this.db.run("UPDATE reply_settlements SET outcomes=? WHERE key=? AND outcomes IS NULL", [JSON.stringify(outcomes), key]);
     return outcomes;
   }

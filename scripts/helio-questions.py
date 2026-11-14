@@ -89,16 +89,6 @@ def summary(row: sqlite3.Row) -> str:
  return encoded
 
 CUSTODY=re.compile(r'^custody-issue([0-9]+)$')
-REMIND_AFTER_MS=24*3600*1000
-
-def remind(db: sqlite3.Connection, now_ms: int) -> None:
- # One reminder per custody question that still waits on the owner after a day.
- for row in db.execute("SELECT * FROM questions WHERE status='awaiting_answer' AND reminded_at IS NULL AND updated<=?",(now_ms-REMIND_AFTER_MS,)).fetchall():
-  if not CUSTODY.fullmatch(row['lane']):continue
-  if db.execute('UPDATE questions SET reminded_at=? WHERE id=? AND reminded_at IS NULL',(now_ms,row['id'])).rowcount:
-   db.commit();print('QUESTION_REMINDER '+json.dumps({'id':row['id'],'lane':row['lane'],'age_hours':(now_ms-row['updated'])//3600000,
-    'message_id':row['message_id'],'channel_id':row['channel_id']}),flush=True)
-
 def close(db: sqlite3.Connection, id: str) -> None:
  """`helio pr phase decide` closes a custody question only after applying its answer."""
  row=db.execute('SELECT * FROM questions WHERE id=?',(id,)).fetchone()
@@ -120,7 +110,6 @@ def transfer(db: sqlite3.Connection, id: str, lane: str) -> sqlite3.Row:
 
 def poll(db: sqlite3.Connection, lane: str | None, seen: dict[str,tuple[str,int,str]]) -> None:
  pending=0
- if lane is None:remind(db,int(time.time()*1000))
  for row in db.execute("SELECT * FROM questions WHERE status NOT IN ('done','cancelled') ORDER BY updated,id"):
   if lane and row['lane']!=lane:continue
   if row['status']=='answering':continue
@@ -376,10 +365,9 @@ def confirm_argv(a):
  if a.reply_to and not a.channel:raise ValueError('--reply-to needs the --channel it is in')
  channel=a.channel or STAFF
  if not channel:raise ValueError('HELIO_STAFF_CHAT is not set; pass --channel')
- repo=os.environ.get('HELIO_GITHUB_REPO','jamestesting0/elo-bot');number=(a.target or '').rpartition('#')[2]
+ # The prompt line already links the PR or issue; the note only pings the approvers when no channel was given.
  note=[]
  if not a.channel:note+=[f'<@{x}>' for x in dict.fromkeys([OWNER,*sorted(trusted_now())]) if ID.fullmatch(x)]
- if a.action!='restart' and number.isdigit():note.append(f"<https://github.com/{repo}/{'issues' if a.action=='pr' else 'pull'}/{number}>")
  argv=['helio','confirm','ask','--action',a.action,'--target',a.target or '','--revision',a.revision or '','--channel',channel]
  if a.reply_to:argv+=['--reply-to',a.reply_to]
  return argv+(['--note',' '.join(note)] if note else [])

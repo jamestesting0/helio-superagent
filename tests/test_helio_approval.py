@@ -92,6 +92,69 @@ class ClickTests(unittest.TestCase):
                                                                    "interacted_message_id": prompt["id"]}}
         return result, prompt
 
+    def test_a_train_click_binds_every_listed_pr_its_head_and_whether_it_restarts(self):
+        line = lambda n, sha: f"[PR #{n}](<https://github.com/{REPO}/pull/{n}>) · `{sha}` Change {n}"
+        prompt = "\n".join(["Merge 2 PRs and restart Elo Bot?", line(18, "2532d55"), line(20, "bc113f3"),
+                            "Tested together: unit and integration tests passed."])
+        result = "✅ **[James](<https://discord.com/users/42>)** approved merging #18 and #20 and restarting Elo Bot"
+        self.assertEqual(A["check_click"]("train-restart", *self.click(prompt, result), BOT, None, HEAD, now=NOW, repo=REPO,
+                                          expected_prompt=prompt)[0], "42")
+        self.assertEqual(A["train_members"](prompt, REPO), {18: "2532d55", 20: "bc113f3"})
+        for action, changed_prompt, changed_result in (
+            ("train", prompt, result),                                                   # restart not asked for
+            ("train-restart", prompt.replace("#20", "#21").replace("/20>", "/21>"), result),  # a different member
+            ("train-restart", prompt, result.replace(" and restarting Elo Bot", "")),     # result for another prompt
+        ):
+            with self.subTest(action=action), self.assertRaises(A["Refused"]):
+                A["check_click"](action, *self.click(changed_prompt, changed_result), BOT, None, HEAD, now=NOW, repo=REPO,
+                                 expected_prompt=prompt)
+
+    def test_a_typed_yes_to_a_train_prompt_approves_its_members_at_their_pinned_heads_only(self):
+        """Gate review 2026-11-13: a yes replying to a train accepted a different head, and counted a left-out PR."""
+        prompt = helio_says("\n".join([
+            "Merge #18?", f"[PR #18](<https://github.com/{REPO}/pull/18>) · `a1b2c3d` Change 18",
+            "Tested with current main: unit and integration tests passed.", "#20 isn't included: it conflicts with #18 in app.py."]))
+        yes = message("yes", referenced=prompt)
+        A["check_intent"]("merge", yes, BOT, REPO, {18}, now=NOW)
+        A["check_revision"](HEAD, yes, REPO, "helio/issue-18", bot_id=BOT, pr=18)
+        for revision, pr in (("f" * 40, 18), (HEAD, 20)):
+            with self.subTest(revision=revision, pr=pr), self.assertRaises(A["Refused"]):
+                A["check_revision"](revision, yes, REPO, "helio/issue-18", bot_id=BOT, pr=pr)
+
+    def test_a_readiness_condition_is_an_approval_but_other_conditions_are_not(self):
+        """2026-11-13: "is pr 27 ready? if so merge it and deploy" was refused as conditional and cost a second decision."""
+        for text in ("is pr 27 ready? if so merge it and deploy", "merge #27 and restart if it's ready.",
+                     "if ready, merge #27 and restart", "if green then please merge #27 and deploy",
+                     "can you merge #27 and restart the bot?", "could you please merge #27 and deploy?",
+                     "merge #27 and deploy if checks pass", "if green merge #27 and restart"):
+            with self.subTest(text=text):
+                A["check_intent"]("merge", message(text), BOT, REPO, 27, now=NOW)
+                A["check_intent"]("restart", message(text), BOT, REPO, None, now=NOW)
+        incident = message(f"<@{BOT}> is pr 27 ready? if so merge it and deploy")  # the exact 2026-11-13 request
+        A["check_intent"]("merge", incident, BOT, REPO, 27, now=NOW)
+        A["check_intent"]("restart", incident, BOT, REPO, None, now=NOW)
+        pushed = [{"after": HEAD, "timestamp": (NOW - datetime.timedelta(hours=1)).isoformat()}]
+        A["check_revision"](HEAD, incident, REPO, "helio/issue-23", activity=lambda repo, branch: pushed, bot_id=BOT, pr=27)
+        with self.assertRaises(A["Refused"]):  # another person's mention is not Helio's
+            A["check_intent"]("merge", message("<@123456789012345678> is pr 27 ready? if so merge it"), BOT, REPO, 27, now=NOW)
+        for text in ("merge #27 if Bob agrees", "merge #27 if not busy", "should I merge #27?", "merge #27 tomorrow",
+                     "merge #27 if tests pass and Bob agrees", "if ready and nobody objects merge #27",
+                     "if ready, and nobody objects, merge #27 and deploy",
+                     "if ready, please get Bob's approval, then merge #27 and deploy",
+                     "merge #27 and deploy only with Bob's approval if ready",
+                     "if ready, go ahead and get Bob's approval, then merge #27 and deploy",
+                     "can you merge #27 and deploy after Bob checks?", "can you merge #27?? not sure"):
+            with self.subTest(text=text), self.assertRaises(A["Refused"]):
+                A["check_intent"]("merge", message(text), BOT, REPO, 27, now=NOW)
+
+    def test_a_train_prompt_names_the_already_merged_prs_its_restart_deploys(self):
+        prompt = "Merge #27 and restart Elo Bot?\n#27 · `1be01ab` x\nAlso deploys already-merged #18, #20, #22 and #26.\nTested."
+        self.assertEqual(A["train_ships"](prompt, REPO), {18, 20, 22, 26})
+        self.assertEqual(A["train_ships"]("Merge #27?\n#27 · `1be01ab` x", REPO), set())
+
+    def test_train_heads_cover_ten_to_nineteen_prs(self):
+        self.assertTrue(A["TRAIN_HEAD"].fullmatch("Merge 12 PRs and restart Elo Bot?"))
+
     def test_plan_click_is_bound_to_issue_revision_and_posting_time(self):
         result, prompt = self.click("📋 Plan for #12 (r2): shorter", "✅ <@42> approved the plan for #12 (r2)", posted=120, clicked=60)
         self.assertEqual(A["check_click"]("plan", result, prompt, BOT, 12, "2", now=NOW)[0], "42")
@@ -240,7 +303,7 @@ class IntentTests(unittest.TestCase):
     def test_hedged_and_multiple_target_requests_do_nothing(self):
         for content in ("yes but not yet", "yes?", "wait, merge #123", "do not merge #123",
                         "yes " + "please " * 15, "merge pr 123 and pr 124",
-                        "yes if tests pass", "merge pr 123 tomorrow"):
+                        "yes if Bob agrees", "merge pr 123 tomorrow"):
             with self.subTest(content=content):
                 self.refused("merge", message(content, referenced=helio_says("Merge PR 123?")))
 

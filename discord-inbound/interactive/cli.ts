@@ -6,6 +6,9 @@ import { githubReferences } from "../messages/references.ts";
 
 const USAGE = `Usage: helio confirm ask --action merge|restart|pr --target T --revision SHA --channel ID [--reply-to ID] [--note TEXT]
        helio confirm plan --issue N --revision R --text-file PATH --channel ID [--reply-to ID]
+       helio confirm train --train ID --target REPO#N,N --revision SHA --text-file PATH --channel ID [--reply-to ID] [--restart]
+       helio confirm bind (--prompt ID | --message ID --approver USER --at MS) --train ID
+       helio confirm binding TRAIN | unlock TRAIN
        helio confirm list [--all] | show ID | use ID | cancel ID | recover ID | feedback ID`;
 const SNOWFLAKE = /^[0-9]{1,30}$/, SHA = /^[0-9a-f]{40}$/, PROMPT_ID = /^[0-9a-f]{20}$/;
 
@@ -15,7 +18,7 @@ function options(args: readonly string[], allowed: readonly string[]): Map<strin
   const out = new Map<string, string>();
   for (let i = 0; i < args.length; i++) {
     const key = args[i]!;
-    if (key === "--all" && allowed.includes(key)) { out.set(key, ""); continue; }
+    if ((key === "--all" || key === "--restart") && allowed.includes(key)) { out.set(key, ""); continue; }
     const value = args[i + 1];
     if (!allowed.includes(key) || value === undefined || out.has(key)) throw new Refused(USAGE);
     out.set(key, value);
@@ -144,6 +147,41 @@ export async function main(argv: readonly string[]): Promise<number> {
       }, planButtons(id));
       if (row.status === "open") store.supersede(target, id);
       return report(row);
+    }
+    if (command === "train") {
+      const o = options(rest, ["--train", "--target", "--revision", "--text-file", "--channel", "--reply-to", "--restart"]);
+      const train = o.get("--train") ?? "", target = o.get("--target") ?? "", revision = o.get("--revision") ?? "";
+      const channel = o.get("--channel") ?? "", replyTo = o.get("--reply-to");
+      const prefix = `${repo}#`, numbers = target.startsWith(prefix) ? target.slice(prefix.length) : "";
+      if (!PROMPT_ID.test(train) || !/^[1-9][0-9]*(,[1-9][0-9]*){0,19}$/.test(numbers) || !SHA.test(revision) ||
+          !SNOWFLAKE.test(channel) || (replyTo !== undefined && !SNOWFLAKE.test(replyTo)) || !o.get("--text-file")) throw new Refused(USAGE);
+      const content = (await Bun.file(o.get("--text-file")!).text()).trim();
+      if (!content.startsWith("Merge ") || content.length > 1900) throw new Refused("train prompt must start with Merge and fit 1900 characters");
+      const action: ConfirmAction = o.has("--restart") ? "train-restart" : "train";
+      const known = existing(store, "confirm", action, target, revision, channel);
+      if (known) return report(known);
+      if (!await permitted(api, channel)) throw new Refused("channel is not an allowed channel or an owner/trusted DM");
+      return report(await post(store, api, { id: train, kind: "confirm", action, target, revision, content, channel_id: channel,
+        ...(replyTo ? { reply_to: replyTo } : {}), now: Date.now() }, confirmButtons(train, action)));
+    }
+    if (command === "bind") {
+      const o = options(rest, ["--prompt", "--message", "--approver", "--at", "--train"]);
+      const train = o.get("--train") ?? "", promptId = o.get("--prompt"), message = o.get("--message");
+      if (!PROMPT_ID.test(train) || (promptId === undefined) === (message === undefined) ||
+          (promptId !== undefined && !PROMPT_ID.test(promptId)) || (message !== undefined && !SNOWFLAKE.test(message))) throw new Refused(USAGE);
+      const at = o.get("--at") === undefined ? undefined : Number(o.get("--at"));
+      const outcome = store.bind({ ...(promptId ? { prompt: promptId } : { message: message! }), train, repo,
+        ...(o.get("--approver") ? { approver: o.get("--approver")! } : {}), ...(at !== undefined ? { approvedAt: at } : {}), now: Date.now() });
+      console.log(`CONFIRM_BIND ${JSON.stringify({ train, outcome, ...(store.binding(train) ?? {}) })}`);
+      return outcome === "bound" || outcome === "already" ? 0 : outcome === "locked" ? 3 : 2;
+    }
+    if (command === "binding" || command === "unlock") {
+      const train = rest[0];
+      if (!train || rest.length !== 1 || !PROMPT_ID.test(train)) throw new Refused(USAGE);
+      if (command === "unlock") { console.log(`CONFIRM_UNLOCKED train=${train} changed=${store.unlock(repo, train)}`); return 0; }
+      const bound = store.binding(train);
+      console.log(`CONFIRM_BINDING ${JSON.stringify(bound ?? null)}`);
+      return bound ? 0 : 1;
     }
     if (command === "list") {
       const o = options(rest, ["--all"]);

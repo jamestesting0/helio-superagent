@@ -71,8 +71,9 @@ test("an answer to Helio's open question preserves authority, needs the exact pe
   const store = new Conversations(join(dir, "discord-conversations.sqlite"));
   try {
     const config = { ...cfg, ...store.intakeCallbacks() };
-    const topic = store.open(normal, "66", "9", "intake", 1000);
-    store.applyReply(topic, { disposition: "question", waiting_on: "Which server?" }, 1001);
+    const asked = Date.parse(message.timestamp) - 60_000;  // the answer arrives a minute after the question
+    const topic = store.open(normal, "66", "9", "intake", asked - 1);
+    store.applyReply(topic, { disposition: "question", waiting_on: "Which server?" }, asked);
     const followup = { ...message, content: "more details", mentions: [] };
     const current = await classify(followup, config, parentOf);
     expect([current?.attention, current?.role, current?.scope]).toEqual(["review", "STAFF_QUESTION", "may-report-issue"]);
@@ -82,7 +83,7 @@ test("an answer to Helio's open question preserves authority, needs the exact pe
     const payload = JSON.stringify({ ...current, preparation_complete: true, discord_origin: authorizationMetadata(followup) });
     const rest = async <T>(): Promise<T> => ({ id: normal, guild_id: "300", type: 0 } as T);
     expect((await reauthorize(payload, config, rest))?.attention).toBe("review");
-    store.close(normal, "66", "answered", 2000);
+    store.close(normal, "66", "answered", asked + 30_000);
     expect(await classify(followup, config, parentOf)).toBeNull();
     expect(await reauthorize(payload, config, rest)).toBeNull();
   } finally { store.dispose(); await rm(dir, { recursive: true, force: true }); }

@@ -38,9 +38,7 @@ export class RuntimeRecords {
       guild: channel.guild_id || "@me", label: "Original message" };
     const state = conversations.state(row);
     const timeoutHours = Number(published.values.HELIO_CONVERSATION_TIMEOUT_HOURS);
-    const nudgeHours = Number(published.values.HELIO_CONVERSATION_NUDGE_HOURS);
-    const due = row.question_started_at === null ? undefined :
-      row.question_started_at + (row.nudged_at === null ? nudgeHours : timeoutHours) * 3_600_000;
+    const due = row.question_started_at === null ? undefined : row.question_started_at + timeoutHours * 3_600_000;
     const fields: DisplayField[] = [
       { name: "State", value: stateName(state) }, { name: "User", value: user },
       ...(detail ? [{ name: "Participants", value: conversations.participants(row.anchor_message_id)

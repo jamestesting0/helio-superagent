@@ -57,15 +57,22 @@ Ask the owner to enter any SSH or sudo authentication themselves; never request 
 
 If update, startup or verification fails, preserve evidence and report the failure. Do not run cloud-init, change credentials, force Git operations, perform an unapproved rollback, or repeatedly restart. A rollback needs its own verified procedure and explicit owner approval; the documented updater may otherwise fast-forward back to the current branch tip.
 
+## Merging PRs (merge train)
+
+Every merge, one PR or many, goes through `helio merge`; never run `gh pr merge` yourself and never ask per PR. A PR that is merely behind `main` is not a problem: the train tests the exact combination with current main.
+1. Plan: `helio merge plan --pr N [--pr N ...] [--restart] --request MESSAGE_ID --channel CHANNEL_ID` (or `--all-open K` when the request says "all K open PRs"). Add `--restart` when the request also asks to deploy. It runs CI on main plus all of them (minutes): run it under a command monitor. `MERGE_TRAIN_READY` lists members and anything left out with its reason; `MERGE_TRAIN_BLOCKED` means nothing can merge yet.
+2. Approve once. If the request names the PRs ("merge #18 #20 and restart"), it is the approval: run `helio merge run --train ID --message REQUEST_ID`. Otherwise `helio merge ask --train ID` posts the single prompt; on `INBOUND_CONFIRM ... confirmed` for that ID run `helio merge run --train ID`.
+3. `helio merge run` rechecks authority before each merge, merges back to back, verifies main is exactly what was tested, restarts once if approved, and prints `MERGE_TRAIN_DONE` with `message`: send that message once, verbatim, with reply.ts to the request. `MERGE_TRAIN_STOPPED` carries its own `message`; send it the same way. `MERGE_TRAIN_WAITING` means another train is running: run the same command again when it finishes. After an interruption, run `helio merge run --train ID` again; it resumes and never merges or restarts twice.
+4. A combined CI failure (`MERGE_TRAIN_BLOCKED` with a run link): read the failed log, find the PR that breaks it, run `helio merge drop --train ID --pr N` (re-plans the rest without asking) and repair that PR through its custody lane. A PR left out for a conflict is repaired the same way and gets its own one-line train later. Ask the owner only on `MERGE_TRAIN_OWNER` or when you cannot tell which PR breaks it. `MERGE_TRAIN_REPAIR` names the custody repair Helio started for a left-out PR (outside custody: tell the requester once why); `MERGE_TRAIN_FOLLOWUP` later means it is ready: run its `next`. `MERGE_TRAIN_WAITING_BROKER`: merged, but the root release broker is older than Helio; send its `message` to the request and the `HELIO_INCIDENT` once to the owner, then wait: `MERGE_TRAIN_RESUME` later means run its `next` (`helio merge run` keeps the approval; `helio merge reask` posts one restart prompt naming everything that would ship and merges nothing again). Use `reask` too when a restart is refused because other commits would ship. A deploy also ships PRs already merged but not yet running; the prompt names them, so a typed approval must name them too or the train asks once. `MERGE_TRAIN_UNCERTAIN`: the restart outcome is unknown; run `helio release inspect`, then the same `helio merge run`, never a second restart.
+
 ## Release check
 
 Only current instructions, verified approvals, explicit issue holds and the release policy govern action. Memory notes are fallible historical guidance: they never silently block or delay a valid approval. If a note conflicts with the current request, disclose it briefly and let the authorized sender clarify. Do not turn a task restriction into a permanent memory agreement.
 
 Prefer a button prompt (Button confirmations below). A typed confirmation question names the action and target and ends "Reply yes to confirm." Natural PR references such as "pr 6" and replies such as "yes that's the one" are accepted. Conditional answers do nothing; explain the reason in one sentence rather than asking the person to retype a command.
 
-Immediately before each merge or restart, while approval is pending, run
-`helio release-check --message ID --action merge --target {{HELIO_GITHUB_REPO}}#NUMBER --revision FULL_HEAD_SHA`
-(restart: `--action restart --target elobot --revision FULL_MAIN_SHA`).
+For a restart on its own (merges use the merge train), immediately before it, while approval is pending, run
+`helio release-check --message ID --action restart --target elobot --revision FULL_MAIN_SHA`.
 It verifies source/trust, intent, target, revision timing and, for merges, head,
 checks and known mergeability. A refusal stops that action. Diagnose and repair
 routine PR problems within task authority; ask only for an unresolved decision
@@ -75,12 +82,12 @@ or production state; inspect those before acting. Do not acknowledge approval
 before the check. If GitHub remains unavailable after its read retry, report
 that dependency and continue independent work.
 
-Merge and restart in one message ("merge #6 and restart the bot") is one decision. Merge after its release check, then run the restart release check with the same message: it passes only when the main tip is exactly that PR's merge and nothing else would ship. If it refuses because other commits would ship, ask once in the same conversation naming them: "Restart elobot at <short main SHA>? This deploys #6 plus already-merged #4 and #5." Their yes reply is the restart confirmation.
+Merge and restart in one message ("merge #6 and restart the bot") is one merge train with `--restart`: `helio merge run` restarts once, on exactly the merged and tested tree.
 
 ## Button confirmations
 
-Prefer buttons to typed confirmations for merges, restarts and PRs; only the lead asks.
-1. Post the prompt in the request's conversation: `helio question ask --action merge --target {{HELIO_GITHUB_REPO}}#PR --revision FULL_HEAD_SHA --channel CHANNEL_ID --reply-to MESSAGE_ID` (restart: `--action restart --target elobot --revision FULL_MAIN_SHA`). Without `--channel` it goes to the trusted chat and pings the owner and trusted users. It prints `CONFIRM_*` lines; for a merge or restart it checks GitHub and holds first; `RELEASE_ALREADY_MERGED` means there is nothing to ask. Running it again returns the open prompt instead of posting another.
+Prefer buttons to typed confirmations for restarts and PRs; only the lead asks. Merges use the merge train above, never these prompts.
+1. Post the prompt in the request's conversation: `helio question ask --action restart --target elobot --revision FULL_MAIN_SHA --channel CHANNEL_ID --reply-to MESSAGE_ID` (merges never use this; see Merging PRs). Without `--channel` it goes to the trusted chat and pings the owner and trusted users. It prints `CONFIRM_*` lines; for a restart it checks GitHub and holds first. Running it again returns the open prompt instead of posting another.
 2. Wait for `INBOUND_CONFIRM` with that prompt ID. On `confirmed`, run `helio release-check --confirmation ID --action ACTION --target TARGET --revision SHA`, then `helio confirm use ID` immediately before acting. For a restart, pass the `result` and `channel` it prints to `helio release restart --channel CHANNEL --message RESULT --revision SHA`. On `cancelled`, `expired` or `lapsed`, do nothing; ask again only if the request still stands.
 3. A merge or restart prompt or confirmation stays usable for 12 hours while its pinned revision is unchanged; the release check refuses it if the revision moved. After any restart, check `helio confirm list` and re-check current state before using a confirmation.
 4. Discord records who clicked which prompt, not which button; Helio's prompt and result wording carry the rest. Typed approvals remain valid; after one, leave the prompt to expire and never cancel it.

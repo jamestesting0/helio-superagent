@@ -138,6 +138,20 @@ export function conversationDatabase(path: string, now: number, busyMs = 5000): 
     sharedTopics(db, now);
     db.exec("PRAGMA user_version=7");
   }).immediate();
+  // When an unthreaded message may count as the answer to Helio's question: one window per delivered question,
+  // kept after it ends so catch-up judges each message by the window that applied when it was sent.
+  db.transaction(() => {
+    const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
+    if (version && version.user_version >= 8) return;
+    db.exec(`CREATE TABLE question_windows (
+        anchor_message_id TEXT NOT NULL, user_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+        opened_at INTEGER NOT NULL, closed_at INTEGER, PRIMARY KEY(anchor_message_id,opened_at));
+      CREATE INDEX question_windows_person ON question_windows(user_id,channel_id);
+      INSERT OR IGNORE INTO question_windows
+        SELECT anchor_message_id,coalesce(waiting_on_user,user_id),coalesce(question_channel_id,channel_id),question_started_at,NULL
+        FROM conversations WHERE status='open' AND reply_disposition='question' AND question_started_at IS NOT NULL;
+      PRAGMA user_version=8`);
+  }).immediate();
   // Closing notes are recorded per topic and channel before sending, so a retry reuses its target and recipients.
   db.exec(`CREATE TABLE IF NOT EXISTS closure_notes (anchor_message_id TEXT NOT NULL, channel_id TEXT NOT NULL,
     target TEXT NOT NULL, users TEXT NOT NULL, PRIMARY KEY(anchor_message_id,channel_id))`);

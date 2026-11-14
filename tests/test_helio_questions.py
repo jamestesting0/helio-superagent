@@ -461,8 +461,8 @@ class QuestionChoiceTests(unittest.TestCase):
     with patch('sys.argv',['helio-questions','ask',*argv]),self.assertRaises(SystemExit):self.m['main']()
   base=['helio','confirm','ask','--action']
   self.assertEqual(calls,[
-   base+['pr','--target','o/r#4','--revision',sha,'--channel','100','--note','<@99> <@77> <https://github.com/o/r/issues/4>'],
-   base+['merge','--target','o/r#6','--revision',sha,'--channel','300','--reply-to','42','--note','<https://github.com/o/r/pull/6>'],
+   base+['pr','--target','o/r#4','--revision',sha,'--channel','100','--note','<@99> <@77>'],
+   base+['merge','--target','o/r#6','--revision',sha,'--channel','300','--reply-to','42'],
    base+['restart','--target','elobot','--revision',sha,'--channel','300']])
   self.assertEqual(self.db.execute('SELECT COUNT(*) FROM questions').fetchone()[0],0)
  def test_approval_asks_refuse_question_flags_and_other_lanes(self):

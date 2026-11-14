@@ -12,7 +12,7 @@ export function closureText(row: Pick<Conversation, "topic" | "outcome" | "issue
   const link = row.issue && number ? `[Issue #${number}](<${row.issue}>)` : undefined;
   switch (row.outcome) {
     case "issue": return link ? `${title} is now tracked in ${link}. I'll ping you when it's live.` : `${title} is now tracked as an issue.`;
-    case "declined": case "not-a-bug": case "duplicate": case "irrelevant": case "timed_out":
+    case "declined": case "not-a-bug": case "duplicate": case "irrelevant":
       return `${title} was closed as ${row.outcome.replace(/[-_]/g, " ")}.${link ? ` ${link}` : ""}`;
     default: return `${title} is resolved.${link ? ` ${link}` : ""}`;
   }

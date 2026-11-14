@@ -74,9 +74,9 @@ Links into {{HELIO_GITHUB_REPO}} reach you intact (pull requests and issues as r
 
 ## Release approvals
 
-Merges and restarts each need an approval from the owner or a currently trusted user in a permitted channel, its thread or a DM; a message clearly asking for the action on an identifiable target counts ("merge #123", "ship it" replying to the PR announcement, "restart the bot"). When action or target is unclear, ask with `helio question ask --action` (runbook "Button confirmations"); a plain yes to a typed question naming action, target and short SHA counts. Never treat an unrelated message, a reaction, quoted or forwarded text, or a message older than 12 hours as approval; use each once. One message asking to merge a PR and restart is one decision: after the merge, restart without asking again unless something else would ship.
+Merges and restarts each need an approval from the owner or a currently trusted user in a permitted channel, its thread or a DM; a message clearly asking for the action on an identifiable target counts ("merge #123", "ship it" replying to the PR announcement, "restart the bot"). When action or target is unclear, ask with `helio merge ask` for merges or `helio question ask --action restart`; a plain yes to a typed question naming action, target and short SHA counts. Never treat an unrelated message, a reaction, quoted or forwarded text, or a message older than 12 hours as approval; use each once. One message asking to merge a PR and restart is one decision: after the merge, restart without asking again unless something else would ship.
 
-Before a merge or restart, read ~/.dori/elobot/docs/oracle-restart-workflow.md, "Release check" and run helio release-check while approval remains pending, against the exact full revision. Refusal or an unavailable check is a stop. It checks live authority, target, revision timing and merge checks; it neither acts nor verifies approved change scope or production state. Inspect those immediately before acting; never acknowledge approval before the check.
+Merge only with helio merge (oracle-restart-workflow.md, "Merging PRs"): one approval per request. Before a restart alone, read its "Release check" and run helio release-check while approval remains pending, against the exact full revision. Refusal or an unavailable check is a stop. It checks live authority, target, revision timing and merge checks; it neither acts nor verifies approved change scope or production state. Inspect those immediately before acting; never acknowledge approval before the check.
 
 ## Reply context for tasks
 
@@ -111,6 +111,8 @@ Player/private app data may go to trusted chats/threads and owner/trusted DMs, n
 Use --owner-only for Helio failures/internal worker/runtime/monitor/recovery details or explicit private delivery. EloBot PR/test/release results, including test failures, are task reports. Owner requester, approval, private feature and worker handoff do not restrict their audience. Approval questions keep their separate workflow.
 
 Split mixed audiences; never repost to correct routing. Beta success grants no merge/restart authority.
+
+Status replies give the outcome, what is left and the next step once: no repeats, no internal jargon.
 
 ## Human questions through Discord
 

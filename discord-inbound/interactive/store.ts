@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS prompts (
   expires_at INTEGER NOT NULL, notice_at INTEGER, used_at INTEGER, cleared_at INTEGER, error TEXT,
   pending_app TEXT, pending_token TEXT, pending_accept INTEGER, pending_expected TEXT);
 CREATE INDEX IF NOT EXISTS prompts_status ON prompts(status, expires_at);
+CREATE TABLE IF NOT EXISTS approval_bindings (
+  approval TEXT PRIMARY KEY, train TEXT NOT NULL UNIQUE, approver TEXT NOT NULL, approved_at INTEGER NOT NULL, bound_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS release_locks (repo TEXT PRIMARY KEY, train TEXT NOT NULL, taken_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS feedback (
   id TEXT PRIMARY KEY, prompt_id TEXT NOT NULL, user_id TEXT NOT NULL, text TEXT NOT NULL,
   message_id TEXT, created_at INTEGER NOT NULL);`;
@@ -178,6 +181,40 @@ export class PromptStore {
   use(id: string, now: number): boolean {
     return this.run(`UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed' AND (kind='plan' OR decided_at + ${USE_WINDOW}>?)`,
       now, id, now) === 1;
+  }
+
+  /**
+   * A merge train's approval is consumed, bound to the train and the repository's release lock taken in one
+   * transaction: a lock held by another train leaves the prompt confirmed and nothing consumed.
+   */
+  bind(o: { prompt?: string; message?: string; train: string; repo: string; approver?: string; approvedAt?: number; now: number }):
+    "bound" | "already" | "locked" | "unusable" {
+    return this.db.transaction(() => {
+      const key = o.prompt ? `prompt:${o.prompt}` : `message:${o.message}`;
+      const bound = this.db.query<{ train: string }, [string]>("SELECT train FROM approval_bindings WHERE approval=?").get(key);
+      if (bound) return bound.train === o.train ? "already" : "unusable";
+      const lock = this.db.query<{ train: string }, [string]>("SELECT train FROM release_locks WHERE repo=?").get(o.repo);
+      if (lock && lock.train !== o.train) return "locked";
+      let approver = o.approver, approvedAt = o.approvedAt;
+      if (o.prompt) {
+        const row = this.get(o.prompt);
+        if (!row || row.kind !== "confirm" || !row.action.startsWith("train") || !this.use(o.prompt, o.now)) return "unusable";
+        approver = row.decided_by ?? undefined; approvedAt = row.decided_at ?? undefined;
+      }
+      if (!approver || approvedAt === undefined) return "unusable";
+      this.run("INSERT INTO approval_bindings VALUES (?,?,?,?,?)", key, o.train, approver, approvedAt, o.now);
+      this.run("INSERT OR IGNORE INTO release_locks VALUES (?,?,?)", o.repo, o.train, o.now);
+      return "bound";
+    }).immediate();
+  }
+
+  binding(train: string): { approval: string; approver: string; approved_at: number } | undefined {
+    return this.db.query<{ approval: string; approver: string; approved_at: number }, [string]>(
+      "SELECT approval,approver,approved_at FROM approval_bindings WHERE train=?").get(train) ?? undefined;
+  }
+
+  unlock(repo: string, train: string): boolean {
+    return this.run("DELETE FROM release_locks WHERE repo=? AND train=?", repo, train) === 1;
   }
 
   cancel(id: string): boolean {

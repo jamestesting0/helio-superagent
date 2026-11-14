@@ -107,7 +107,7 @@ def access(store: Store, wait: Wait, run: Runner, *, merged: bool = False) -> No
                 item["name"] for item in issue.get("labels", [])}:
             raise S["Refused"]("standing automatic-fix authority no longer applies")
     else:
-        if grant is None or f"discord:{grant.channel}:{grant.message}" != wait.data["source"]:
+        if grant is None or f"discord:{grant.channel}:{grant.message}" != (wait.data.get("request_source") or wait.data["source"]):
             raise S["Refused"]("recorded work source changed")
         AUTH["verify"]({"message": grant.message, "channel": grant.channel,
                         "author": grant.author, "source_hash": grant.source_hash})
@@ -117,7 +117,8 @@ def initialize(store: Store, task, key: str, branch: str, run: Runner) -> Wait:
     current = S["load"](store, task.issue)
     if current is not None:
         if current.data["source"] != task.source or current.job != f"issue-{task.issue}":
-            raise S["Refused"]("existing managed task needs explicit source reconciliation")
+            raise S["Refused"](f"issue #{task.issue} is already managed as {current.job} from {current.data['source']}; "
+                                f"inspect it with helio pr phase show --issue {task.issue}")
         return current
     issue = json.loads(run(["gh", "issue", "view", str(task.issue), "--repo", store.repo, "--json", "body"]))
     data: Data = {
@@ -233,24 +234,27 @@ def handoff(store: Store, wait: Wait, identity: str, run: Runner) -> Wait:
     return S["save"](store, S["notice"](updated, "waiting", "Implementation verified; controller owns CI waiting", time.time()))
 
 
-def block(store: Store, wait: Wait, reason: str, stage: str, question: str | None, now: float) -> Wait:
-    """Record a worker blocker; it never creates a PR, receipt or readiness."""
+def block(store: Store, wait: Wait, reason: str, stage: str, question: str | None, now: float,
+          need: str | None = None) -> Wait:
+    """Record a worker blocker; it never creates a PR, receipt or readiness. need="clarification" marks a how-to question
+    the lead may answer within the task's existing authority; anything else needs the requester or the owner."""
     if wait.data["terminal"] or wait.data["acknowledgment"] == wait.generation:
         raise S["Refused"]("this phase was already handed off; the controller owns it")
     if wait.data.get("blocked"):
         return wait
-    blocked = {"reason": reason, "at": now, "stage": stage, "question": question}
+    blocked = {"reason": reason, "at": now, "stage": stage, "question": question, **({"need": need} if need else {})}
     return S["save"](store, S["notice"](replace(wait, data={**wait.data, "blocked": blocked}),
                                         "decision", f"Worker blocked ({stage}): {reason}", now))
 
 
-def unblock(store: Store, wait: Wait, evidence: str, now: float) -> Wait:
-    """Clear a recorded blocker. A live worker continues its generation; a released one gets one new wake."""
+def unblock(store: Store, wait: Wait, evidence: str, now: float, deliver: bool = False) -> Wait:
+    """Clear a recorded blocker. A live worker continues its generation; a released one gets one new wake. With
+    deliver (a lead's answer), the worker always gets a new wake whose brief carries the evidence."""
     if not wait.data.get("blocked"):
         return wait
     current = lane(store, wait)
     status = "closed" if current.get("closedAt") else current.get("status", "working")
-    live = status in ("working", "not-done", "paused") and current.get("pane") and current.get("launchState") == "started"
+    live = not deliver and status in ("working", "not-done", "paused") and current.get("pane") and current.get("launchState") == "started"
     data = {**wait.data, "blocked": None}
     if live:
         updated = replace(wait, data=data)

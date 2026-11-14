@@ -5,12 +5,14 @@ import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import argparse
 import io
 import json
+import runpy
 import sqlite3
 from pathlib import Path
 import subprocess
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from pr_custody_fixture import C, CLI, Custody, P, S
@@ -269,6 +271,37 @@ class CustodyTests(unittest.TestCase):
             "another-independent-job", 90, 102, 2, self.world.now + 2)
         C["A"]["retry"](self.world.store, wait, observation, self.world.run, self.world.now + 3, pending=False)
         self.assertEqual(len(self.world.reruns), 2)
+
+    def test_a_pr_a_merge_train_leaves_out_gets_a_keyed_repair_in_its_custody_record(self) -> None:
+        """Gate review 2026-11-13: an exclusion only printed advice; the custody record never learned of it."""
+        C["watch"](self.world.store, self.world.run, self.world.seen, self.world.now)
+        url = S["load"](self.world.store, 7).data["pr"]
+        train = runpy.run_path(str(Path(__file__).resolve().parent.parent / "scripts/helio_merge_train.py"))
+        world = SimpleNamespace(repo=self.world.store.repo, state=self.world.store.state, run=lambda argv, **_: self.world.run(argv),
+                                now=lambda: self.world.now + 60)
+        item = {"pr": int(url.rsplit("/", 1)[1]), "kind": "conflict", "reason": "conflicts with #18 in app.py"}
+        result = train["hand_off"](world, {"id": "t1", "request": "400"}, item)
+        self.assertTrue(result.startswith("MERGE_TRAIN_REPAIR "), result)
+        wait = S["load"](self.world.store, 7)
+        self.assertEqual(wait.data["pending"], json.loads(result.split(" ", 1)[1])["repair"])
+        self.assertTrue(any("Merge train t1 left this PR out" in n["detail"] for n in wait.data["notices"]))
+
+    def test_a_repair_queued_for_a_slot_is_an_owner_only_incident_never_an_owner_question(self) -> None:
+        """Gate review 2026-11-13: a real queued launch still asked the owner after 91 minutes."""
+        self.world.mode = "assertion"
+        run = self.world.run
+        def queued(argv):
+            if argv[:2] == ["dori", "resume"]:
+                (self.world.store.state / "launch-queue.json").write_text(json.dumps([{
+                    "key": "issue7-regression", "phase": json.loads(argv[argv.index("--phase") + 1])}]))
+                return "LAUNCH_QUEUED"
+            return run(argv)
+        for minute in (0, 1, 31, 92):
+            C["watch"](self.world.store, queued, self.world.seen, self.world.now + minute * 60)
+        wait = S["load"](self.world.store, 7)
+        self.assertIn("queued for a free slot", wait.data["stop"]["detail"])
+        self.assertIsNone((wait.data.get("escalation") or {}).get("question"))
+        self.assertEqual(sum(n["detail"].startswith("Owner-only incident") for n in wait.data["notices"]), 1)
 
     def test_closed_pr_is_rechecked_before_a_queued_repair_can_start(self) -> None:
         self.world.mode = "assertion"

@@ -34,7 +34,13 @@ def verify_confirmation(channel_id,message_id,revision,config,fetch=get_json,now
         prompt_id=str(message['interaction_metadata'].get('interacted_message_id',''))
         if not ID.fullmatch(prompt_id):raise Refused('confirmation identity is invalid')
         prompt=fetch('/channels/'+channel_id+'/messages/'+prompt_id,token)
-        try:author_id,_=APPROVAL['check_click']('restart',message,prompt,bot_id,None,revision,now=now)
+        repo=config.get('repo','jamestesting0/elo-bot')
+        try:
+            # A merge-train prompt that asked to restart authorizes shipping exactly the PRs it lists.
+            if APPROVAL['TRAIN_HEAD'].fullmatch(str(prompt.get('content','')).split('\n')[0]):
+                author_id,_=APPROVAL['check_click']('train-restart',message,prompt,bot_id,None,revision,now=now,repo=repo)
+                APPROVAL['check_train_restart'](revision,str(prompt.get('content','')),repo,running_revision)
+            else:author_id,_=APPROVAL['check_click']('restart',message,prompt,bot_id,None,revision,now=now)
         except APPROVAL['Refused'] as error:raise Refused(str(error)) from None
     else:
         if author.get('bot') or message.get('webhook_id'):raise Refused('confirmation identity is invalid')

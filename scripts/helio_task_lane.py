@@ -20,8 +20,12 @@ if TYPE_CHECKING:
 Runner = Callable[[list[str], Path | None], str]
 STEPS = {
     "work": (
-        "Write a regression test under tests/ that reproduces the requested behaviour; for a bug it must fail with an "
-        "assertion on origin/main before your fix.",
+        "If the requested behaviour can be checked by a test (logic, data, permissions, stored state, commands), write a "
+        "regression test under tests/ first; for a bug it must fail with an assertion on origin/main before your fix. A "
+        "text-only change (wording, labels, removed annotations) needs no new test: verify the rendered output instead and "
+        "name that check in the result evidence. When anything is unclear or two instructions conflict, never stop "
+        "silently: run `helio work block --issue {issue} --kind clarification --reason \"<your exact question>\"` and "
+        "Helio answers it; use `--kind decision` only for product, scope or authority choices, which go to the requester.",
         "Make the smallest change that satisfies the issue's confirmed requirements "
         "(~/.dori/elobot/skills/karpathy-guidelines/SKILL.md); run focused tests while you work.",
         "Commit on this branch. Write the result file (one `scope` row per confirmed requirement) and a structured report "

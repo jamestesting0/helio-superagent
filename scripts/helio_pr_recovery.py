@@ -187,7 +187,7 @@ def step(store: Store, wait: Wait, run: Runner, now: float) -> tuple[Wait, E["Co
                 and not blocked.get("transferred") and blocked["stage"] != "controller"):
             # The worker is idle and only its own open question pins the slot: move it to the custody lane.
             A["transfer"](store, blocked["question"], E["lane_key"](wait.issue))
-            # From here the custody lifecycle owns it: one reminder, one re-ask, then parking; never a second question.
+            # From here the custody lifecycle owns it: one question, then parking; never a reminder or a second question.
             wait = S["save"](store, replace(wait, data={**wait.data, "blocked": {**blocked, "transferred": E["lane_key"](wait.issue)},
                 "escalation": {"kind": "worker-blocked", "at": now, "question": blocked["question"],
                                "options": list(E["OPTIONS"]["worker-blocked"]), "detail": f"The worker asked: {blocked['reason']}"}}))
@@ -235,7 +235,7 @@ def step(store: Store, wait: Wait, run: Runner, now: float) -> tuple[Wait, E["Co
         finished = A["complete"](store, wait, run, now)
         if finished.data["status"] == "settled":
             if (finished.data.get("escalation") or {}).get("question"):
-                return finished, None  # The lane is done; the owner's follow-up decision keeps its reminder/re-ask/park lifecycle.
+                return finished, None  # The lane is done; the owner's follow-up decision keeps its ask-then-park lifecycle.
             return S["save"](store, replace(finished, data={**finished.data, "terminal": True})), None
         return finished, ("stalled", "the merged PR's lane has not closed")  # A crash before close stays reconcilable.
     if state != "OPEN":
@@ -258,7 +258,9 @@ def step(store: Store, wait: Wait, run: Runner, now: float) -> tuple[Wait, E["Co
     if not allowed:
         return wait, condition
     if waking:
-        return A["dispatch"](store, wait, run, now), ("stalled", "the repair worker has not started")
+        started = A["dispatch"](store, wait, run, now)
+        cause = started.data.get("dispatch_cause")  # queued, retry due or paused: name it for the stop clock
+        return started, ("stalled", f"{E['INTERNAL_STALL']}: {cause}" if cause else "the repair worker has not started")
     if wait.data.get("rescope"):
         # The new requirements are not verified yet: never judge readiness on the old verification; keep redispatching.
         return repair(wait, A["dispatch"](store, wait, run, now))
@@ -281,9 +283,9 @@ def step(store: Store, wait: Wait, run: Runner, now: float) -> tuple[Wait, E["Co
     failures = [item for item in observations if item.kind == "repair"]
     infrastructure = [item for item in observations if item.kind == "infra"]
     unknown = [item for item in observations if item.kind == "unknown"]
-    main_repair = [item for item in readiness["repair"] if item.startswith("main advanced;")]
-    if pull.get("mergeable") == "CONFLICTING" or pull.get("mergeStateStatus") == "DIRTY":
-        main_repair.append("canonical PR has merge conflicts")
+    # Only a real conflict needs the worker; a PR that is merely behind main is merged by `helio merge`.
+    main_repair = ["canonical PR has merge conflicts"] if (
+        pull.get("mergeable") == "CONFLICTING" or pull.get("mergeStateStatus") == "DIRTY") else []
     if failures or (main_repair and not infrastructure and not pending):
         key = hashlib.sha256(json.dumps([wait.data["head"], main_repair,
                                         sorted(item.fingerprint for item in failures)]).encode()).hexdigest()

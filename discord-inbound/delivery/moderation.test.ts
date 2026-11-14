@@ -67,6 +67,21 @@ test("four strikes, or strikes spread beyond 12 hours, do not block", () => {
   expect(delivery.moderation.isBlocked("500")).toBe(false);
 });
 
+test("irrelevant replies to Helio in an untrusted chat count like pings and block at five", () => {
+  // 2026-11-13: a user sent many irrelevant replies to Helio; a reply is not a ping, so none of them ever counted.
+  const reply = { pinged: undefined, replied_to_helio: true, attention: "review" };
+  const results = [0, 10, 20, 30, 40].map((minutes) => dismiss(ping(minutes, reply)));
+  expect(results[4]?.blocked).toMatchObject({ user_id: "500", source: "auto" });
+  expect(delivery.moderation.isBlocked("500")).toBe(true);
+});
+
+test("a reply to Helio in a trusted chat or by a trusted user still never strikes", () => {
+  for (const [index, overrides] of [{ channel_policy: "trusted" }, { role: "TRUSTED_REQUEST" }].entries()) {
+    dismiss(ping(index * 10, { pinged: undefined, replied_to_helio: true, attention: "review", ...overrides }));
+  }
+  expect(delivery.moderation.strikeCount("500", now)).toBe(0);
+});
+
 test("one burst of pings counts as a single strike", () => {
   for (const seconds of [0, 15, 30, 45, 60, 90]) dismiss(ping(seconds / 60));
   expect(delivery.moderation.strikeCount("500", now)).toBe(1);

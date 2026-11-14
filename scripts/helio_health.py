@@ -6,6 +6,7 @@ import argparse
 import datetime
 import json
 import os
+import runpy
 import sqlite3
 import time
 from contextlib import closing
@@ -158,6 +159,42 @@ def problems(health: dict, now: float) -> list[str]:
     return found
 
 
+GITHUB_CHECK_S = 3600
+GITHUB_STATE = "github-credential.json"
+
+
+def github_incident(state: Path, repo: str, probe, now: float) -> str | None:
+    """Helio's GitHub credential, checked hourly from inside Helio: one owner-only incident per distinct problem,
+    silent while it is unchanged or healthy. A network failure is not a credential problem and is not reported."""
+    path = state / GITHUB_STATE
+    try:
+        last = json.loads(path.read_text())
+    except (OSError, ValueError):
+        last = {}
+    if "checked_at" in last and now - float(last["checked_at"]) < GITHUB_CHECK_S:
+        return None
+    report, found = probe(repo)
+    if any(item.startswith("GitHub access unavailable") for item in found):
+        # The credential's state is unknown: keep the last known result, so its recovery is not a new incident.
+        path.write_text(json.dumps({**last, "checked_at": now}))
+        return None
+    path.write_text(json.dumps({"checked_at": now, "problems": found, "login": report.get("login")}))
+    if not found or found == last.get("problems"):
+        return None
+    who = report.get("login") or "the Helio GitHub account"
+    return "HELIO_INCIDENT " + json.dumps({
+        "audience": "owner", "kind": "github-credential", "problems": found,
+        "fix": f"Create a classic token for {who} with the repo and workflow scopes on {repo}; inside the isolated "
+               "workspace run: gh auth login --with-token < TOKEN_FILE, then helio doctor"})
+
+
+def github_problems(state: Path) -> list[str]:
+    try:
+        return list(json.loads((state / GITHUB_STATE).read_text()).get("problems") or [])
+    except (OSError, ValueError):
+        return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
@@ -165,7 +202,9 @@ def main() -> int:
     state = Path(os.environ.get("DORI_STATE_DIR", str(Path.home() / ".dori/elobot/state")))
     now = time.time()
     health = snapshot(state, Path.home(), now)
-    found = problems(health, now)
+    repo = os.environ.get("HELIO_GITHUB_REPO", "jamestesting0/elo-bot")
+    found = problems(health, now) + github_problems(state) + runpy.run_path(
+        str(Path(__file__).with_name("helio_merge_train.py")))["recoverable"](state, repo)
     if args.json:
         print(json.dumps({**health, "problems": found}))
     else:
