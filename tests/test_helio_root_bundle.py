@@ -2,8 +2,13 @@
 import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
 import io
 import json
+import os
 from pathlib import Path
 import runpy
+import shutil
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -13,6 +18,31 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class RootBundleTests(unittest.TestCase):
+    def test_protected_doctor_reports_obligations_and_orphan_locks_from_its_installed_payload(self):
+        module = runpy.run_path(str(ROOT / "scripts/helio_root_bundle.py"))
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            installed, home = base / "scripts", base / "home"
+            installed.mkdir()
+            state = home / ".dori/elobot/state"
+            state.mkdir(parents=True)
+            for name in module["ADMIN_BUNDLE"]:
+                shutil.copyfile(ROOT / "scripts" / name, installed / name)
+            ledger = runpy.run_path(str(ROOT / "scripts/helio_obligations.py"))
+            ledger["record_pr"](state, "o/r", 1, {"pr": "https://github.com/o/r/pull/2",
+                "authority": {"channel": "100", "message": "200"}, "notices": [{"status": "ready", "at": 1}]})
+            with sqlite3.connect(state / "discord-prompts.sqlite") as db:
+                db.execute("CREATE TABLE release_locks (repo TEXT PRIMARY KEY,train TEXT,taken_at INTEGER)")
+                db.execute("INSERT INTO release_locks VALUES ('o/r','orphan',1)")
+            result = subprocess.run([sys.executable, "-I", str(installed / "helio_doctor.py"), "--home", str(home),
+                                     "--runtime-home", str(home), "--json"],
+                                    env={**os.environ, "HELIO_GITHUB_REPO": "o/r"},
+                                    capture_output=True, text=True, check=True)
+            report = json.loads(result.stdout)
+            self.assertIsNotNone(report["health"], report["errors"])
+            self.assertTrue(any("completion-pr-o-r-2" in item for item in report["health"]))
+            self.assertTrue(any("orphan" in item and "release lock" in item for item in report["health"]))
+
     def test_drift_names_exactly_the_protected_files_that_differ_from_the_kit(self):
         module = runpy.run_path(str(ROOT / "scripts/helio_root_bundle.py"))
         drift = module["drift"]

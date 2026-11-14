@@ -15,6 +15,7 @@ import tempfile
 ADMIN_BUNDLE = (
     "helio_isolated_launcher.py", "helio_isolated_admin.py", "helio_deploy_plan.py",
     "helio_owner_policy.py", "helio_state_backup.py", "helio_doctor.py", "helio_health.py",
+    "helio_obligations.py", "helio_merge_train.py",
     "helio_admin_service.py", "helio_admin_controller.py", "helio_config.py",
     "helio_admin_journal.py", "helio_admin_process.py", "helio_admin_socket.py",
     "helio_admin_recovery.py", "helio_admin_lifecycle.py", "helio_admin_install.py", "helio_root_bundle.py",
