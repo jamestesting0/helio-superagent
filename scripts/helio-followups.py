@@ -407,6 +407,11 @@ def main() -> int:
                 print(f"FOLLOWUP_WARN GitHub credential check unavailable: {type(error).__name__}", flush=True)
             if housekeeping["due"](STATE, time.time()):
                 daily_upkeep(housekeeping)
+            else:
+                try:
+                    housekeeping["refresh_worktrees"](STATE, time.time(), ["dori"])
+                except (OSError, ValueError) as error:
+                    print(f"FOLLOWUP_WARN worktree refresh failed: {type(error).__name__}", flush=True)
             first = False
             deadline = time.monotonic() + args.interval
             while True:

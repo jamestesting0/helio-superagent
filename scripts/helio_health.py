@@ -121,7 +121,7 @@ def snapshot(state: Path, home: Path, now: float) -> dict:
         "pr_custody": custody,
         "queued": len(json.loads(queue.read_text())) if queue.exists() else 0,
         "worktrees": {"count": len(worktrees), "bytes": sum(_size(path) for path in worktrees),
-                      "kept": kept},
+                      "kept": kept, "kept_as_of": (last.get("worktrees_at") or last.get("at")) if last else None},
         "blacklist": {"users": (_query(delivery, "SELECT count(*) FROM blocked_users") or [(0,)])[0][0],
                       "awaiting_review": (_query(delivery, "SELECT count(*) FROM blocked_users WHERE source='auto' AND review_question IS NULL") or [(0,)])[0][0]},
         # One figure per data class; worktrees are counted above, so no bucket overlaps another.
@@ -143,7 +143,8 @@ def problems(health: dict, now: float) -> list[str]:
     trees = health["worktrees"]
     if trees["count"] > WORKTREES_WARN or trees["bytes"] > WORKTREES_WARN_BYTES:
         blocking = ", ".join(f"{row['key']} ({row['reason']})" for row in trees["kept"][:5]) + (f", +{len(trees['kept']) - 5} more" if len(trees["kept"]) > 5 else "")
-        found.append(f"{trees['count']} worktrees retaining {trees['bytes'] / 1024 ** 3:.1f} GiB" + (f"; blocking cleanup: {blocking}" if blocking else ""))
+        as_of = f" (as of {int((now - trees['kept_as_of']) // 3600)}h ago)" if trees.get("kept_as_of") else ""
+        found.append(f"{trees['count']} worktrees retaining {trees['bytes'] / 1024 ** 3:.1f} GiB" + (f"; blocking cleanup{as_of}: {blocking}" if blocking else ""))
     found += [f"{name} is {size / 1024 ** 2:.0f} MiB" for name, size in health["wal"].items() if size > WAL_WARN_BYTES]
     if health["blacklist"]["awaiting_review"]:
         found.append(f"{health['blacklist']['awaiting_review']} automatic blacklist entr(ies) awaiting owner review")

@@ -87,7 +87,7 @@ class Health(unittest.TestCase):
         kept = [{"key": "w0", "reason": "lane is working"}, {"key": "w1", "reason": "PR acme/app#3 is OPEN"}]
         (self.state / "housekeeping-last.json").write_text(json.dumps({"at": int(NOW - 3600), "mode": "applied", "worktrees": {"kept": kept}}))
         health = HEALTH["snapshot"](self.state, self.home, NOW)
-        self.assertIn("11 worktrees retaining 0.0 GiB; blocking cleanup: w0 (lane is working), w1 (PR acme/app#3 is OPEN)",
+        self.assertIn("11 worktrees retaining 0.0 GiB; blocking cleanup (as of 1h ago): w0 (lane is working), w1 (PR acme/app#3 is OPEN)",
                       HEALTH["problems"](health, NOW))
         self.assertLess(health["storage"]["databases"], 1_000_000)
         self.assertGreaterEqual(health["storage"]["attachments"], 1_000_000)
