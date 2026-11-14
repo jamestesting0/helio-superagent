@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { CallError, discordCall, expireNow, handleInteraction, parseInteraction, sweep, type Deps } from "./handler.ts";
 import { Delivery } from "../delivery/delivery.ts";
 import { LAPSE_MS, PromptStore, QuestionStore, CONFIRM_TTL_MS } from "./store.ts";
+import { lapseNotice } from "./text.ts";
 
 const OWNER = "99", TRUSTED = "77", STRANGER = "66", PROMPT_MESSAGE = "500", QUESTION_MESSAGE = "600";
 const SHA = "9f45e57" + "a".repeat(33);
@@ -213,7 +214,7 @@ test("a public post whose response was lost is found again instead of posted twi
   await sweep(deps());
   expect(prompts.get(id)?.notice_at).toBeNull();
   now += 10 * 60_000;
-  replies = [[/messages\?after/, () => [{ id: "800", author: { id: "88", bot: true }, content: "⌛ Not done in time. Ask again.", message_reference: { message_id: "700" } }]]];
+  replies = [[/messages\?after/, () => [{ id: "800", author: { id: "88", bot: true }, content: lapseNotice("merge", "o/r#6", SHA), message_reference: { message_id: "700" } }]]];
   await sweep(deps());
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(1);
   expect(prompts.get(id)?.notice_at).toBe(now);
@@ -241,7 +242,7 @@ test("an earlier copy beyond the first hundred messages is still found", async (
   now += LAPSE_MS;
   const filler = Array.from({ length: 100 }, (_, i) => ({ id: String(1000 + i), author: { id: "5" }, content: "chat" }));
   replies = [[/after=700&/, () => filler], [/after=1099&/, () => [{ id: "1200", author: { id: "88", bot: true },
-    content: "⌛ Not done in time. Ask again.", message_reference: { message_id: "700" } }]]];
+    content: lapseNotice("merge", "o/r#6", SHA), message_reference: { message_id: "700" } }]]];
   await sweep(deps());
   expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(0);
   expect(prompts.get(id)?.notice_at).toBe(now);

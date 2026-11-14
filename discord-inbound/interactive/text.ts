@@ -14,6 +14,40 @@ const short = (revision: string): string => `\`${revision.slice(0, 7)}\``;
 const targetLink = (target: string, pull: boolean) =>
   githubReferences(`https://github.com/${target.slice(0, target.lastIndexOf("#"))}/${pull ? "pull" : "issues"}/${number(target)}`);
 
+/**
+ * What a prompt is about. Two prompts sharing a subject decide the same thing, so asking or using one retires the
+ * others: a newer ask replaces an older one, and a used approval leaves nothing else to do. Every action needs an
+ * entry; a new action without one does not compile.
+ */
+export function subjects(kind: "confirm" | "plan", action: string, target: string): string[] {
+  if (kind === "plan") return [`plan:${target}`];
+  const confirm = action as ConfirmAction;
+  switch (confirm) {
+    case "merge": return [`pr:${target}`];
+    case "pr": return [`issue:${target}`];
+    case "restart": return ["service:elobot"];
+    case "train":
+    case "train-restart": {
+      const repo = target.slice(0, target.lastIndexOf("#"));
+      const prs = number(target).split(",").map((n) => `pr:${repo}#${n}`);
+      return confirm === "train-restart" ? [...prs, "service:elobot"] : prs;
+    }
+    default: {
+      const unknown: never = confirm;
+      throw new Error(`no subjects for action ${String(unknown)}`);
+    }
+  }
+}
+
+/** The lapse notice names what was approved, so it never reads as "your click was lost". */
+export function lapseNotice(action: string, target: string, revision: string): string {
+  const what = action === "merge" ? `Merge ${targetLink(target, true)} · ${short(revision)}`
+    : action === "restart" ? `Restart on ${short(revision)}`
+    : action === "pr" ? `Open PR for ${targetLink(target, false)}`
+    : `Merging ${trainMembers(target)}${action === "train-restart" ? " and restarting Elo Bot" : ""}`;
+  return `⌛ ${what} was approved but not carried out in time, so the approval expired. Ask again if it's still wanted.`;
+}
+
 export function promptLine(action: ConfirmAction, target: string, revision: string): string {
   if (action === "merge") return `Merge ${targetLink(target, true)} · ${short(revision)}?`;
   if (action === "restart") return `Restart Elo Bot on ${short(revision)}?`;
@@ -34,7 +68,7 @@ export const BUTTON_LABEL: Record<ConfirmAction, string> = { merge: "Merge", res
   "train-restart": "Merge and restart" };
 
 export const CLOSE_SUFFIX: Partial<Record<string, string>> = {
-  expired: "⌛ Expired", superseded: "Replaced by a newer plan", cancelled: "❌ Cancelled",
+  expired: "⌛ Expired", superseded: "Replaced by a newer request", cancelled: "❌ Cancelled",
 };
 
 export const NOTICE = {
@@ -42,7 +76,6 @@ export const NOTICE = {
   expired: "This has expired.",
   busy: "Busy, try again.",
   pending: "Someone is answering this.",
-  lapsed: "⌛ Not done in time. Ask again.",
   forUser: (user: string) => `This one's for ${user}.`,
   answered: (user: string | null) => user ? `Already answered by ${user}.` : "Already answered.",
 } as const;

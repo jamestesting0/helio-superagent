@@ -44,7 +44,7 @@ import { inboundSummary, monitorLine } from "./delivery/monitor-summary.ts";
 import { HOURGLASS, react, reactPendingBlocks, reconcileBlocks, strikeLinks } from "./delivery/moderation-effects.ts";
 import { pendingReminder } from "./delivery/pending-reminder.ts";
 import { PromptStore, QuestionStore } from "./interactive/store.ts";
-import { closeExpired, discordCall, expireNow, handleInteraction, handlePlanReply, sweep, type Deps } from "./interactive/handler.ts";
+import { closeExpired, discordCall, expireNow, handleInteraction, handlePlanReply, mergedOnGitHub, sweep, type Deps } from "./interactive/handler.ts";
 import { isAdminInteraction } from "./admin/protocol.ts";
 import { acknowledgePolicy, policyValues, runtimePolicy } from "./intake/runtime-policy.ts";
 
@@ -621,7 +621,7 @@ const clickDeps: Deps = {
   ownerId: cfg.ownerId, trusted: () => filterConfig(process.env).trustedIds ?? new Set<string>(), call: discordCall(token),
   now: () => Date.now(), emit: (line) => console.log(line), warn,
 };
-const upkeepDeps: Deps = { ...clickDeps, call: discordCall(token, 10_000) };
+const upkeepDeps: Deps = { ...clickDeps, call: discordCall(token, 10_000), carriedOut: (row) => mergedOnGitHub(row) };
 listener.on("interaction_create", (event) => {
   if (isAdminInteraction(event)) return;
   const click = event as { member?: { user?: { id?: string } }; user?: { id?: string } };

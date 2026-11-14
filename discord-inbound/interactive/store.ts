@@ -1,5 +1,6 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, lstatSync } from "node:fs";
+import { subjects } from "./text.ts";
 
 export const QUESTION_TTL_MS = 72 * 3_600_000;
 export const CONFIRM_TTL_MS = 12 * 3_600_000;
@@ -159,12 +160,23 @@ export class PromptStore {
     return this.db.transaction(() => {
       const due = this.db.query<Prompt, [number]>("SELECT * FROM prompts WHERE status='open' AND expires_at<=?").all(now);
       this.run("UPDATE prompts SET status='expired' WHERE status='open' AND expires_at<=?", now);
-      const lapsed = this.db.query<Prompt, [number]>(
-        `SELECT * FROM prompts WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at + ${USE_WINDOW}<=?`).all(now);
-      this.run(`UPDATE prompts SET status='lapsed' WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at + ${USE_WINDOW}<=?`,
-        now);
+      const lapsed: Prompt[] = [];
+      for (const row of this.db.query<Prompt, [number]>(
+        `SELECT * FROM prompts WHERE kind='confirm' AND status='confirmed' AND used_at IS NULL AND decided_at + ${USE_WINDOW}<=?`).all(now)) {
+        // A sibling used for the same subject (even through a path that bypassed use()) means nothing is left to do.
+        const status = this.satisfied(row) ? "superseded" : "lapsed";
+        this.run("UPDATE prompts SET status=? WHERE id=? AND status='confirmed' AND used_at IS NULL", status, row.id);
+        if (status === "lapsed") lapsed.push(row);
+      }
       return [...due, ...lapsed];
     }).immediate();
+  }
+
+  /** Whether another prompt about the same subject was used after this one was asked. */
+  satisfied(row: Prompt): boolean {
+    const mine = new Set(subjects(row.kind, row.action, row.target));
+    return this.db.query<Prompt, [string, number]>("SELECT * FROM prompts WHERE id!=? AND status='used' AND used_at>?")
+      .all(row.id, row.created_at).some((other) => subjects(other.kind, other.action, other.target).some((s) => mine.has(s)));
   }
 
   toClose(): Prompt[] {
@@ -179,8 +191,10 @@ export class PromptStore {
   noticed(id: string, now: number): void { this.run("UPDATE prompts SET notice_at=? WHERE id=?", now, id); }
 
   use(id: string, now: number): boolean {
-    return this.run(`UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed' AND (kind='plan' OR decided_at + ${USE_WINDOW}>?)`,
+    const used = this.run(`UPDATE prompts SET status='used',used_at=? WHERE id=? AND status='confirmed' AND (kind='plan' OR decided_at + ${USE_WINDOW}>?)`,
       now, id, now) === 1;
+    if (used) this.supersede(this.get(id)!);
+    return used;
   }
 
   /**
@@ -221,9 +235,19 @@ export class PromptStore {
     return this.run("UPDATE prompts SET status='cancelled' WHERE id=? AND status IN ('open','sending','send_failed','delivery_unknown')", id) === 1;
   }
 
-  supersede(target: string, exceptId: string): number {
-    return this.run("UPDATE prompts SET status='superseded' WHERE kind='plan' AND target=? AND id!=? AND status IN ('open','confirmed','sending','delivery_unknown','send_failed')",
-      target, exceptId);
+  /** Retires every unfinished prompt that decides the same subject as this one: called when a newer prompt is
+   * posted and when one is used, so an older confirmation can never lapse into a false "not done" notice. */
+  supersede(row: Pick<Prompt, "id" | "kind" | "action" | "target">): number {
+    const mine = new Set(subjects(row.kind, row.action, row.target));
+    const unfinished = "('open','confirmed','sending','delivery_unknown','send_failed')";
+    let changed = 0;
+    for (const other of this.db.query<Prompt, [string]>(
+      `SELECT * FROM prompts WHERE id!=? AND used_at IS NULL AND status IN ${unfinished}`).all(row.id)) {
+      if (subjects(other.kind, other.action, other.target).some((s) => mine.has(s))) {
+        changed += this.run(`UPDATE prompts SET status='superseded' WHERE id=? AND used_at IS NULL AND status IN ${unfinished}`, other.id);
+      }
+    }
+    return changed;
   }
 
   list(all: boolean): Prompt[] {

@@ -1,4 +1,4 @@
-import type { PromptStore, QuestionStore } from "./store.ts";
+import type { Prompt, PromptStore, QuestionStore } from "./store.ts";
 import { referenceLink } from "../messages/references.ts";
 const API = "https://discord.com/api/v10";
 const CUSTOM_ID = /^h1:(c|p|q|d|qm|pm):([0-9a-f]{20}):([a-z0-9]+)$/;
@@ -81,6 +81,8 @@ export interface Deps {
   readonly emit: (line: string) => void;
   readonly warn: (text: string) => void;
   readonly userNames?: Map<string, Promise<string>>;
+  /** Whether a lapsed approval's work already happened another way; the lapse notice is then skipped. */
+  readonly carriedOut?: (row: Prompt) => Promise<boolean>;
 }
 
 export async function userReference(deps: Deps, user: string, knownName?: string): Promise<string> {

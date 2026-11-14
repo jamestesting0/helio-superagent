@@ -124,26 +124,29 @@ test("use consumes a confirmation once; cancel only stops an undecided prompt", 
 
 test.each(["merge", "restart"])("a clicked %s approval is usable once at eleven hours and lapses at twelve", async (action) => {
   const decided = Date.now(), early = "1".repeat(20), late = "2".repeat(20);
-  const s = store();
-  try {
-    for (const id of [early, late]) {
+  const confirm = (id: string, at: number) => {
+    const s = store();
+    try {
       s.create({ id, kind: "confirm", action, target: action === "merge" ? "o/r#6" : "elobot", revision: SHA,
-        content: "approval", channel_id: "100", now: decided });
-      s.sent(id, "500", decided);
-      s.begin(id, "99", decided, { app: "88", token: "tok", accept: true, expected: "shown" });
-      expect(s.finish(id, "99", "confirmed", decided, "700", true)).toBe(true);
-    }
-  } finally { s.close(); }
-  const clock = spyOn(Date, "now").mockReturnValue(decided + 11 * 3_600_000);
+        content: "approval", channel_id: "100", now: at });
+      s.sent(id, "500", at);
+      s.begin(id, "99", at, { app: "88", token: "tok", accept: true, expected: "shown" });
+      expect(s.finish(id, "99", "confirmed", at, "700", true)).toBe(true);
+    } finally { s.close(); }
+  };
+  confirm(early, decided);
+  const used = decided + 11 * 3_600_000;
+  const clock = spyOn(Date, "now").mockReturnValue(used);
   try {
     expect(await main(["use", early])).toBe(0);
     await expect(main(["use", early])).rejects.toThrow("is used");
+    confirm(late, used);  // a later, separate approval for the same subject: the earlier use does not cover it
     const remaining = store();
     try {
-      expect(remaining.nextDeadline()).toBe(decided + 12 * 3_600_000);
-      expect(remaining.expireDue(Date.now())).toEqual([]);
-      expect(remaining.use(late, decided + 12 * 3_600_000)).toBe(false);
-      remaining.expireDue(decided + 12 * 3_600_000);
+      expect(remaining.nextDeadline()).toBe(used + 12 * 3_600_000);
+      expect(remaining.expireDue(used + 11 * 3_600_000)).toEqual([]);
+      expect(remaining.use(late, used + 12 * 3_600_000)).toBe(false);
+      remaining.expireDue(used + 12 * 3_600_000);
       expect(remaining.get(late)?.status).toBe("lapsed");
     } finally { remaining.close(); }
   } finally { clock.mockRestore(); }

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CallError, discordCall, expireNow, handleInteraction, parseInteraction, sweep, type Deps } from "./handler.ts";
 import { LAPSE_MS, PromptStore, QuestionStore, CONFIRM_TTL_MS } from "./store.ts";
 import * as interactions from "./handler.ts";
-import { planButtons } from "./text.ts";
+import { lapseNotice, planButtons, subjects } from "./text.ts";
 
 const OWNER = "99", TRUSTED = "77", STRANGER = "66", PROMPT_MESSAGE = "500", QUESTION_MESSAGE = "600";
 const SHA = "9f45e57" + "a".repeat(33);
@@ -156,9 +156,67 @@ test("an unused confirmation lapses with one notice and can no longer be used", 
   await sweep(deps());
   const notices = calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages");
   expect(notices).toHaveLength(1);
-  expect(notices[0]?.body).toMatchObject({ content: "⌛ Not done in time. Ask again.", nonce: `l${id}`, enforce_nonce: true,
+  expect(notices[0]?.body).toMatchObject({ content: lapseNotice("merge", "o/r#6", SHA), nonce: `l${id}`, enforce_nonce: true,
     message_reference: { message_id: "700" } });
+  expect(notices[0]?.body.content).toStartWith("⌛ Merge [PR #6]");
   expect(prompts.get(id)?.status).toBe("lapsed");
+});
+
+
+test("re-asking the same PR at a new head retires the older confirmation, so it never lapses into a notice", async () => {
+  // 2026-11-13: PRs #20, #22 and #26 were re-asked per head; the earlier confirmations lapsed overnight into five
+  // "Not done in time" notices for PRs that had merged.
+  const older = prompt();
+  await handleInteraction(event(`h1:c:${older}:confirm`, OWNER), deps());
+  const newer = prompt();
+  expect(prompts.supersede(prompts.get(newer)!)).toBe(1);
+  await handleInteraction(event(`h1:c:${newer}:confirm`, OWNER), deps());
+  expect(prompts.use(newer, now)).toBe(true);
+  now += LAPSE_MS;
+  await sweep(deps());
+  expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toEqual([]);
+  expect(prompts.get(older)?.status).toBe("superseded");
+});
+
+
+test("using an approval retires an older confirmed sibling, and a use that bypassed the store still prevents the lapse", async () => {
+  const first = prompt(), second = prompt(), third = prompt();
+  for (const id of [first, second, third]) await handleInteraction(event(`h1:c:${id}:confirm`, OWNER), deps());
+  now += 60_000;
+  expect(prompts.use(second, now)).toBe(true);
+  expect(prompts.get(first)?.status).toBe("superseded");
+  const raw = new Database(join(dir, "discord-prompts.sqlite"));  // helio-plan.py marks prompts used with plain SQL
+  try { raw.query("UPDATE prompts SET status='confirmed', used_at=NULL WHERE id=?").run(first); } finally { raw.close(); }
+  now += LAPSE_MS;
+  await sweep(deps());
+  expect([prompts.get(first)?.status, prompts.get(third)?.status]).toEqual(["superseded", "superseded"]);
+  expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toEqual([]);
+});
+
+
+test("a lapsed approval whose PR already merged on GitHub is closed without a notice", async () => {
+  const id = prompt();
+  await handleInteraction(event(`h1:c:${id}:confirm`, OWNER), deps());
+  now += LAPSE_MS;
+  const merged = { ...deps(), carriedOut: (row: { target: string }) => interactions.mergedOnGitHub(row as never, async (pr) =>
+    pr === "o/r#6" ? "MERGED" : "OPEN") };
+  await sweep(merged);
+  expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toEqual([]);
+  expect(prompts.get(id)?.notice_at).toBe(now);
+  const restart = prompt("confirm", "restart");
+  await handleInteraction(event(`h1:c:${restart}:confirm`, OWNER), deps());
+  now += LAPSE_MS;
+  await sweep(merged);  // a restart cannot be proven from GitHub, so it still reports
+  expect(calls.filter((call) => call.method === "POST" && call.path === "/channels/100/messages")).toHaveLength(1);
+});
+
+
+test("every prompt names its subjects; a train covers each member and, with a restart, the service", () => {
+  expect(subjects("confirm", "merge", "o/r#6")).toEqual(["pr:o/r#6"]);
+  expect(subjects("confirm", "train-restart", "o/r#18,20")).toEqual(["pr:o/r#18", "pr:o/r#20", "service:elobot"]);
+  expect(subjects("confirm", "restart", "elobot")).toEqual(["service:elobot"]);
+  expect(subjects("plan", "plan", "o/r#6")).toEqual(["plan:o/r#6"]);
+  expect(() => subjects("confirm", "deploy", "x")).toThrow("no subjects for action deploy");
 });
 
 

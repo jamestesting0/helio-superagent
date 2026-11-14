@@ -119,10 +119,12 @@ export async function main(argv: readonly string[]): Promise<number> {
       const merged = action === "pr" ? undefined : await preflight(action, target, revision);
       if (merged !== undefined) return merged;
       const id = newId();
-      return report(await post(store, api, {
+      const row = await post(store, api, {
         id, kind: "confirm", action, target, revision, content: promptLine(action, target, revision) + (note ? `\n${githubReferences(note)}` : ""),
         channel_id: channel, ...(replyTo ? { reply_to: replyTo } : {}), now: Date.now(),
-      }, confirmButtons(id, action), [...new Set([...(note ?? "").matchAll(/<@(\d{1,30})>/g)].map((m) => m[1]!))].slice(0, 100)));
+      }, confirmButtons(id, action), [...new Set([...(note ?? "").matchAll(/<@(\d{1,30})>/g)].map((m) => m[1]!))].slice(0, 100));
+      if (row.status === "open") store.supersede(row);
+      return report(row);
     }
     if (command === "plan") {
       const o = options(rest, ["--issue", "--revision", "--text-file", "--channel", "--reply-to"]);
@@ -145,7 +147,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         id, kind: "plan", action: "plan", target, revision, content, channel_id: channel,
         ...(replyTo ? { reply_to: replyTo } : {}), now: Date.now(),
       }, planButtons(id));
-      if (row.status === "open") store.supersede(target, id);
+      if (row.status === "open") store.supersede(row);
       return report(row);
     }
     if (command === "train") {
@@ -161,8 +163,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       const known = existing(store, "confirm", action, target, revision, channel);
       if (known) return report(known);
       if (!await permitted(api, channel)) throw new Refused("channel is not an allowed channel or an owner/trusted DM");
-      return report(await post(store, api, { id: train, kind: "confirm", action, target, revision, content, channel_id: channel,
-        ...(replyTo ? { reply_to: replyTo } : {}), now: Date.now() }, confirmButtons(train, action)));
+      const row = await post(store, api, { id: train, kind: "confirm", action, target, revision, content, channel_id: channel,
+        ...(replyTo ? { reply_to: replyTo } : {}), now: Date.now() }, confirmButtons(train, action));
+      if (row.status === "open") store.supersede(row);
+      return report(row);
     }
     if (command === "bind") {
       const o = options(rest, ["--prompt", "--message", "--approver", "--at", "--train"]);
