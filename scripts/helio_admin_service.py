@@ -86,7 +86,7 @@ class AdminService:
             raise Refused("unavailable", "The runtime policy is not published; run helio deploy") from None
         values = snapshot.get("values") if isinstance(snapshot, dict) else None
         revision = snapshot.get("revision") if isinstance(snapshot, dict) else None
-        if (snapshot.get("version") != 1 or not isinstance(values, dict) or not isinstance(revision, str) or
+        if (not isinstance(snapshot, dict) or snapshot.get("version") != 1 or not isinstance(values, dict) or not isinstance(revision, str) or
                 hashlib.sha256(json.dumps(values, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != revision):
             raise Refused("unavailable", "The published runtime policy is invalid; run helio deploy")
         return revision
