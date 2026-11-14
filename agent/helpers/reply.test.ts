@@ -79,6 +79,51 @@ test("the installed reply command carries explicit ping intent to Discord withou
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("the installed reply command links names intake knows only while the final message fits", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "helio-reply-people-"));
+  const targets = ["234567890123456781", "234567890123456782"];
+  try {
+    const { Delivery } = await import(new URL("../discord-inbound/delivery/delivery.ts", import.meta.url).href);
+    // Each request is staged just before its reply: a newer pending request would withhold the earlier reply.
+    const stage = (id: string) => {
+      const delivery = new Delivery(join(directory, "discord-delivery.sqlite"));
+      delivery.stage("inbound", id, JSON.stringify({ message_id: id, channel_id: target.channel_id,
+        author_id: "222", author: "James", role: "OWNER_REQUEST", content: "who asked?", sent_at: new Date().toISOString() }));
+      delivery.close();
+    };
+    const preload = join(directory, "offline.ts");
+    writeFileSync(preload, `globalThis.fetch=async(input,init)=>{
+      const url=String(input),method=init?.method??"GET";
+      if(method==="POST"&&url.endsWith("/messages")){console.log("OFFLINE_BODY "+init.body);return Response.json({id:"345678901234567890"});}
+      if(url.endsWith("/channels/${target.channel_id}"))return Response.json({id:"${target.channel_id}",type:0,guild_id:"99999"});
+      if(/\\/messages(\\?|$)/.test(url))return Response.json([]);
+      const id=url.split("/").at(-1);
+      if(${JSON.stringify(targets)}.includes(id))return Response.json({id,channel_id:"${target.channel_id}",author:{id:"222",username:"james"},content:"who asked?",timestamp:new Date().toISOString()});
+      throw new Error("Unexpected offline request: "+method+" "+url);
+    };`);
+    const send = async (message: string, text: string) => {
+      stage(message);
+      const child = Bun.spawn([process.execPath, "--preload", preload, new URL("./reply.ts", import.meta.url).pathname,
+        target.channel_id, message, text], {
+        env: { ...process.env, DORI_DISCORD_TOKEN: "offline", DORI_STATE_DIR: directory, DORI_POLICY_DIR: "",
+          DORI_DISCORD_OWNER_ID: "222", DORI_DISCORD_ALLOWED: target.channel_id, DORI_DISCORD_TRUSTED_IDS: "",
+          DORI_DISCORD_TRUSTED_CHANNELS: target.channel_id, DORI_DISCORD_NORMAL_CHANNELS: "",
+          DORI_DISCORD_IGNORED_CHANNELS: "", DORI_DISCORD_SCOPE_CATEGORY: "", DORI_DISCORD_REPORT_CHANNELS: "" },
+        stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15000,
+      });
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      return JSON.parse(stdout.split("\n").find(line => line.startsWith("OFFLINE_BODY "))?.slice("OFFLINE_BODY ".length) ?? "null").content;
+    };
+    expect(await send(targets[0]!, "You requested it, James."))
+      .toBe("You requested it, **[James](<https://discord.com/users/222?tab=wishlist>)**.");
+    // 1,940 characters plus the 52-character link fits alone, but not after the GitHub label adds 11 more.
+    const crowded = await send(targets[1]!, "See https://github.com/o/r/pull/1 and James. ".padEnd(1940, "x"));
+    expect(crowded.length).toBeLessThanOrEqual(2000);
+    expect(crowded).toStartWith("See [PR #1](<https://github.com/o/r/pull/1>) and James. ");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test.each([403, 404])("a rejected reply (%s) fails without sending an unreferenced fallback", async (status) => {
   const requests: HttpRequest[] = [];
   const http: Http = async (request) => {

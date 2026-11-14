@@ -132,11 +132,17 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const problem = await checkFiles(args.files);
-  const text = (await Bun.file(args.textFile).text()).trimEnd();
-  if (problem || !text) { console.error(`EVIDENCE_REFUSED ${problem ?? "the text file is empty"}`); process.exit(2); }
-  const [{ filterConfig, requireReplyChannel }, { discordRest }] = await Promise.all([
+  const written = (await Bun.file(args.textFile).text()).trimEnd();
+  if (problem || !written) { console.error(`EVIDENCE_REFUSED ${problem ?? "the text file is empty"}`); process.exit(2); }
+  const [{ filterConfig, requireReplyChannel }, { discordRest }, { Delivery }, { personReferences }] = await Promise.all([
     import("../discord-inbound/intake/authorization.ts"), import("../discord-inbound/discord/rest.ts"),
+    import("../discord-inbound/delivery/delivery.ts"), import("../discord-inbound/messages/references.ts"),
   ]);
+  const people = state ? (() => {
+    const delivery = new Delivery(join(state, "discord-delivery.sqlite"));
+    try { return delivery.people.known([args.message]); }
+    finally { delivery.close(); }
+  })() : [];
   await requireReplyChannel(args.channel, filterConfig(process.env), discordRest(token));
   const [{ Conversations }, { ReplySettlements }] = await Promise.all([
     import("../discord-inbound/conversations/conversations.ts"), import("../discord-inbound/conversations/reply-settlement.ts"),
@@ -157,6 +163,9 @@ async function main(): Promise<void> {
       !(place.kind === "dm" && request.author.id === owner)) {
     throw new RangeError("Requester questions require an in-place route; use reply.ts in the request channel");
   }
+  const footer = plan.send === "owner-dm" && !(place.kind === "dm" && request.author.id === owner) ?
+    `\n\nRequest: <https://discord.com/channels/${request.guild_id ?? "@me"}/${args.channel}/${args.message}>` : "";
+  const text = personReferences(written, people, linked => linked.length + footer.length <= 2000);
   const event = args.event && state ? { key: args.event, state } : undefined;
   const identity = { source: args.message, ...(event ? { event } : {}) };
   // Resolve every destination before taking the topic snapshot or posting any part of the report.
@@ -178,10 +187,9 @@ async function main(): Promise<void> {
     console.log(`EVIDENCE_SENT in-place message=${await post(token, { ...identity, channel: args.channel, content: text, files: args.files, replyTo: args.message })}`);
   } else {
     if (!ownerDm) throw new TypeError("Owner delivery destination unavailable");
-    const link = `https://discord.com/channels/${request.guild_id ?? "@me"}/${args.channel}/${args.message}`;
     const sent = await post(token, { ...identity, channel: ownerDm,
       ...(args.ownerOnly && event ? { event: { ...event, key: `${event.key}:owner-only` } } : {}),
-      content: place.kind === "dm" && request.author.id === owner ? text : `${text}\n\nRequest: <${link}>`,
+      content: `${text}${footer}`,
       files: args.files, ...(ownerDm === args.channel ? { replyTo: args.message } : {}) });
     console.log(`EVIDENCE_SENT owner-dm message=${sent}`);
     if (plan.forwardTo) {

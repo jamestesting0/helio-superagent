@@ -52,6 +52,8 @@ RULES: tuple[Rule, ...] = (
          (f"DELETE FROM ignored WHERE attachments_cleaned=1 AND ignored_at < datetime(:now_s, 'unixepoch', '-{RECEIPT_DAYS} days') AND {_settled_delivery('ignored')}",)),
     Rule("discord-delivery.sqlite", "inbound_gaps", "derived", "Acknowledged intake gaps are kept 180 days; open ones stay.",
          (f"DELETE FROM inbound_gaps WHERE acknowledged_at IS NOT NULL AND acknowledged_at < datetime(:now_s, 'unixepoch', '-{DERIVED_DAYS} days')",)),
+    Rule("discord-delivery.sqlite", "people", "derived", "Names intake saw with an ID link outgoing text; a name unseen for 180 days is forgotten.",
+         (f"DELETE FROM people WHERE seen_at < :now_ms - {DERIVED_DAYS * DAY_MS}",)),
     Rule("discord-delivery.sqlite", "blocked_users", "policy", "The blacklist lasts until the owner lifts it."),
     Rule("discord-delivery.sqlite", "plan_requests", "receipt",
          "Active planning sources survive intake cleanup; settled identity receipts stay 180 days.",

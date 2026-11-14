@@ -90,7 +90,7 @@ INBOUND_FILES = (
     "delivery/context-render.ts", "delivery/context-render.test.ts", "delivery/context-excerpt.ts",
     "delivery/delivery.test.ts", "delivery/delivery.ts", "delivery/expiry.test.ts",
     "delivery/expiry.ts", "delivery/monitor-summary.ts", "delivery/pending-reminder.ts", "delivery/plan-requests.sql",
-    "delivery/turn-snapshots.ts", "delivery/turn-snapshots.test.ts",
+    "delivery/turn-snapshots.ts", "delivery/turn-snapshots.test.ts", "delivery/people.ts", "delivery/people.test.ts",
     "delivery/ignored-store.ts", "delivery/ignored-cleanup.ts", "delivery/ignored.test.ts",
     "delivery/reconcile.ts", "delivery/reconcile-manifest.ts",
     "delivery/recovery-schema.sql", "delivery/recovery-store.ts", "delivery/moderation.ts", "delivery/moderation.test.ts",

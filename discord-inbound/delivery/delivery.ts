@@ -5,6 +5,7 @@ import { RecoveryStore } from "./recovery-store.ts";
 import { Moderation, type Blocked, type BlockRequest } from "./moderation.ts";
 import { IgnoredStore } from "./ignored-store.ts";
 import { TurnSnapshots } from "./turn-snapshots.ts";
+import { PeopleStore } from "./people.ts";
 
 export type Stream = "inbound" | "context";
 type Disposition = "done" | "irrelevant";
@@ -41,6 +42,7 @@ export class Delivery {
   readonly moderation: Moderation;
   readonly ignored: IgnoredStore;
   readonly snapshots: TurnSnapshots;
+  readonly people: PeopleStore;
 
   constructor(path: string, busyMs = 5000) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -84,6 +86,7 @@ export class Delivery {
     )`);
     this.db.exec(readFileSync(join(import.meta.dir, "plan-requests.sql"), "utf8"));
     this.snapshots = new TurnSnapshots(this.db);
+    this.people = new PeopleStore(this.db);
     this.ignored = new IgnoredStore(this.db);
     this.recovery = new RecoveryStore(this.db);
     this.moderation = new Moderation(this.db);
@@ -135,7 +138,9 @@ export class Delivery {
   }
 
   stage(stream: Stream, id: string, payload: string): boolean {
-    this.db.query("INSERT OR IGNORE INTO delivery (stream, id, payload) VALUES (?, ?, ?)").run(stream, id, payload);
+    if (this.db.query("INSERT OR IGNORE INTO delivery (stream, id, payload) VALUES (?, ?, ?)").run(stream, id, payload).changes === 1) {
+      this.people.record(payload);
+    }
     return this.db.query<{ payload: string | null }, [string, string]>(
       "SELECT payload FROM delivery WHERE stream = ? AND id = ?",
     ).get(stream, id)?.payload !== null;
@@ -152,8 +157,10 @@ export class Delivery {
   }
 
   refresh(id: string, previous: string, payload: string): boolean {
-    return this.db.query("UPDATE delivery SET payload = ? WHERE stream = 'inbound' AND id = ? AND payload = ?")
+    const changed = this.db.query("UPDATE delivery SET payload = ? WHERE stream = 'inbound' AND id = ? AND payload = ?")
       .run(payload, id, previous).changes === 1;
+    if (changed) this.people.record(payload);
+    return changed;
   }
 
   recover(id: string, previous: string, payload: string): boolean {

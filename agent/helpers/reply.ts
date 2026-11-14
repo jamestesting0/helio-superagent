@@ -94,31 +94,36 @@ if (import.meta.main) {
     const rest = discordRest(token);
     await requireReplyChannel(args.channel_id, filterConfig(process.env), rest);
     const discord = new Discord(fetchHttp, realClock, token);
-    const send = (mentions: readonly string[], lead = "") =>
-      sendReply(discord, { channel_id: args.channel_id, message_id: args.message_id }, lead ? `${lead} ${args.text}` : args.text,
+    const send = (mentions: readonly string[], lead = "", text = args.text) =>
+      sendReply(discord, { channel_id: args.channel_id, message_id: args.message_id }, lead ? `${lead} ${text}` : text,
         [...mentions, ...(args.ping ?? [])]);
     if (!state) {
       console.log("REPLY_WARN DORI_STATE_DIR is not set; sending without the newer-message check");
       console.log(`SENT ${await send([])}`);
     } else {
       // Loaded only here, so sendReply stays usable without the intake package's dependencies.
-      const [{ Delivery }, { Conversations }, { cleanupAttachments }, { guardedReply }, { sendOnce, findSentReply }, { closureNotes }] = await Promise.all([
+      const [{ Delivery }, { Conversations }, { cleanupAttachments }, { guardedReply }, { sendOnce, findSentReply }, { closureNotes }, { personReferences }] = await Promise.all([
         import("../discord-inbound/delivery/delivery.ts"), import("../discord-inbound/conversations/conversations.ts"),
         import("../discord-inbound/messages/images.ts"), import("../discord-inbound/conversations/reply-guard.ts"),
         import("../discord-inbound/conversations/reply-once.ts"), import("../discord-inbound/conversations/closure.ts"),
+        import("../discord-inbound/messages/references.ts"),
       ]);
       const delivery = new Delivery(`${state}/discord-delivery.sqlite`);
       const store = new Conversations(`${state}/discord-conversations.sqlite`);
       try {
+        const people = delivery.people.known([args.message_id, ...args.covers]);
         // Topics span channels, so any active topic may be continued here.
         const bot = store.list().length ?
           await rest<{ id: string }>("/users/@me") : undefined;
         const content = discordText(args.text);
         const once = async (mentions: readonly string[], lead: string) => {
+          // Name links are budgeted against the final message, after the mention lead and GitHub labels.
+          const text = personReferences(args.text, people, linked => discordText(lead ? `${lead} ${linked}` : linked).length <= 2000);
+          const final = discordText(text);
           const sent = await sendOnce({
             path: `${state}/reply-sends.sqlite`, target: args.message_id,
-            text: lead ? `${lead} ${content}` : content, ...(args.event ? { event: `${args.channel_id}:${args.event}` } : {}), now: () => Date.now(),
-            sleep: (ms) => Bun.sleep(ms), send: () => send(mentions, lead),
+            text: lead ? `${lead} ${final}` : final, ...(args.event ? { event: `${args.channel_id}:${args.event}` } : {}), now: () => Date.now(),
+            sleep: (ms) => Bun.sleep(ms), send: () => send(mentions, lead, text),
             findSent: (original, otherReplyIds) => findSentReply(rest, { ...args, otherReplyIds }, original),
           });
           if (sent.duplicate) console.log(`REPLY_DUPLICATE ${sent.id} this reply was already sent; nothing was sent again`);
