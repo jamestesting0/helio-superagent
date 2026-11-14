@@ -305,7 +305,8 @@ def create_question(db,lane,audience,recipient,text,options=None,allow_other=Tru
  if not text or len(text)>1500:raise ValueError('question must have 1-1500 characters')
  options=clean_options(options,allow_other)
  identity=[lane,audience,recipient,text,options,allow_other]
- if route is not None:identity.append(route)
+ if route is not None:
+  identity.append(route)
  fingerprint=hashlib.sha256(json.dumps(identity,ensure_ascii=False).encode()).hexdigest()
  db.execute('BEGIN IMMEDIATE')
  existing=db.execute("SELECT * FROM questions WHERE fingerprint=? AND status NOT IN ('done','cancelled')",(fingerprint,)).fetchone()
@@ -388,7 +389,8 @@ def main():
   command=sub.add_parser(name);command.add_argument('id')
   if name=='transfer':command.add_argument('--lane',required=True)
   if name=='show':command.add_argument('--offset',type=int,default=0)
-  if name=='ack':command.add_argument('--no-relay',metavar='REASON',help='acknowledge a linked answer the requester must not hear, with the reason')
+  if name=='ack':
+   command.add_argument('--no-relay',metavar='REASON',help='acknowledge a linked answer the requester must not hear, with the reason')
  w=sub.add_parser('watch');w.add_argument('--lane')
  listing=sub.add_parser('list');listing.add_argument('--offset',type=int,default=0)
  sub.add_parser('reconcile')
@@ -401,9 +403,12 @@ def main():
  obligations=runpy.run_path(str(Path(__file__).with_name('helio_obligations.py'))) if a.cmd in ('ask','ack') else None
  if a.cmd=='ask':
   # Before anything is sent: an answer nobody is told about is how Rascal's correction request went unanswered.
-  if (a.for_topic is None)==(a.internal is None):ask.error("say who the answer is for: --for TOPIC (the requester's conversation) or --internal REASON")
-  if a.for_topic is not None and not obligations['conversation'](STATE,a.for_topic):ask.error(f'no conversation is anchored at {a.for_topic}')
-  if a.internal is not None and not a.internal.strip():ask.error('--internal needs a reason')
+  if (a.for_topic is None)==(a.internal is None):
+   ask.error("say who the answer is for: --for TOPIC (the requester's conversation) or --internal REASON")
+  if a.for_topic is not None and not obligations['conversation'](STATE,a.for_topic):
+   ask.error(f'no conversation is anchored at {a.for_topic}')
+  if a.internal is not None and not a.internal.strip():
+   ask.error('--internal needs a reason')
  db=db_connect()
  try:
   if getattr(a,'offset',0)<0:parser.error('--offset must be nonnegative')
@@ -426,6 +431,7 @@ def main():
     if CUSTODY.fullmatch(row['lane']):
      raise ValueError(f"custody question: apply the answer with helio pr phase decide --issue {CUSTODY.fullmatch(row['lane'])[1]} --question {a.id}")
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
+    obligations['activate_question'](STATE,a.id)
     link=obligations['question_link'](STATE,a.id)
     if link and link['topic'] and not (obligations['delivered'](STATE,link['channel'],obligations['relay_event'](a.id)) or obligations['waived'](STATE,f'question:{a.id}')):
      if not a.no_relay:

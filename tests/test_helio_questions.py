@@ -510,35 +510,45 @@ class QuestionChoiceTests(unittest.TestCase):
   """2026-11-14: James answered Rascal's correction review; the lead acknowledged it and Rascal never heard."""
   with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
    db.execute('CREATE TABLE conversations (channel_id TEXT, user_id TEXT, status TEXT, anchor_message_id TEXT)')
-   db.execute("INSERT INTO conversations VALUES ('300','996','open','42')");db.commit()
+   db.execute("INSERT INTO conversations VALUES ('300','996','open','42')")
+   db.commit()
   with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
-   db.execute('CREATE TABLE reply_sends (target TEXT, text_hash TEXT, state TEXT)');db.commit()
+   db.execute('CREATE TABLE reply_sends (target TEXT, text_hash TEXT, state TEXT)')
+   db.commit()
   out=io.StringIO()
   with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','Review?','--for','42']),redirect_stdout(out):
    self.assertEqual(self.m['main'](),0)
   qid=json.loads(out.getvalue())['id']
-  self.db.execute("UPDATE questions SET status='answered',answer_text='No change' WHERE id=?",(qid,));self.db.commit()
+  self.db.execute("UPDATE questions SET status='answered',answer_text='No change' WHERE id=?",(qid,))
+  self.db.commit()
   def ack():
-   with patch('sys.argv',['helio-questions','ack',qid]),redirect_stdout(io.StringIO()):return self.m['main']()
-  with self.assertRaisesRegex(ValueError,f'--event question-{qid}'):ack()
+   with patch('sys.argv',['helio-questions','ack',qid]),redirect_stdout(io.StringIO()):
+    return self.m['main']()
+  with self.assertRaisesRegex(ValueError,f'--event question-{qid}'):
+   ack()
   self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'answered')
   with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
-   db.execute("INSERT INTO reply_sends VALUES ('77',?,'sent')",(f'event:300:question-{qid}',));db.commit()
-  with self.assertRaisesRegex(ValueError,'close the conversation'):ack()
+   db.execute("INSERT INTO reply_sends VALUES ('77',?,'sent')",(f'event:300:question-{qid}',))
+   db.commit()
+  with self.assertRaisesRegex(ValueError,'close the conversation'):
+   ack()
   with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
-   db.execute("UPDATE conversations SET status='resolved'");db.commit()
+   db.execute("UPDATE conversations SET status='resolved'")
+   db.commit()
   self.assertEqual(ack(),0)
   self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'done')
 
  def test_an_answered_question_may_skip_the_relay_only_with_a_reason(self):
   with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
    db.execute('CREATE TABLE conversations (channel_id TEXT, user_id TEXT, status TEXT, anchor_message_id TEXT)')
-   db.execute("INSERT INTO conversations VALUES ('300','996','resolved','42')");db.commit()
+   db.execute("INSERT INTO conversations VALUES ('300','996','resolved','42')")
+   db.commit()
   out=io.StringIO()
   with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','Ban?','--for','42']),redirect_stdout(out):
    self.m['main']()
   qid=json.loads(out.getvalue())['id']
-  self.db.execute("UPDATE questions SET status='answered' WHERE id=?",(qid,));self.db.commit()
+  self.db.execute("UPDATE questions SET status='answered' WHERE id=?",(qid,))
+  self.db.commit()
   with patch('sys.argv',['helio-questions','ack',qid,'--no-relay','moderation outcome stays private']),redirect_stdout(io.StringIO()):
    self.assertEqual(self.m['main'](),0)
   owed=runpy.run_path(str(SCRIPT.with_name('helio_obligations.py')))['owed'](self.state,'o/r')
