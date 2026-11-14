@@ -41,8 +41,10 @@ def _read(path: Path, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         db.row_factory = sqlite3.Row
         try:
             return db.execute(sql, params).fetchall()
-        except sqlite3.OperationalError:  # the producing component has not created its table yet
-            return []
+        except sqlite3.OperationalError as error:
+            if str(error).startswith("no such table:"):
+                return []
+            raise
 
 
 def delivered(state: Path, channel: str, event: str, target: str | None = None) -> bool:
@@ -126,12 +128,17 @@ def owed(state: Path, repo: str) -> list[dict]:
     for link in links:
         question = answered.get(link["question"])
         key = f"question:{link['question']}"
-        if not question or delivered(state, link["channel"], relay_event(link["question"])) or waived(state, key):
+        if not question:
+            continue
+        sent = delivered(state, link["channel"], relay_event(link["question"])) or waived(state, key)
+        topic = conversation(state, link["topic"])
+        if sent and (not topic or topic["status"] not in ("open", "on_hold")):
             continue
         items.append({"key": key, "kind": "question-relay", "question": link["question"], "topic": link["topic"],
                       "requester": link["requester"], "since": question["updated"] / 1000 if question["updated"] > 1e11 else question["updated"],
-                      "send": f"tell the requester the decision in channel {link['channel']} (topic {link['topic']}) with "
-                              f"--event {relay_event(link['question'])}, then close the conversation"})
+                      "send": (f"close conversation {link['topic']}; the relay is already settled" if sent else
+                               f"tell the requester the decision in channel {link['channel']} (topic {link['topic']}) with "
+                               f"--event {relay_event(link['question'])}, then close the conversation")})
     return sorted(items, key=lambda item: -item["since"])
 
 

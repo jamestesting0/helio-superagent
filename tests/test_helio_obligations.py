@@ -75,6 +75,11 @@ class ObligationTests(unittest.TestCase):
         owed = O["owed"](self.state, REPO)
         self.assertEqual([(o["kind"], o["requester"]) for o in owed], [("question-relay", "996083715862184048")])
         self.sent("1570931722541867259", "1220331873079922810", O["relay_event"]("cb1b83058dd74b51b343"))
+        pending = O["owed"](self.state, REPO)
+        self.assertEqual([item["key"] for item in pending], ["question:cb1b83058dd74b51b343"])
+        self.assertIn("relay is already settled", pending[0]["send"])
+        with sqlite3.connect(self.state / "discord-conversations.sqlite") as db:
+            db.execute("UPDATE conversations SET status='resolved'")
         self.assertEqual(O["owed"](self.state, REPO), [])
 
     def test_a_question_must_say_who_it_is_for(self):
