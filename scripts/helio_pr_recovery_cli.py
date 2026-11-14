@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 HERE = Path(__file__).resolve().parent
 C = runpy.run_path(str(HERE / "helio_pr_recovery.py"))
 S, P = C["S"], C["P"]
+OBLIGATIONS = runpy.run_path(str(HERE / "helio_obligations.py"))
 Runner = Callable[[list[str]], str]
 
 
@@ -36,6 +37,8 @@ def register(prs: argparse._SubParsersAction) -> None:
             phase.add_argument("--generation", type=int, required=True)
         if name == "ack":
             phase.add_argument("--event", required=True)
+            phase.add_argument("--no-completion", metavar="REASON",
+                               help="acknowledge a ready or settled event whose requester must not be told, with the reason")
     decide = phases.add_parser("decide", help="apply the owner's answer to a custody question, then close it")
     decide.add_argument("--issue", type=int, required=True)
     decide.add_argument("--question", help="the answered custody question")
@@ -135,8 +138,18 @@ def execute(args: argparse.Namespace, store: Store, run: Runner) -> int:
                     print(f"PHASE_UNRESOLVED issue={wait.issue} generation={wait.generation}")
                     return 2
             case "ack":
-                if not any(item["id"] == args.event for item in wait.data["notices"]):
+                event = next((item for item in wait.data["notices"] if item["id"] == args.event), None)
+                if event is None:
                     raise S["Refused"]("custody event is unknown")
+                authority = wait.data.get("authority") or {}
+                if (event.get("status") in ("ready", "settled") and authority.get("message")
+                        and OBLIGATIONS["pr_completion_owed"](store.state, wait.repo, wait.issue, authority)):
+                    if not args.no_completion:
+                        raise S["Refused"](
+                            f"the requester has not been told: reply once to message {authority['message']} in channel "
+                            f"{authority['channel']} with --event completion (evidence.ts or reply.ts), then acknowledge; "
+                            "or acknowledge with --no-completion REASON")
+                    OBLIGATIONS["waive"](store.state, OBLIGATIONS["pr_key"](wait.repo, wait.issue), args.no_completion)
                 notices = [{**item, "acknowledged": True} if item["id"] == args.event else item
                            for item in wait.data["notices"]]
                 S["save"](store, replace(wait, data={**wait.data, "notices": notices}))

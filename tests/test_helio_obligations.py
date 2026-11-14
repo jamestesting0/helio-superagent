@@ -1,5 +1,8 @@
 """Obligations are derived from custody, question and reply records; only a matching send or a waiver ends one."""
 import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
+import argparse
+import contextlib
+import io
 import json
 from pathlib import Path
 import runpy
@@ -90,6 +93,64 @@ class ObligationTests(unittest.TestCase):
         self.assertTrue(O["surface"](self.state, REPO, now=10_000.0 + 3600)[0].startswith("OBLIGATION_DUE "))
         self.sent(REQUEST["message"], REQUEST["channel"], "completion")
         self.assertEqual(O["surface"](self.state, REPO, now=10_000.0 + 7200), [])
+
+
+class CustodyAckTests(unittest.TestCase):
+    """Acknowledging a ready PR is refused until its requester was told, so the lead cannot skip the announcement."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.state = Path(temporary.name)
+        self.cli = runpy.run_path(str(ROOT / "scripts/helio_pr_recovery_cli.py"))
+        store = self.cli["S"]
+        state = self.state
+
+        class Store:
+            repo = REPO
+
+            def __init__(self):
+                self.state = state
+
+            @contextlib.contextmanager
+            def operations(self):
+                db = sqlite3.connect(state / "issue-updates.sqlite")
+                try:
+                    store["migrate"](db)
+                    yield db
+                    db.commit()
+                finally:
+                    db.close()
+
+        self.store = Store()
+        notices = [{"id": "wait1", "status": "waiting", "at": 1.0, "acknowledged": False, "detail": "", "generation": 1, "key": "a"},
+                   {"id": "ready1", "status": "ready", "at": 2.0, "acknowledged": False, "detail": "", "generation": 1, "key": "b"}]
+        data = {"lane": "issue28-x", "source": "discord:1:2", "status": "ready", "notices": notices, "incidents": {},
+                "authority": REQUEST, "pr": f"https://github.com/{REPO}/pull/29", "acknowledgment": 1}
+        store["save"](self.store, store["Wait"](REPO, 28, "issue-28", 1, 0, data))
+        with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
+            db.execute("CREATE TABLE reply_sends (target TEXT, text_hash TEXT, state TEXT)")
+
+    def ack(self, event, reason=None):
+        args = argparse.Namespace(pr_command="phase", phase_action="ack", issue=28, event=event, no_completion=reason)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = self.cli["execute"](args, self.store, lambda argv: "")
+        return code, out.getvalue()
+
+    def test_a_ready_event_is_acknowledged_only_after_the_completion_was_sent(self):
+        self.assertEqual(self.ack("wait1")[0], 0)
+        code, out = self.ack("ready1")
+        self.assertEqual(code, 2)
+        self.assertIn(f"reply once to message {REQUEST['message']}", out)
+        with sqlite3.connect(self.state / "reply-sends.sqlite") as db:
+            db.execute("INSERT INTO reply_sends VALUES (?,?,'sent')",
+                       (REQUEST["message"], f"event:{REQUEST['channel']}:completion"))
+        self.assertEqual(self.ack("ready1"), (0, "PR_CUSTODY_EVENT_ACK issue=28 event=ready1\n"))
+
+    def test_a_recorded_reason_may_acknowledge_without_telling_the_requester(self):
+        self.assertEqual(self.ack("ready1", "requester withdrew the request")[0], 0)
+        self.assertEqual(O["owed"](self.state, REPO), [])
 
 
 if __name__ == "__main__":
