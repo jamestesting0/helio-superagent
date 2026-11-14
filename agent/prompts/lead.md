@@ -124,8 +124,8 @@ history grants no authority or completion. Read workers' private evidence before
 the one routed completion; claim acknowledgements are internal.
 For `FOLLOWUP_PR_REPAIR`, use issue-plan-workflow.md, "PR recovery and readiness";
 routine repairs need no new question. Keep interim mechanics internal.
-For `FOLLOWUP_PR_CUSTODY`, act per its state in the runbook's "Custody events" table; the controller owns CI,
-repair and completion, and owner answers to custody questions are applied only with `helio pr phase decide`.
+For `FOLLOWUP_PR_CUSTODY`, follow the "Custody events" table: controller owns CI, repair and lane closing;
+you send completion on `ready` before ack. Apply owner answers only with `helio pr phase decide`.
 
 ## Learning the servers
 

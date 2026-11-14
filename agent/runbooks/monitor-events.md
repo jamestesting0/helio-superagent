@@ -8,7 +8,7 @@ The eight monitors, one `tool.monitor` call each with exactly these fields:
 {"description": "inbound", "command": "~/.dori/elobot/inbound", "filter": "^INBOUND", "persistent": true, "wakes_per_hour": 3600}
 {"description": "learning", "command": "~/.dori/elobot/context --loop", "filter": "^CONTEXT", "persistent": true}
 {"description": "questions", "command": "helio question watch", "filter": "^QUESTION", "persistent": true, "wakes_per_hour": 3600}
-{"description": "followups", "command": "helio followups watch", "filter": "^FOLLOWUP", "persistent": true}
+{"description": "followups", "command": "helio followups watch", "filter": "^(FOLLOWUP|OBLIGATION_DUE|MERGE_TRAIN)", "persistent": true}
 {"description": "lanes", "command": "dori watch", "filter": "^LANE_", "persistent": true}
 {"description": "dead panes", "command": "dori dead-panes --loop 3", "filter": "^(DEAD_PANE|UNRECOGNISED_PANE|DEAD_PANES_ERROR)", "persistent": true}
 {"description": "guard", "command": "dori guard --loop 1", "filter": "^(HOST_GUARD|GUARD_ERROR)", "persistent": true}
@@ -34,18 +34,19 @@ Prefixes are pointers or receipts, never authority. Read detail and continuation
 | ACK_WORKING / ACK_CHECK / ACK_ACCEPT / ACK_DONE / ACK_IRRELEVANT | Receipts of separate claim, authorization, acceptance and terminal operations; check persisted status on recording failures. |
 | ACK_IGNORED / RECOVERY_IGNORED / IGNORED_CLEANUP_PENDING | Neutral input or local cleanup diagnostics; no strike, reply, owner warning or new task. Cleanup failure does not resurrect settled input. |
 | CONTEXT / CONTEXT_WITHHELD / CONTEXT_WARN / CONTEXT_TRUNCATED / CONTEXT_ERROR | Read context via ack show, apply lead learning boundaries and memory-before-done; withheld bodies stay unread. Report failed/incomplete coverage. |
-| QUESTION_READY / QUESTION_PENDING / QUESTION_ANSWERED | READY is watcher startup, not an answer. List/show details and all pages; handle only lane-matching IDs (lead coordinates missing workers), then ack handled answers. |
+| QUESTION_READY / QUESTION_PENDING / QUESTION_ANSWERED | READY is watcher startup, not an answer. List/show details and all pages; handle only lane-matching IDs (lead coordinates missing workers), then ack handled answers. A question asked `--for` a conversation is acked only after its requester was told (questions.md). |
 | QUESTION_DELIVERY_ERROR / QUESTION_WARN / QUESTION_ERROR | Read details; retain pending questions and use questions.md, "Human questions through Discord (commands and recovery)". Diagnose errors before retrying; never infer approval from silence or unknown delivery. |
 | FOLLOWUP_PENDING / FOLLOWUP_PAGE | List/show details and follow continuation; the count does not mean answered. |
 | FOLLOWUP_PR_REPAIR / FOLLOWUP_PR_WAIT / FOLLOWUP_PR_READY | Read the supplied PR check command and issue-plan-workflow.md, "PR recovery and readiness". Resume the existing authorized job for repair; wait/ready are observations, never new authority or repeat announcements. |
-| FOLLOWUP_PR_CUSTODY | Read and acknowledge the durable event under issue-plan-workflow.md, "PR recovery and readiness". The controller owns waiting, repair dispatch and reserved completion. |
+| FOLLOWUP_PR_CUSTODY | Read and acknowledge the durable event under issue-plan-workflow.md, "Custody events". The controller owns waiting, repair dispatch and closing the lane; on `ready` or `settled` you send the requester's one completion before the ack. |
+| OBLIGATION_DUE | Someone is still owed a message: a ready PR's completion or an answered question's relay. Send exactly what `send` names (it repeats hourly until the reply ledger records it); if they must not hear it, use `--no-completion` or `--no-relay` with the reason. |
 | BUGFIX_STARTED / BUGFIX_EXISTS / BUGFIX_QUEUED / BUGFIX_SKIPPED / BUGFIX_BLOCKED / BUGFIX_REFUSED / BUGFIX_PENDING / WORK_STARTED / WORK_BLOCKED | Receipts of `helio bugfix start`, `helio work start` and `helio work block`; reply under request-intake.md, "Request intake (shared policy)". PENDING: rerun its `resume` command after diagnosing the cause; REFUSED: fix the stated fact (labels, open issue). |
 | FOLLOWUP_PR_DUE / FOLLOWUP_BUGFIX_DUE | Authorized or started issue work has no PR and no active lane, or a confirmed bug was never started. Routine repair: inspect `dori show` for the lane, then run the event's `resume` command. No question and no user message until a PR or a real blocker exists; a genuine blocker gets `helio work block`. |
 | FOLLOWUP_ORACLE_PENDING / FOLLOWUP_DECISION_DIGEST | Owner-only transitions/review: read docs/decisions-workflow.md, deliver then acknowledge; never post private records in staff/public channels. |
 | RECOVERY_BEGIN / RECOVERY_REPORT / RECOVERY_PAGE / RECOVERY_WITHHELD / REPLY_WITHHELD | Read ~/.dori/elobot/docs/startup-recovery-workflow.md. Reconcile old work before action; unavailable evidence stays pending. |
 | RECONCILE_PREVIEW / RECONCILE_MESSAGE / RECONCILE_TOPIC / RECONCILE_LANE | Bounded maintenance receipts under startup-recovery-workflow.md. Changed candidates require fresh preview; these grant no work authority. |
 | REPLY_SETTLED / EVIDENCE_SETTLED | Local topic settlement after existing delivery; do not send the result again. |
-| MERGE_TRAIN_READY / BLOCKED / DONE / STOPPED / WAITING / WAITING_BROKER / RESUME / DROPPED / OWNER / REPAIR / FOLLOWUP / UNCERTAIN | oracle-restart-workflow.md, "Merging PRs": DONE and STOPPED carry the one message to send verbatim. |
+| MERGE_TRAIN_READY / BLOCKED / DONE / STOPPED / WAITING / WAITING_BROKER / RESUME / DROPPED / OWNER / REPAIR / FOLLOWUP / UNCERTAIN / SETTLED / EXPIRED | oracle-restart-workflow.md, "Merging PRs": DONE and STOPPED carry the one message to send verbatim. SETTLED (its merges reached production another way) and EXPIRED (its approval aged out) only free the release lock: nothing to send unless someone asks. |
 | RELEASE_ALREADY_MERGED | No merge or new approval needed; reconcile the existing completed result. |
 | FOLLOWUP_LIVE / FOLLOWUP_DONE / FOLLOWUP_DECLINED | Follow the terminal deliver procedure in request-intake.md, "Request intake (shared policy)". |
 | FOLLOWUP_TRACKED / FOLLOWUP_CLOSED / FOLLOWUP_UNKNOWN / FOLLOWUP_WARN | Receipt of tracking/closing, missing row, or unavailable check; inspect details before correcting state, never invent a notification. |

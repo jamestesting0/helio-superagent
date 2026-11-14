@@ -89,13 +89,16 @@ question with buttons on the `custody-issueN` lane. Act by state:
 
 | Event | Your action |
 |---|---|
-| `waiting`, `repair`, `ready`, `settled` | Acknowledge; the controller acts. Announce only results a requester waits for. |
+| `waiting`, `repair` | Acknowledge; the controller acts. |
+| `ready`, `settled` | Send the requester's one completion to the authorizing message (`authority` in `helio pr phase show`) with evidence.ts or reply.ts `--event completion`, then acknowledge. `helio pr phase ack` refuses until that send is recorded; `--no-completion REASON` only when the requester must not be told. A later `ready` after a repair needs no second announcement. |
 | `decision` "Asked owner (QID)" or "Owner answered QID" | When answered, apply it: `helio pr phase decide --issue N --question QID` (add `--option LABEL` for a typed reply; `--title`, `--body-file`, `--restored-body-file` when the option creates an issue). Never `helio question ack` a custody question. |
 | `decision` "Parked until the owner decides" | Nothing until the owner speaks; then apply his message: `helio pr phase decide --issue N --message M --channel C --option LABEL`. |
 | `decision` "edited outside Helio" | Review the issue and adopt it with `helio issue update ... --question QID` or `--message M --channel C` naming who asked; only an owner source reworks the PR, others become the owner's scope question. |
 | `decision` "Requirements changed after merge" | Create the linked follow-up with the requester's message (`helio issue followup`); without one, the controller asks the owner. |
 | `diagnosis` "Stopped N min" or "made no change" | Inspect `helio pr phase show`, the lane pane and `dori show`; fix within your authority (tell the lane a fact, retry a delivery, `helio work unblock --issue N --lead --reason R` for a stall or no-progress blocker); otherwise the owner question follows at 90 minutes. |
-| `held` at the requester's request | Tell the requester once; no action. | Acknowledgement records delivery, not completion or new
+| `held` at the requester's request | Tell the requester once; no action. |
+
+Acknowledgement records delivery, not completion or new
 authority. `helio health --json` exposes custody, next owner/probe and last
 meaningful progress. Repeat observations do not warrant repeat announcements.
 An unavailable lead leaves events pending. Admission off affects new jobs;
