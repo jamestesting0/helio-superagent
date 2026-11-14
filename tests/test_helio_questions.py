@@ -429,7 +429,8 @@ class QuestionChoiceTests(unittest.TestCase):
   patcher=patch.dict(self.g,{'STATE':self.state,'OWNER':'99','TOKEN':'fake','ALLOWED':{'100'},'request':request});patcher.start();self.addCleanup(patcher.stop)
   self.db=self.m['db_connect']();self.addCleanup(self.db.close)
  def test_yes_no_options_render_exactly_two_buttons_from_cli(self):
-  with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','How long?','--option','Yes','--option','No']),redirect_stdout(io.StringIO()):
+  with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','How long?','--option','Yes','--option','No',
+                         '--internal','the lead decides its own wait']),redirect_stdout(io.StringIO()):
    self.assertEqual(self.m['main'](),0)
   q=self.db.execute('SELECT * FROM questions').fetchone()
   body=self.bodies[0]
@@ -498,6 +499,48 @@ class QuestionChoiceTests(unittest.TestCase):
    with patch('sys.argv',['helio-questions','ack',qid]),redirect_stdout(io.StringIO()):self.assertEqual(self.m['main'](),0)
    row=self.db.execute('SELECT status,answer_text FROM questions WHERE id=?',(qid,)).fetchone()
    self.assertEqual((row[0],row[1]),('done',kept))
+ def test_an_ask_must_name_who_hears_the_answer_before_anything_is_sent(self):
+  base=['helio-questions','ask','--lane','lead','--audience','owner','--text','Review?']
+  for extra in ([],['--internal','x','--for','1'],['--for','404'],['--internal',' ']):
+   with self.subTest(extra=extra),patch('sys.argv',base+extra),redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+    self.m['main']()
+  self.assertEqual(self.bodies,[])
+
+ def test_a_linked_answer_is_acknowledged_only_after_the_requester_heard_it(self):
+  """2026-11-14: James answered Rascal's correction review; the lead acknowledged it and Rascal never heard."""
+  with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
+   db.execute('CREATE TABLE conversations (channel_id TEXT, user_id TEXT, status TEXT, anchor_message_id TEXT)')
+   db.execute("INSERT INTO conversations VALUES ('300','996','open','42')");db.commit()
+  with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
+   db.execute('CREATE TABLE reply_sends (target TEXT, text_hash TEXT, state TEXT)');db.commit()
+  out=io.StringIO()
+  with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','Review?','--for','42']),redirect_stdout(out):
+   self.assertEqual(self.m['main'](),0)
+  qid=json.loads(out.getvalue())['id']
+  self.db.execute("UPDATE questions SET status='answered',answer_text='No change' WHERE id=?",(qid,));self.db.commit()
+  def ack():
+   with patch('sys.argv',['helio-questions','ack',qid]),redirect_stdout(io.StringIO()):return self.m['main']()
+  with self.assertRaisesRegex(ValueError,f'--event question-{qid}'):ack()
+  self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'answered')
+  with closing(sqlite3.connect(self.state/'reply-sends.sqlite')) as db:
+   db.execute("INSERT INTO reply_sends VALUES ('77',?,'sent')",(f'event:300:question-{qid}',));db.commit()
+  self.assertEqual(ack(),0)
+  self.assertEqual(self.db.execute('SELECT status FROM questions WHERE id=?',(qid,)).fetchone()[0],'done')
+
+ def test_an_answered_question_may_skip_the_relay_only_with_a_reason(self):
+  with closing(sqlite3.connect(self.state/'discord-conversations.sqlite')) as db:
+   db.execute('CREATE TABLE conversations (channel_id TEXT, user_id TEXT, status TEXT, anchor_message_id TEXT)')
+   db.execute("INSERT INTO conversations VALUES ('300','996','open','42')");db.commit()
+  out=io.StringIO()
+  with patch('sys.argv',['helio-questions','ask','--lane','lead','--audience','owner','--text','Ban?','--for','42']),redirect_stdout(out):
+   self.m['main']()
+  qid=json.loads(out.getvalue())['id']
+  self.db.execute("UPDATE questions SET status='answered' WHERE id=?",(qid,));self.db.commit()
+  with patch('sys.argv',['helio-questions','ack',qid,'--no-relay','moderation outcome stays private']),redirect_stdout(io.StringIO()):
+   self.assertEqual(self.m['main'](),0)
+  owed=runpy.run_path(str(SCRIPT.with_name('helio_obligations.py')))['owed'](self.state,'o/r')
+  self.assertEqual(owed,[])
+
  def test_an_answer_being_submitted_is_not_reported_as_pending(self):
   self.db.execute("INSERT INTO questions(id,fingerprint,lane,audience,recipient,question,status,updated) VALUES ('q','f','lead','owner','99','Q','answering',0)");self.db.commit()
   out=io.StringIO()

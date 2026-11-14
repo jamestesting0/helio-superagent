@@ -377,11 +377,14 @@ def main():
  ask=sub.add_parser('ask');ask.error=lambda m:(ask.print_usage(sys.stderr),ask.exit(2,f'{ask.prog}: error: {m}\nexample: helio question ask --lane issue23-example --audience staff --text "Round to whole seconds?" --option yes --option no\n'));ask.add_argument('--lane');ask.add_argument('--audience',choices=('owner','staff','thread'));ask.add_argument('--recipient',default='');ask.add_argument('--text')
  ask.add_argument('--option',action='append');ask.add_argument('--other',action='store_true',help='accepted; a typed answer is allowed by default')
  ask.add_argument('--no-other',action='store_true',help='menu only, no typed answer')
+ ask.add_argument('--for',dest='for_topic',metavar='TOPIC',help="the anchor message of the conversation whose requester must hear the answer")
+ ask.add_argument('--internal',metavar='REASON',help='why no requester needs the answer (for example an owner-only decision)')
  for name in ('--action','--target','--revision','--channel','--reply-to'):ask.add_argument(name,choices=('pr','merge','restart') if name=='--action' else None)
  for name in ('retry','recover','ack','cancel','withdraw','show','transfer'):
   command=sub.add_parser(name);command.add_argument('id')
   if name=='transfer':command.add_argument('--lane',required=True)
   if name=='show':command.add_argument('--offset',type=int,default=0)
+  if name=='ack':command.add_argument('--no-relay',metavar='REASON',help='acknowledge a linked answer the requester must not hear, with the reason')
  w=sub.add_parser('watch');w.add_argument('--lane')
  listing=sub.add_parser('list');listing.add_argument('--offset',type=int,default=0)
  sub.add_parser('reconcile')
@@ -391,10 +394,18 @@ def main():
   argv=confirm_argv(a);os.execvp(argv[0],argv)
  if a.cmd=='ask' and (not a.lane or not a.audience or a.text is None or a.target or a.revision or a.channel or a.reply_to):
   ask.error('ask needs --lane, --audience and --text; --target/--revision/--channel/--reply-to need --action')
+ obligations=runpy.run_path(str(Path(__file__).with_name('helio_obligations.py'))) if a.cmd in ('ask','ack') else None
+ if a.cmd=='ask':
+  # Before anything is sent: an answer nobody is told about is how Rascal's correction request went unanswered.
+  if (a.for_topic is None)==(a.internal is None):ask.error("say who the answer is for: --for TOPIC (the requester's conversation) or --internal REASON")
+  if a.for_topic is not None and not obligations['conversation'](STATE,a.for_topic):ask.error(f'no conversation is anchored at {a.for_topic}')
+  if a.internal is not None and not a.internal.strip():ask.error('--internal needs a reason')
  db=db_connect()
  try:
   if getattr(a,'offset',0)<0:parser.error('--offset must be nonnegative')
-  if a.cmd=='ask':result=create_question(db,a.lane,a.audience,a.recipient,a.text,a.option,not a.no_other)
+  if a.cmd=='ask':
+   result=create_question(db,a.lane,a.audience,a.recipient,a.text,a.option,not a.no_other)
+   result['for']=obligations['link_question'](STATE,result['id'],a.for_topic,a.internal)
   elif a.cmd=='retry':result=send_question(db,a.id)
   elif a.cmd=='recover':result=recover(db,a.id)
   elif a.cmd=='watch':return watch(db,a.lane)
@@ -411,6 +422,13 @@ def main():
     if CUSTODY.fullmatch(row['lane']):
      raise ValueError(f"custody question: apply the answer with helio pr phase decide --issue {CUSTODY.fullmatch(row['lane'])[1]} --question {a.id}")
     if row['status']!='answered':raise ValueError('cannot acknowledge an unanswered question')
+    link=obligations['question_link'](STATE,a.id)
+    if link and link['topic'] and not obligations['delivered'](STATE,link['channel'],obligations['relay_event'](a.id)):
+     if not a.no_relay:
+      raise ValueError(f"the requester has not been told: reply in their conversation {link['topic']} (channel {link['channel']}) "
+                       f"with --event {obligations['relay_event'](a.id)}, close it with helio conversation close {link['topic']} OUTCOME, "
+                       "then acknowledge; or acknowledge with --no-relay REASON")
+     obligations['waive'](STATE,f'question:{a.id}',a.no_relay)
     # A clicked answer keeps its text until the watcher has posted it publicly; it clears the text afterwards.
     unposted=row['answer_source']=='component' and row['announced_at'] is None
     write(db,a.id,'done','answered',question='',**({} if unposted else {'answer_text':None}));row=db.execute('SELECT * FROM questions WHERE id=?',(a.id,)).fetchone()
