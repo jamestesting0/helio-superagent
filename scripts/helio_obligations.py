@@ -120,7 +120,8 @@ def record_pr(state: Path, repo: str, issue: int, data: dict) -> None:
         return
     _record(state, {"key": pr_key(repo, issue, pr), "kind": "pr-ready", "repo": repo, "issue": issue, "pr": pr,
                     "channel": authority["channel"], "target": authority["message"], "event": completion_event(repo, pr),
-                    "since": min(n["at"] for n in reached)})
+                    # Older custody notices have no timestamp; the source's progress time is their best evidence.
+                    "since": min(n.get("at", data.get("last_progress", time.time())) for n in reached)})
 
 
 def activate_question(state: Path, question: str) -> None:

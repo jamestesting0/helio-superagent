@@ -77,6 +77,12 @@ class ObligationTests(unittest.TestCase):
             db.execute("DELETE FROM reply_sends")
         self.assertEqual([o["pr"] for o in LEDGER["owed"](self.state, REPO)], [other])
 
+    def test_legacy_ready_notices_without_timestamps_remain_observable(self):
+        LEDGER["record_pr"](self.state, REPO, 28, {"pr": PR, "authority": REQUEST, "last_progress": 123,
+                                                  "notices": [{"status": "ready", "acknowledged": True}]})
+        owed = LEDGER["owed"](self.state, REPO)
+        self.assertEqual([(item["pr"], item["since"]) for item in owed], [(PR, 123)])
+
     def test_an_answered_question_for_a_conversation_is_owed_to_that_requester_until_relayed(self):
         """2026-11-14: James answered Rascal's correction question; it was acknowledged and Rascal never heard."""
         link = LEDGER["link_question"](self.state, "cb1b83058dd74b51b343", "1570921095282954431", None)
