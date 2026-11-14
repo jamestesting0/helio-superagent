@@ -318,6 +318,7 @@ def ci_passed(train: dict) -> bool:
 
 def plan(world: World, prs: list[int] | None, all_open: int | None, restart: bool, request: str, channel: str,
          reply_to: str | None = None, attempt: dict | None = None) -> list[str]:
+    settled = settle(world)
     if trains(world, ACTIVE):
         busy = trains(world, ACTIVE)[0]
         raise TrainError(f"merge train {busy['id']} is still running; this request joins the next one")
@@ -344,7 +345,7 @@ def plan(world: World, prs: list[int] | None, all_open: int | None, restart: boo
     save(world, train)
     if train["members"]:
         build(world, train)
-    handed = [hand_off(world, train, item) for item in train["excluded"] if item.get("kind") == "conflict" and not item.get("handed")]
+    handed = settled + [hand_off(world, train, item) for item in train["excluded"] if item.get("kind") == "conflict" and not item.get("handed")]
     if not train["members"]:
         return handed + finish_blocked(world, train, "no PR can be merged: " + "; ".join(f"#{x['pr']} {x['reason']}" for x in train["excluded"]))
     train["status"] = "testing"
@@ -750,12 +751,63 @@ def uncertain(world: World, train: dict, reason: str) -> list[str]:
                                            "next": f"helio release inspect, then helio merge run --train {train['id']}"})]
 
 
-def done(world: World, train: dict) -> list[str]:
-    if train["status"] != "done":  # recorded first: a rerun only repeats the idempotent cleanup below
-        train["status"] = "done"
-        save(world, train)
-    delete_branch(world, train)
+def finish(world: World, train: dict, status: str, **fields: object) -> None:
+    """The only way into a terminal state, so a finished train can never keep the repository's release lock."""
+    assert status in TERMINAL, status
+    train.update(status=status, **fields)
+    save(world, train)  # recorded first: a rerun only repeats the idempotent unlock
     world.run(["helio", "confirm", "unlock", train["id"]], ok=(0, 1))
+
+
+def includes(world: World, running: str | None, tip: str) -> bool:
+    """Whether the revision Elo Bot runs contains the train's merged tip."""
+    if not running:
+        return False
+    if running == tip:
+        return True
+    git(world, "fetch", "-q", "origin", ok=(0, 1))
+    try:
+        git(world, "merge-base", "--is-ancestor", tip, running)
+    except TrainError:
+        return False
+    return True
+
+
+def settle(world: World) -> list[str]:
+    """Finish trains that can no longer move: their merges reached production another way, or their approval
+    expired so they can never resume. Either way they stop blocking new trains and release the lock."""
+    lines = []
+    for train in trains(world, ("stopped", "merged")):
+        if train["status"] == "merged" and train.get("waiting") != "broker":
+            continue  # a merged train mid-run is still moving
+        merged = [m["pr"] for m in train["members"] if m.get("merged")]
+        if merged and len(merged) == len(train["members"]) and train.get("tip"):
+            try:
+                running = world.running_revision() if train["restart"] else train["tip"]
+            except Exception as error:  # an unreachable broker only means production cannot be confirmed now
+                if type(error).__name__ != "ReleaseError":
+                    raise
+                running = None
+            if includes(world, running, train["tip"]):
+                finish(world, train, "done", error=None, settled=f"production runs {running[:7]}, which includes it")
+                delete_branch(world, train)
+                lines.append(line("MERGE_TRAIN_SETTLED", {"id": train["id"], "merged": merged, "running": running[:7],
+                                                          "note": "already reported when it stopped; nothing to send"}))
+                continue
+        approval = train.get("approval") or {}
+        if world.now() - approval.get("approved_at", world.now()) > APPROVAL_MAX_AGE_S:
+            left = [m["pr"] for m in train["members"] if not m.get("merged")]
+            finish(world, train, "expired", error="its approval is more than 12 hours old, so it can never resume")
+            delete_branch(world, train)
+            lines.append(line("MERGE_TRAIN_EXPIRED", {
+                "id": train["id"], "merged": merged, "unmerged": left, "restart_pending": bool(train["restart"] and merged),
+                "next": "a new merge request is needed for anything still wanted; nothing to send unless someone asks"}))
+    return lines
+
+
+def done(world: World, train: dict) -> list[str]:
+    finish(world, train, "done")
+    delete_branch(world, train)
     return [line("MERGE_TRAIN_DONE", {"id": train["id"], "merged": [m["pr"] for m in train["members"]],
                                       "excluded": train["excluded"], "tip": train.get("tip"),
                                       "message": message_for(world, train),
@@ -850,11 +902,14 @@ def followups(state: Path, repo: str, readiness: Callable[[int], str]) -> list[s
     path = state / "merge-trains.sqlite"
     if not path.is_file():
         return []
-    world = World(repo=repo, state=state, project=Path("."), run=command)
-    lines, seen = [], set()
+    release = runpy.run_path(str(HERE / "helio_release_client.py"))
+    world = World(repo=repo, state=state, run=command,
+                  project=Path(os.environ.get("HELIO_PROJECT", ".")).expanduser(),
+                  running_revision=lambda: release["exchange"]({"action": "inspect"}, timeout=60).get("running_revision"))
+    lines, seen = settle(world), set()
     held = [train for train in trains(world, ("merged", "stopped")) if train.get("restart") and (
         train.get("waiting") == "broker" or str(train.get("error") or "").startswith("the release service refused the restart"))]
-    if held and broker_matches(runpy.run_path(str(HERE / "helio_release_client.py"))):
+    if held and broker_matches(release):
         for train in held:
             if train.get("resume_noticed") == expected_broker_version():
                 continue
@@ -906,9 +961,7 @@ def reask(world: World, train_id: str) -> list[str]:
         "approval", "waiting", "error", "restart_requested_at", "invocation", "prompt", "resume_noticed", "readiness", "running")}
     new.update(id=uuid.uuid4().hex[:20], created_at=world.now(), status="ready", predecessor=old["id"])
     new["ships"] = shipped(world, {**new, "base": old["tip"]})
-    old.update(status="cancelled", error=f"superseded by {new['id']} for a scoped restart approval")
-    save(world, old)
-    world.run(["helio", "confirm", "unlock", old["id"]], ok=(0, 1))
+    finish(world, old, "cancelled", error=f"superseded by {new['id']} for a scoped restart approval")
     save(world, new)
     return [line("MERGE_TRAIN_REASKED", {"id": new["id"], "replaces": old["id"], "ships": new["ships"]}), *ask(world, new["id"])]
 
@@ -917,8 +970,7 @@ def cancel(world: World, train_id: str) -> list[str]:
     train = load(world, train_id)
     if train["status"] not in ("planning", "testing", "ready", "asked", "blocked"):
         raise TrainError(f"merge train {train_id} is {train['status']} and cannot be cancelled")
-    train["status"] = "cancelled"
-    save(world, train)
+    finish(world, train, "cancelled")
     delete_branch(world, train)
     return [line("MERGE_TRAIN_CANCELLED", {"id": train_id})]
 
@@ -938,4 +990,15 @@ def recoverable(state: Path, repo: str) -> list[str]:
     with sqlite3.connect(f"file:{state / 'merge-trains.sqlite'}?mode=ro", uri=True) as db:
         rows = db.execute(f"SELECT id,status FROM trains WHERE repo=? AND status IN ({','.join('?' * len(ACTIVE))})",
                           (repo, *ACTIVE)).fetchall()
-    return [f"merge train {train} is {status}: helio merge run --train {train}" for train, status in rows]
+        statuses = dict(db.execute("SELECT id,status FROM trains WHERE repo=?", (repo,)).fetchall())
+    problems = [f"merge train {train} is {status}: helio merge run --train {train}" for train, status in rows]
+    prompts = state / "discord-prompts.sqlite"
+    if prompts.is_file():
+        try:
+            with sqlite3.connect(f"file:{prompts}?mode=ro", uri=True) as db:
+                locks = db.execute("SELECT train FROM release_locks WHERE repo=?", (repo,)).fetchall()
+        except sqlite3.OperationalError:  # no train has ever taken a lock
+            locks = []
+        problems += [f"the release lock is held by merge train {train}, which is {statuses.get(train, 'unknown')}: "
+                     f"helio confirm unlock {train}" for (train,) in locks if statuses.get(train) not in ACTIVE]
+    return problems

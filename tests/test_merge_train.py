@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -205,8 +206,9 @@ class Case(unittest.TestCase):
     def confirm(self, args: list[str]) -> str:
         if args[0] == "train":
             return "CONFIRM_ASKED {}"
-        if args[0] == "unlock":
-            self.lock = None
+        if args[0] == "unlock":  # like the prompt store, only the named train's lock is released
+            if self.lock == args[1]:
+                self.lock = None
             return "CONFIRM_UNLOCKED"
         train = args[args.index("--train") + 1]
         key = args[1] + args[2]
@@ -548,6 +550,52 @@ class MergeTrainTests(Case):
         self.world.release["exchange"] = self.exchange
         self.assertTrue(TRAIN["run"](self.world, reasked["id"])[-1].startswith("MERGE_TRAIN_DONE"))
         self.assertEqual((self.gh.merges, len(self.restarts)), (merges, 1))
+
+    def test_a_stopped_train_whose_merge_reached_production_another_way_settles_and_frees_the_next_train(self):
+        """2026-11-13: train 34190e66 merged #27, its restart was refused, a separate restart shipped the tip, and the
+        stopped train kept the release lock and blocked every later merge request."""
+        self.gh.open_pr(27, "a.py", "x = 27\n")
+        first = self.plan(27)
+        self.approve(first["id"])
+        self.world.release["exchange"] = lambda request: (_ for _ in ()).throw(
+            type("ReleaseError", (Exception,), {})("the prompt names a different action, target or commit"))
+        self.assertTrue(TRAIN["run"](self.world, first["id"])[-1].startswith("MERGE_TRAIN_STOPPED"))
+        self.assertEqual(self.lock, first["id"])
+        tip = self.gh.sha("main")
+        self.gh.push_main("later.py", "z = 1\n")  # production now runs a later main that contains the tip
+        self.world.running_revision = lambda: self.gh.sha("main")
+        self.gh.open_pr(29, "b.py", "y = 29\n")
+        lines = TRAIN["plan"](self.world, [29], None, False, "401", "300")
+        settled = [json.loads(x.split(" ", 1)[1]) for x in lines if x.startswith("MERGE_TRAIN_SETTLED")]
+        self.assertEqual([(s["id"], s["merged"]) for s in settled], [(first["id"], [27])])
+        self.assertTrue(lines[-1].startswith("MERGE_TRAIN_READY"), lines)
+        self.assertEqual((TRAIN["load"](self.world, first["id"])["status"], self.lock), ("done", None))
+        self.assertEqual(TRAIN["load"](self.world, first["id"])["tip"], tip)
+
+    def test_a_stopped_train_whose_approval_expired_can_never_resume_and_releases_the_lock(self):
+        self.gh.open_pr(18, "a.py", "x = 18\n")
+        first = self.plan(18)
+        self.approve(first["id"])
+        self.holds.add(18)
+        self.assertTrue(TRAIN["run"](self.world, first["id"])[-1].startswith("MERGE_TRAIN_STOPPED"))
+        self.assertEqual(self.lock, first["id"])
+        self.assertEqual(TRAIN["settle"](self.world), [])  # still inside the approval window: it may resume
+        self.clock[0] += TRAIN["APPROVAL_MAX_AGE_S"] + 1
+        expired = [json.loads(x.split(" ", 1)[1]) for x in TRAIN["settle"](self.world)]
+        self.assertEqual([(e["id"], e["unmerged"]) for e in expired], [(first["id"], [18])])
+        self.assertEqual((TRAIN["load"](self.world, first["id"])["status"], self.lock), ("expired", None))
+        self.assertEqual(self.gh.merges, [])
+
+    def test_health_names_a_release_lock_held_by_a_train_that_has_finished(self):
+        self.gh.open_pr(18, "a.py", "x = 18\n")
+        ready = self.plan(18, restart=False)
+        self.approve(ready["id"])
+        self.assertTrue(TRAIN["run"](self.world, ready["id"])[-1].startswith("MERGE_TRAIN_DONE"))
+        with sqlite3.connect(self.state / "discord-prompts.sqlite") as db:  # a lock left behind by older code
+            db.execute("CREATE TABLE release_locks (repo TEXT PRIMARY KEY, train TEXT NOT NULL, taken_at INTEGER NOT NULL)")
+            db.execute("INSERT INTO release_locks VALUES (?,?,1)", (REPO, ready["id"]))
+        self.assertEqual(TRAIN["recoverable"](self.state, REPO),
+                         [f"the release lock is held by merge train {ready['id']}, which is done: helio confirm unlock {ready['id']}"])
 
     def test_a_typed_approval_may_name_or_reply_to_the_already_merged_prs_it_deploys(self):
         approval = runpy.run_path(str(ROOT / "scripts/helio_approval.py"))
