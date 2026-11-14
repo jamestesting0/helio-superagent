@@ -6,7 +6,7 @@ description stay in context; the body loads when a task matches.
 
 | Skill | Source | Copied |
 |-------|--------|--------|
-| `karpathy-guidelines` (MIT) | the owner's `~/.agents/skills/karpathy-guidelines/SKILL.md` | 2026-11-04 |
+| `karpathy-guidelines` (MIT) | the owner's `~/.agents/skills/karpathy-guidelines/SKILL.md` | 2026-11-14 |
 
 The isolated runtime cannot read the owner's home, so these are copies. To ship an edited
 skill, copy it over the file here and run `helio update`; `helio update` prints a note when
