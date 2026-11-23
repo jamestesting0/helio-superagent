@@ -114,7 +114,11 @@ made=hooked=v6=False
 sandbox=network=None; master=slave=None
 old_term=signal.getsignal(signal.SIGTERM)
 old_hup=signal.getsignal(signal.SIGHUP)
-def interrupted(*_):raise KeyboardInterrupt
+def interrupted(signum, _frame):
+    # Windows Terminal keeps gracefully configured tabs open on a nonzero exit.
+    if signum == signal.SIGTERM:
+        raise SystemExit(0)
+    raise KeyboardInterrupt
 signal.signal(signal.SIGTERM,interrupted)
 signal.signal(signal.SIGHUP,interrupted)
 try:
