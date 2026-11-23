@@ -93,7 +93,7 @@ export class Access {
   }
 
   async workspace(event: Interaction, request: WorkspaceRequest): Promise<unknown> {
-    const current = await this.authorize(event, request.action !== "status", 1700);
+    const current = await this.authorize(event, false, 1700);
     const guild = event.guild ?? text(current.values.HELIO_ADMIN_GUILD, 30);
     try {
       return await broker({ kind: "workspace", actor: event.actor, guild, ...request }, 16000);

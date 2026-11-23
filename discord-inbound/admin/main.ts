@@ -74,5 +74,14 @@ const timer = setInterval(() => {
     console.error(`ADMIN_ERROR expiry ${error.name}`);
   }).finally(() => { expiring = false; });
 }, 15_000);
+let refreshingWorkspaces = false;
+const workspaceTimer = setInterval(() => {
+  if (!listener || refreshingWorkspaces) return;
+  refreshingWorkspaces = true;
+  void controller.refreshWorkspaces().catch(error => {
+    if (!(error instanceof Error)) throw error;
+    console.error(`ADMIN_ERROR workspace_status ${error.name}`);
+  }).finally(() => { refreshingWorkspaces = false; });
+}, 2_000);
 try { await new Promise<never>(() => {}); }
-finally { clearInterval(timer); process.off("SIGHUP", synchronize); listener?.stop(); }
+finally { clearInterval(workspaceTimer); clearInterval(timer); process.off("SIGHUP", synchronize); listener?.stop(); }

@@ -11,6 +11,11 @@ export class RegistrationInterrupted extends Error {
   }
 }
 
+const previousLifecycleDescriptions = new Map([
+  ["start", "Owner only: open the Helio workspace and start the lead"],
+  ["stop", "Owner only: confirm closure of the Helio workspace"],
+]);
+
 export type LifecycleCommands = ReadonlyMap<string, string>;
 
 export async function registerCommand(rest: DiscordTransport["rest"], application: Record<string, unknown>,
@@ -34,7 +39,7 @@ export async function registerCommand(rest: DiscordTransport["rest"], applicatio
     const current = await read();
     for (const command of desired.filter(command => command.name === "start" || command.name === "stop")) {
       const existing = current.find(entry => entry.name === command.name && entry.type === 1);
-      if (existing && existing.description !== command.description) {
+      if (existing && existing.description !== command.description && existing.description !== previousLifecycleDescriptions.get(command.name)) {
         throw new AdminError("invalid", `Review the existing /${command.name} command before installing lifecycle controls.`);
       }
     }

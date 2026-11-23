@@ -271,8 +271,8 @@ class AdminService:
             case "workspace":
                 actor = string(request, "actor", 30)
                 action = string(request, "action", 10)
-                authorize(self.canonical_policy(), actor, action != "status")
-                authorize(policy, actor, action != "status")
+                authorize(self.canonical_policy(), actor)
+                authorize(policy, actor)
                 if string(request, "guild", 30) != policy["values"]["HELIO_ADMIN_GUILD"]:
                     raise Refused("denied", "This administration request belongs to a different server")
                 match action:

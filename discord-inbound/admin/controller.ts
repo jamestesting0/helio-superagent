@@ -3,15 +3,21 @@ import { CallError, type Call } from "./transport.ts";
 import { Editor } from "./editor.ts";
 import { Access, autocomplete, interaction, type Interaction } from "./interaction.ts";
 import { Panels, position, type Panel } from "./panels.ts";
-import { AdminError, isAdminInteraction, object, section, text, type AdminRecord } from "./protocol.ts";
-import { actions, stopConfirmation, terminal } from "./render.ts";
+import { AdminError, isAdminInteraction, object, section, text, type AdminPolicy, type AdminRecord } from "./protocol.ts";
+import { actions, terminal } from "./render.ts";
 import { listFilters, loadPanel } from "./panel-read.ts";
 import { PanelOutput } from "./panel-output.ts";
 import { ActionForm } from "./forms.ts";
 
+type WorkspaceControl = "start" | "review-stop" | "stop" | "cancel";
+interface WorkspaceWatch {
+  readonly event: Interaction;
+  readonly revision: number;
+  readonly state: string;
+  readonly until: number;
+}
+
 const lifecycleReply: Readonly<Record<string, string>> = {
-  "start-pending": "Helio is starting. Use /status to check progress.",
-  "stop-pending": "Helio is stopping. Use /status to check progress.",
   "busy-start": "Helio is starting. Wait for it to finish before issuing another command.",
   "busy-stop": "Helio is stopping. Wait for it to finish before issuing another command.",
   "busy": "Helio is handling another lifecycle command. Check /status.",
@@ -21,12 +27,13 @@ const lifecycleReply: Readonly<Record<string, string>> = {
   "stopped": "Helio stopped.",
   "start-failed": "The launch ended before the lead was verified. Check /status.",
   "desktop-unavailable": "The foreground desktop did not start Helio. Sign in on the host and check the Helio Foreground Start task.",
-  "changed": "The workspace changed. Run /stop again to review the current workspace.",
+  "changed": "The workspace changed. Review the current workspace before stopping it.",
 };
 
 export class Controller {
   private readonly access = new Access();
   private readonly output: PanelOutput;
+  private readonly workspaceWatches = new Map<string, WorkspaceWatch>();
   constructor(private readonly panels: Panels, private readonly call: Call,
     private readonly lifecycleId: (event: Interaction) => string | undefined = () => undefined) {
     this.output = new PanelOutput(panels, this.access, call);
@@ -101,33 +108,83 @@ export class Controller {
         records = (await this.access.runtime(event, { kind: "probe", dependency: "github" })).records;
         panel.github = records.find(record => record.id === "github");
       }
-      await this.output.show(panel, event, records, await this.access.authorize(event));
+      await this.show(panel, event, records, await this.access.authorize(event));
     } catch (error) { await this.output.failure(event, error, panel); }
   }
 
   private async workspaceCommand(event: Interaction, panel: Panel): Promise<void> {
-    const path = `/webhooks/${event.application}/${event.token}/messages/@original` as const;
     if (!event.commandId || this.lifecycleId(event) !== event.commandId) {
       throw new AdminError("denied", "This lifecycle command has not been verified for this installation.");
     }
-    if (event.command === "start") {
-      const outcome = text(await this.access.workspace(event, { action: "start", operation: event.id }), 40);
-      await this.call("PATCH", path, terminal(lifecycleReply[outcome] ?? "Workspace startup is unavailable. Check /status."));
-      return;
+    await this.workspaceControl(panel, event, event.command === "start" ? "start" : "review-stop");
+  }
+
+  private async workspaceControl(panel: Panel, event: Interaction, control: WorkspaceControl): Promise<void> {
+    const expected = panel.stopRevision;
+    delete panel.notice;
+    delete panel.stopRevision;
+    panel.token = event.token;
+    panel.expires = Date.now() + 600_000;
+    if (control === "start" || control === "stop") {
+      const request = control === "start" ? { action: "start", operation: event.id } as const :
+        { action: "stop", operation: event.id, expected: text(expected, 64) } as const;
+      try {
+        const result = text(await this.access.workspace(event, request), 40);
+        if (result !== "start-pending" && result !== "stop-pending") {
+          panel.notice = lifecycleReply[result] ?? "The workspace change could not be verified.";
+        }
+      } catch (error) {
+        if (!(error instanceof AdminError) || error.code !== "uncertain") throw error;
+        panel.notice = "Checking the workspace after losing the operation response.";
+      }
     }
-    await this.access.authorize(event, true);
-    const status = object(await this.access.workspace(event, { action: "status" }));
-    if (status.state !== "running" && status.state !== "idle") {
-      const reply = status.state === "stopped" ? lifecycleReply["already-stopped"] :
-        status.state === "starting" ? lifecycleReply["busy-start"] : status.state === "stopping" ? lifecycleReply["busy-stop"] : undefined;
-      await this.call("PATCH", path, terminal(reply ?? "Workspace shutdown is unavailable. Check /status."));
-      return;
+    const records = await loadPanel(this.access, panel, event, true);
+    if (control === "review-stop") {
+      const current = records[0];
+      if (current?.revision && (current.state === "running" || current.state === "idle")) {
+        panel.stopRevision = current.revision;
+      }
     }
-    panel.stopRevision = text(status.revision, 64);
-    this.panels.save(panel);
-    const response = object(await this.call("PATCH", path, stopConfirmation(panel)));
-    panel.message = text(response.id, 30);
-    this.panels.save(panel, false);
+    await this.show(panel, event, records, await this.access.authorize(event));
+  }
+
+  private async show(panel: Panel, event: Interaction, records: readonly AdminRecord[], policy: AdminPolicy,
+    until = Date.now() + 75_000): Promise<void> {
+    await this.output.show(panel, event, records, policy);
+    const state = records[0]?.state;
+    if (panel.section === "overview" && panel.screen === "list" && !panel.stopRevision &&
+        (state === "starting" || state === "stopping")) {
+      this.workspaceWatches.set(panel.id, { event, revision: panel.revision, state, until });
+    } else {
+      this.workspaceWatches.delete(panel.id);
+    }
+  }
+
+  async refreshWorkspaces(): Promise<void> {
+    await Promise.all([...this.workspaceWatches].map(async ([id, watch]) => {
+      try {
+        const panel = this.panels.get(id, Date.now());
+        if (panel.revision !== watch.revision) {
+          this.workspaceWatches.delete(id);
+          return;
+        }
+        const records = await loadPanel(this.access, panel, watch.event, true);
+        const waiting = records[0]?.state === watch.state;
+        const expired = Date.now() >= watch.until;
+        if (waiting && !expired) return;
+        const policy = await this.access.authorize(watch.event, false, 1700);
+        await this.panels.serialize(id, async () => {
+          if (this.workspaceWatches.get(id) !== watch || this.panels.get(id, Date.now()).revision !== watch.revision) return;
+          delete panel.notice;
+          if (waiting) panel.notice = "Still waiting for the host. Use Refresh to check again.";
+          await this.show(panel, watch.event, records, policy, watch.until);
+          if (expired) this.workspaceWatches.delete(id);
+        });
+      } catch (error) {
+        if (this.workspaceWatches.get(id) === watch) this.workspaceWatches.delete(id);
+        if (!(error instanceof AdminError) && !(error instanceof CallError)) throw error;
+      }
+    }));
   }
 
   private binding(panel: Panel, event: Interaction): void {
@@ -145,16 +202,21 @@ export class Controller {
       if (verb === "close") {
         await this.call("PATCH", `/webhooks/${event.application}/${event.token}/messages/@original`, terminal("Panel closed."));
         this.panels.remove(panel.id);
+        this.workspaceWatches.delete(panel.id);
         return;
       }
-      if (verb === "workspace-stop") {
-        if (panel.revision !== revision || !panel.stopRevision) {
-          throw new AdminError("changed", "This confirmation expired. Run /stop again.");
+      if (verb.startsWith("workspace-")) {
+        if (panel.revision !== revision) return;
+        if (panel.section !== "overview" || panel.screen !== "list") {
+          throw new AdminError("changed", "This control expired. Refresh the status panel.");
         }
-        const outcome = text(await this.access.workspace(event, { action: "stop", operation: event.id, expected: panel.stopRevision }), 40);
-        await this.call("PATCH", `/webhooks/${event.application}/${event.token}/messages/@original`,
-          terminal(lifecycleReply[outcome] ?? "Workspace shutdown is unavailable. Check /status."));
-        this.panels.remove(panel.id);
+        if (panel.stopRevision && (verb === "workspace-stop" || verb === "workspace-cancel")) {
+          await this.workspaceControl(panel, event, verb === "workspace-stop" ? "stop" : "cancel");
+        } else if (!panel.stopRevision && (verb === "workspace-start" || verb === "workspace-review-stop")) {
+          await this.workspaceControl(panel, event, verb === "workspace-start" ? "start" : "review-stop");
+        } else {
+          throw new AdminError("changed", "This control is no longer available. Refresh the status panel.");
+        }
         return;
       }
       if (panel.stopRevision) throw new AdminError("invalid", "Unknown shutdown confirmation control");
@@ -166,7 +228,7 @@ export class Controller {
         const records = panel.pending ? [] : await this.output.reloadMutation(panel, event);
         panel.token = event.token;
         panel.expires = Date.now() + 600_000;
-        await this.output.show(panel, event, records, await this.access.authorize(event));
+        await this.show(panel, event, records, await this.access.authorize(event));
         return;
       }
       const saved = position(panel);
@@ -267,8 +329,11 @@ export class Controller {
       }
       panel.token = event.token;
       panel.expires = Date.now() + 600_000;
-      await this.output.show(panel, event, records, await this.access.authorize(event));
-    } catch (error) { await this.output.failure(event, error, panel); }
+      await this.show(panel, event, records, await this.access.authorize(event));
+    } catch (error) {
+      if (panel && verb.startsWith("workspace-")) delete panel.stopRevision;
+      await this.output.failure(event, error, panel);
+    }
   }
 
   async expire(): Promise<void> {

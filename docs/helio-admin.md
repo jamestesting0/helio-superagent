@@ -280,12 +280,15 @@ until the actual Helio application supplies the required evidence.
 
 ## Start and stop from Discord
 
-In the configured server or in a DM with the Helio bot, the owner can run
-`/start` and `/stop`. Start opens a visible Windows Terminal window on the
-signed-in desktop or starts the lead in an existing idle workspace. Stop asks
+In the configured server or in a DM with the Helio bot, the owner and trusted
+users can run `/start` and `/stop` or use the buttons in `/status`. Start opens
+a visible Windows Terminal window on the signed-in desktop or starts the lead
+in an existing idle workspace. Stop asks
 for confirmation before closing the workspace, including its workers and
 monitors. The admin services continue handling commands. Use `/status` to
 observe startup, shutdown, the current lead, and the last lifecycle result.
+The panel refreshes automatically during a transition and re-enables available
+controls after the host reports the result.
 
 Both commands share one host operation. A new command received during a
 transition reports progress and ends. Run it again after the transition

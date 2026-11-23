@@ -90,6 +90,7 @@ export function filterOptions(section: Section): readonly string[] {
 export function render(panel: Panel, records: readonly AdminRecord[], policy: AdminPolicy): Message {
   if (panel.screen === "closed") return terminal("Panel closed.");
   if (panel.screen === "unavailable") return terminal(panel.notice ?? "This source is unavailable. Refresh to check again.", panel);
+  if (panel.stopRevision) return stopConfirmation(panel);
   const owner = panel.actor === policy.values.DORI_DISCORD_OWNER_ID;
   const saved = position(panel);
   const selected = records.find(record => record.id === saved.selected);
@@ -185,6 +186,7 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       button(panel, "refresh", refresh));
   } else if (panel.section === "overview") {
     const overview = records[0];
+    title = "Helio status";
     description = [description, overview?.summary].filter(Boolean).join("\n");
     const observation = readCommandSync(join(process.env.HELIO_ADMIN_STATE_DIR ??
       join(process.env.HOME ?? "", ".local/state/helio-admin"), "commands.json"));
@@ -197,7 +199,9 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
       `Checked <t:${Math.floor(observation.checkedAt / 1000)}:R>. Runtime readiness is reported separately.`,
     ].filter(Boolean).join("\n"), 900) : "No registration observation yet." });
     fields.push(...contentFields(overview?.fields ?? []));
-    buttons.push(button(panel, "refresh", refresh));
+    buttons.push(button(panel, "workspace-start", "Start Helio", overview?.state !== "stopped" && overview?.state !== "idle", 3),
+      button(panel, "workspace-review-stop", "Stop Helio", overview?.state !== "running" && overview?.state !== "idle", 4),
+      button(panel, "refresh", "Refresh"));
   } else {
     const byId = new Map(records.map(record => [record.id, record]));
     const listed = saved.ids.flatMap(id => { const record = byId.get(id); return record ? [record] : []; });
@@ -224,9 +228,9 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     components: [...controls, ...(buttons.length ? [row(...buttons)] : [])] };
 }
 
-export function stopConfirmation(panel: Panel): Message {
+function stopConfirmation(panel: Panel): Message {
   return { ...terminal("Stopping Helio closes the workspace and ends its lead, worker, and monitor processes. Confirm to continue."),
-    components: [row(button(panel, "workspace-stop", "Stop Helio", false, 4), button(panel, "close", "Cancel"))] };
+    components: [row(button(panel, "workspace-stop", "Confirm stop", false, 4), button(panel, "workspace-cancel", "Cancel"))] };
 }
 
 export function terminal(description: string, panel?: Panel): Message {

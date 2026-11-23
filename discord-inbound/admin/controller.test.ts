@@ -287,29 +287,89 @@ test.each(["policy", "runtime"] as const)("a %s outage leaves a usable Refresh c
   expect(f.mutations()).toBe(0);
 });
 
-test.each([false, true])("lifecycle commands work without the isolated runtime, DM=%s", async dm => {
+test.each([false, true])("trusted users can use registered lifecycle commands in guilds and DMs, DM=%s", async dm => {
   const f = await fixture(dm);
   f.setUnavailable("runtime");
 
-  await f.controller.handle(f.event({ name: "status" }, "11111", 2));
-  expect(JSON.stringify(f.last())).toContain("Workspace closed");
-  await f.controller.handle(f.event({ name: "start", id: "66666", type: 1 }, "11111", 2));
+  await f.controller.handle(f.event({ name: "start", id: "66666", type: 1 }, "33333", 2));
   await f.controller.handle(f.event({ name: "start", id: "99998", type: 1 }, "22222", 2));
   await f.controller.handle(f.event({ name: "start", id: "66666", type: 2 }, "22222", 2));
-  await f.controller.handle(f.event({ name: "start", id: "66666", type: 1 }, "22222", 2));
+  await f.controller.handle(f.event({ name: "start", id: "66666", type: 1 }, "11111", 2));
   expect(f.requests().filter(request => request.kind === "workspace" && request.action === "start")
-    .map(request => [request.actor, request.guild])).toEqual([["22222", "99999"]]);
-  expect(JSON.stringify(f.last())).toContain("Helio is starting");
+    .map(request => [request.actor, request.guild])).toEqual([["11111", "99999"]]);
+  expect(JSON.stringify(f.last())).toContain("Starting");
 
   f.setWorkspaceState("running");
-  await f.controller.handle(f.event({ name: "stop", id: "66667", type: 1 }, "22222", 2));
+  await f.controller.handle(f.event({ name: "stop", id: "66667", type: 1 }, "11111", 2));
   expect(f.requests().filter(request => request.kind === "workspace" && request.action === "stop")).toHaveLength(0);
   const confirm = f.custom("workspace-stop");
-  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "11111"));
+  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "22222"));
   expect(f.requests().filter(request => request.kind === "workspace" && request.action === "stop")).toHaveLength(0);
-  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "22222"));
-  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "22222"));
+  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "11111"));
+  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "11111"));
   expect(f.requests().filter(request => request.kind === "workspace" && request.action === "stop")
-    .map(request => request.expected)).toEqual(["a".repeat(64)]);
-  expect(f.requests().filter(request => request.kind === "runtime")).toHaveLength(0);
+    .map(request => [request.actor, request.expected])).toEqual([["11111", "a".repeat(64)]]);
+  expect(JSON.stringify(f.last())).toContain("Stopping");
+});
+
+test("the status embed follows start and confirmed stop through to the host result", async () => {
+  const f = await fixture();
+  const control = (verb: string) => {
+    const id = f.custom(verb);
+    const rows = f.last().components;
+    if (!Array.isArray(rows)) throw new Error("Missing panel controls");
+    return rows.flatMap(row => object(row).components).map(object).find(child => child.custom_id === id);
+  };
+  await f.controller.handle(f.event({ name: "status" }, "11111", 2));
+  expect(control("workspace-start")?.disabled).toBe(false);
+  expect(control("workspace-review-stop")?.disabled).toBe(true);
+
+  await f.click("workspace-start");
+  expect(JSON.stringify(f.last())).toContain("Starting");
+  expect(control("workspace-start")?.disabled).toBe(true);
+  expect(control("workspace-review-stop")?.disabled).toBe(true);
+  const painted = f.messages.length;
+  await f.controller.refreshWorkspaces();
+  expect(f.messages.length).toBe(painted);
+
+  f.setWorkspaceState("running", "running");
+  await f.controller.refreshWorkspaces();
+  expect(JSON.stringify(f.last())).toContain("Lead verified");
+  expect(control("workspace-review-stop")?.disabled).toBe(false);
+  await f.click("workspace-review-stop");
+  expect(f.requests().filter(request => request.action === "stop")).toHaveLength(0);
+  expect(JSON.stringify(f.last())).toContain("Confirm stop");
+  await f.click("workspace-cancel");
+  expect(control("workspace-review-stop")?.disabled).toBe(false);
+
+  await f.click("workspace-review-stop");
+  await f.click("workspace-stop");
+  expect(JSON.stringify(f.last())).toContain("Stopping");
+  expect(control("workspace-start")?.disabled).toBe(true);
+  f.setWorkspaceState("stopped", "stopped");
+  await f.controller.refreshWorkspaces();
+  expect(JSON.stringify(f.last())).toContain("Shutdown verified");
+  expect(control("workspace-start")?.disabled).toBe(false);
+  expect(f.requests().filter(request => request.action === "stop")).toHaveLength(1);
+});
+
+test("a revoked trusted user cannot confirm a stop from an open status panel", async () => {
+  const f = await fixture();
+  f.setWorkspaceState("running");
+  await f.controller.handle(f.event({ name: "status" }, "11111", 2));
+  await f.click("workspace-review-stop");
+  f.revoke();
+  await f.click("workspace-stop");
+  expect(f.requests().filter(request => request.action === "stop")).toHaveLength(0);
+});
+
+test("an unsuccessful launch updates the embed with the failed result and a new Start control", async () => {
+  const f = await fixture(true);
+  await f.controller.handle(f.event({ name: "status" }, "22222", 2));
+  await f.click("workspace-start", [], "22222");
+  f.setWorkspaceState("stopped", "desktop-unavailable");
+  await f.controller.refreshWorkspaces();
+  expect(JSON.stringify(f.last())).toContain("Desktop launch failed or expired");
+  await f.click("workspace-start", [], "22222");
+  expect(f.requests().filter(request => request.action === "start")).toHaveLength(2);
 });

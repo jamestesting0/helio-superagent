@@ -222,14 +222,26 @@ class AdminServiceTests(unittest.TestCase):
         finally:
             os.umask(previous)
 
-    def test_nonowner_or_foreign_server_cannot_dispatch_lifecycle_changes(self):
+    def test_untrusted_or_foreign_server_cannot_dispatch_lifecycle_changes(self):
         policy = self.service.canonical_policy()["values"]
         owner = policy["DORI_DISCORD_OWNER_ID"]
         guild = policy["HELIO_ADMIN_GUILD"]
         with patch.object(self.service.workspace, "action") as action:
-            for actor, source in (("11111", guild), (owner, "99999")):
+            for actor, source in (("33333", guild), (owner, "99999")):
                 for name in ("start", "stop"):
                     request = {"kind": "workspace", "action": name, "actor": actor, "guild": source,
                                "operation": "blocked", "expected": "a" * 64}
                     self.assertEqual(self.service.respond(request)["code"], "denied")
             action.assert_not_called()
+
+
+    def test_trusted_lifecycle_access_requires_both_current_policies(self):
+        guild = self.service.policy()["values"]["HELIO_ADMIN_GUILD"]
+        request = {"kind": "workspace", "action": "start", "actor": "11111", "guild": guild,
+                   "operation": "trusted-start"}
+        with patch.object(self.service.workspace, "action", return_value="start-pending") as action:
+            self.assertEqual(self.service.respond(request)["result"], "start-pending")
+            self.values["HELIO_TRUSTED_USERS"] = ""
+            self.save()
+            self.assertEqual(self.service.respond(request)["code"], "denied")
+            self.assertEqual(action.call_count, 1)

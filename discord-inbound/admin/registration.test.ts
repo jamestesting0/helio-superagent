@@ -101,3 +101,19 @@ test("an incomplete readback cannot report success or remove the retired prefix"
   await expect(registerCommand(transport.rest, { id: "88888888888888888" }, { guild: "99999999999999999" })).rejects.toThrow();
   expect(deleted).toBe(false);
 });
+
+test("installed lifecycle commands can update their descriptions without replacing their IDs", async () => {
+  using transport = new DiscordTransport("fixture");
+  const stored = new Map(commands.map(command => [command.name, { ...command, id: command.name,
+    description: command.name === "start" ? "Owner only: open the Helio workspace and start the lead" : command.description }]));
+  transport.rest.options.makeRequest = async (url, init) => {
+    if (init.method === "GET") return Response.json([...stored.values()]);
+    const found = stored.get(new URL(String(url)).pathname.split("/").at(-1) ?? "");
+    if (init.method !== "PATCH" || !found) throw new Error("Unexpected command write");
+    Object.assign(found, object(JSON.parse(String(init.body))));
+    return Response.json(found);
+  };
+  const updated = await registerCommand(transport.rest, { id: "88888888888888888" }, { guild: "99999999999999999" });
+  expect(updated).toEqual({ created: 0, removed: 0, updated: 1, unchanged: commands.length - 1 });
+  expect(stored.get("start")?.id).toBe("start");
+});

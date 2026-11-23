@@ -34,6 +34,7 @@ export async function fixture(dm = false) {
   let unavailable: "policy" | "runtime" | "list" | "conversations" | undefined;
   let readDelay = 0;
   let workspaceState = "stopped";
+  let workspaceLast: string | undefined;
   const server: Server = createServer(socket => {
     let input = Buffer.alloc(0);
     socket.on("data", chunk => {
@@ -66,8 +67,12 @@ export async function fixture(dm = false) {
         }
       }
       if (request.kind === "workspace") {
-        response = request.action === "status" ? { state: workspaceState, revision: "a".repeat(64), detail: "" } :
-          request.action === "start" ? "start-pending" : "stop-pending";
+        if (request.action === "status") {
+          response = { state: workspaceState, revision: "a".repeat(64), detail: "", last: workspaceLast };
+        } else {
+          workspaceState = request.action === "start" ? "starting" : "stopping";
+          response = request.action === "start" ? "start-pending" : "stop-pending";
+        }
       }
       if (request.kind === "configure") {
         configurationChanges += 1;
@@ -148,7 +153,7 @@ export async function fixture(dm = false) {
     refuseMutation: (value: boolean) => { refusal = value; }, submissions: () => submissions,
     corruptMutationResponse: () => { malformed = true; },
     requests: () => requests,
-    setWorkspaceState: (state: string) => { workspaceState = state; },
+    setWorkspaceState: (state: string, last?: string) => { workspaceState = state; workspaceLast = last; },
     delayReads: (ms: number) => { readDelay = ms; },
     setUnavailable: (source: "policy" | "runtime" | "list" | "conversations" | undefined) => { unavailable = source; },
     revisePolicy: () => { policy = { ...policy, revision: "b".repeat(64) }; } };

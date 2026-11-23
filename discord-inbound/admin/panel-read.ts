@@ -43,7 +43,7 @@ export async function loadPanel(access: Access, panel: Panel, event: Interaction
       "desktop-unavailable": "Desktop launch failed or expired",
     };
     const latest = typeof host.last === "string" && last[host.last];
-    return [{ id: "workspace", title: "Helio workspace", revision: typeof host.revision === "string" ? host.revision : "",
+    return [{ id: "workspace", title: "Helio workspace", state, revision: typeof host.revision === "string" ? host.revision : "",
       summary: [states[state] ?? states.unavailable, detail, latest ? `Last operation · ${latest}` : "", runtime?.summary].filter(Boolean).join("\n"),
       fields: runtime?.fields ?? [] }];
   }
