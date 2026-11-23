@@ -35,7 +35,8 @@ export function describeMessage(msg: ReplyMessage, budget: number) {
   const names = mentionedUsers(msg.mentions);
   return {
     entry: {
-      message_id: msg.id, author_id: msg.author.id,
+      message_id: msg.id, author_id: msg.author.id, channel_id: msg.channel_id,
+      ...(msg.guild_id ? { guild_id: msg.guild_id } : {}),
       author: (msg.member?.nick || msg.author.global_name || msg.author.username || "").slice(0, 100),
       bot: msg.author.bot === true, sent_at: msg.timestamp,
       ...(msg.message_reference?.message_id && msg.message_reference.type !== 1 ? { reply_to: msg.message_reference.message_id } : {}),

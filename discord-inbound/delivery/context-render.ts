@@ -58,24 +58,29 @@ export function contextSections(messages: readonly Record<string, unknown>[]) {
   const origin = last.discord_origin ? object(last.discord_origin) : {};
   const guild = typeof origin.guild_id === "string" ? origin.guild_id : origin.guild_id === null ? "@me" :
     typeof last.guild_id === "string" ? last.guild_id : undefined;
-  const withReferences = (entry: Record<string, unknown>): Record<string, unknown> => ({
-    ...entry,
-    ...(guild !== undefined && /^(?:@me|\d{1,30})$/.test(guild) && typeof last.channel_id === "string" &&
-      /^\d{1,30}$/.test(last.channel_id) && typeof entry.message_id === "string" && /^\d{1,30}$/.test(entry.message_id) ?
-      { message_url: messageUrl(guild, last.channel_id, entry.message_id) } : {}),
-    ...(typeof entry.author_id === "string" && /^\d{1,30}$/.test(entry.author_id) && typeof entry.author === "string" ?
-      { author_reference: referenceLink({ kind: "user", id: entry.author_id, label: entry.author }) } : {}),
-    ...(entry.mentioned_users ? { user_references: Object.fromEntries(Object.entries(object(entry.mentioned_users))
-      .filter((pair): pair is [string, string] => /^\d{1,30}$/.test(pair[0]) && typeof pair[1] === "string")
-      .map(([id, label]) => [id, referenceLink({ kind: "user", id, label })])) } : {}),
-  });
+  const withReferences = (entry: Record<string, unknown>, sameChannel = true): Record<string, unknown> => {
+    const { message_url: _previous, ...fields } = entry;
+    const channel = typeof entry.channel_id === "string" ? entry.channel_id : sameChannel ? last.channel_id : undefined;
+    const sourceGuild = typeof entry.guild_id === "string" ? entry.guild_id : channel === last.channel_id ? guild : undefined;
+    return {
+      ...fields,
+      ...(sourceGuild !== undefined && /^(?:@me|\d{1,30})$/.test(sourceGuild) && typeof channel === "string" &&
+        /^\d{1,30}$/.test(channel) && typeof entry.message_id === "string" && /^\d{1,30}$/.test(entry.message_id) ?
+        { message_url: messageUrl(sourceGuild, channel, entry.message_id) } : {}),
+      ...(typeof entry.author_id === "string" && /^\d{1,30}$/.test(entry.author_id) && typeof entry.author === "string" ?
+        { author_reference: referenceLink({ kind: "user", id: entry.author_id, label: entry.author }) } : {}),
+      ...(entry.mentioned_users ? { user_references: Object.fromEntries(Object.entries(object(entry.mentioned_users))
+        .filter((pair): pair is [string, string] => /^\d{1,30}$/.test(pair[0]) && typeof pair[1] === "string")
+        .map(([id, label]) => [id, referenceLink({ kind: "user", id, label })])) } : {}),
+    };
+  };
   const conversation = last.conversation ? object(last.conversation) : {};
-  const transcript = entries(conversation.transcript).map(withReferences);
+  const transcript = entries(conversation.transcript).map(entry => withReferences(entry, false));
   const lastEntry = transcript.at(-1);
   const activity = typeof conversation.last_activity === "number" ? conversation.last_activity :
     typeof lastEntry?.sent_at === "string" ? Date.parse(lastEntry.sent_at) :
     typeof conversation.opened_at === "string" ? Date.parse(conversation.opened_at) : undefined;
-  const recent = entries(conversation.recent).map(withReferences).filter((entry) =>
+  const recent = entries(conversation.recent).map(entry => withReferences(entry)).filter((entry) =>
     typeof lastEntry?.message_id !== "string" || typeof entry.message_id !== "string" ||
     BigInt(entry.message_id) > BigInt(lastEntry.message_id));
   const chain = messages.flatMap((message) => {
@@ -83,10 +88,10 @@ export function contextSections(messages: readonly Record<string, unknown>[]) {
     const all = entries(reply.messages);
     return message.channel_policy === "normal" ? all.slice(-1) : all;
   });
-  const unique = [...new Map(chain.map((entry) => [entry.message_id, entry])).values()].map(withReferences);
+  const unique = [...new Map(chain.map((entry) => [entry.message_id, entry])).values()].map(entry => withReferences(entry));
   const turn = messages.map((message) => Object.fromEntries(Object.entries(message)
-    .filter(([key]) => !["conversation", "reply_context", "preceding", "turn", "discord_origin", "preparation_complete"].includes(key)))).map(withReferences);
-  const preceding = messages.flatMap((message) => entries(message.preceding)).map(withReferences);
+    .filter(([key]) => !["conversation", "reply_context", "preceding", "turn", "discord_origin", "preparation_complete"].includes(key)))).map(entry => withReferences(entry));
+  const preceding = messages.flatMap((message) => entries(message.preceding)).map(entry => withReferences(entry));
   return {
     turn,
     conversation: [{

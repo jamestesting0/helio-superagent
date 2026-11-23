@@ -50,7 +50,7 @@ When a discussion about an issue adds, corrects or confirms facts, update the bo
 
 Read an issue with `helio issue show N`: the body plus comments by people since the last review. Helio's own comments are a public change log for people and are never decision input; the body is the truth.
 
-Read the body before changing it. Use `helio issue update --issue N --body-file FILE --note-file NOTE`; a description change requires a short public "Issue updated" comment. Use the request-intake template and preserve unrelated human details. Files keep text out of shell commands. An authorized close uses `--close completed` or `--close not_planned`. Routine historical status/correction updates can retain links and facts on a closed issue; new scope belongs in its linked follow-up.
+Read the body before changing it. Use `helio issue update --issue N --body-file FILE --note-file NOTE`; a description change requires a short public "Issue updated" comment. Use the request-intake template and preserve unrelated human details. Link each publishable Discord clarification to its exact message using the authorized source URL. Files keep text out of shell commands. An authorized close uses `--close completed` or `--close not_planned`. Routine historical status/correction updates can retain links and facts on a closed issue; new scope belongs in its linked follow-up.
 
 The command manages the status block from GitHub plan/PR facts, preserves prose, and removes `needs-owner-review` after a verified approved plan. Labels supplied by `--labels` are the full desired set; preserve unrelated labels. Routine `helio issue sync --issue N` updates facts silently except for one "Progress" comment per new milestone: PR opened, merged or closed, and live revision observed.
 

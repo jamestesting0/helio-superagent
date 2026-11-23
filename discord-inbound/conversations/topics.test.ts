@@ -276,3 +276,25 @@ test("a closing note Discord refused is sent once permission returns", async () 
     expect(posts).toBe(2);
   });
 });
+
+test("issue citations use each visible transcript entry's original channel", async () => {
+  await withStores(async (_delivery, store) => {
+    const anchor = idAt(T0), clarification = idAt(T0, 1), privateMessage = idAt(T0, 2);
+    const thread = "777";
+    store.open(normal, "66", anchor, "Request", T0);
+    for (const [id, channel, audience] of [[anchor, normal, "public"], [clarification, thread, "public"],
+      [privateMessage, "888", "dm"]] as const) {
+      store.claim(channel, "66", describeMessage({ id, channel_id: channel,
+        ...(audience === "public" ? { guild_id: "300" } : {}),
+        author: { id: "66", username: "Requester" }, content: "Evidence" }, 100).entry,
+      T0, { channel, audience });
+      if (id === anchor) store.join(anchor, "66", "answered", thread, clarification, T0);
+    }
+    const conversation = conversationSnapshot(store, thread, "66", T0, { reply_to: anchor });
+    const turn = turnOf(renderTurn([{ channel_id: thread, message_id: clarification, guild_id: "300", conversation }]));
+    expect(turn.conversation.transcript.map((entry: { readonly message_url?: string }) => entry.message_url)).toEqual([
+      `https://discord.com/channels/300/${normal}/${anchor}`,
+      `https://discord.com/channels/300/${thread}/${clarification}`,
+    ]);
+  });
+});

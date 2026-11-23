@@ -33,6 +33,8 @@ It does not grant creation or closing authority. Existing/manual descriptions
 need review of the current body before replacing them. Do not automatically
 rewrite historical closed issues or merged PRs.
 
+Cite the [original request](<https://discord.com/channels/100/200/300>) and [owner clarification](<https://discord.com/channels/100/201/301>) separately when they determine the issue. Use each verified source URL, including the thread ID if the message was posted in a thread. Keep profile links for attribution.
+
 Use a Reproduction context section for bugs. Keep expected behavior and material
 constraints visible; supporting sources and investigation are expandable.
 H2 sections and H3 groups come from the renderer. Put code and literal Markdown

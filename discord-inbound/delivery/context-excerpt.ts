@@ -1,4 +1,4 @@
-/** Evidence keeps its identity and useful text; display links belong in detail pages. */
+/** Evidence keeps its identity and useful text when a section is compacted. */
 export function contextExcerpt(entry: Readonly<Record<string, unknown>>, budget: number): Record<string, unknown> | undefined {
   const extra = [entry.embed_text, entry.component_text].flatMap(value =>
     Array.isArray(value) ? value.filter((text): text is string => typeof text === "string") : []);
@@ -24,5 +24,7 @@ export function contextExcerpt(entry: Readonly<Record<string, unknown>>, budget:
     size = JSON.stringify(result).length;
   }
   result.truncated = entry.truncated === true || entry.content_truncated === true || kept.length < text.length;
+  if (typeof entry.message_url === "string" &&
+      JSON.stringify({ ...result, message_url: entry.message_url }).length <= budget) result.message_url = entry.message_url;
   return result;
 }

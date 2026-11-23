@@ -492,7 +492,10 @@ export class Conversations extends WorkingStore {
       `SELECT entry,audience,message_channel_id FROM transcript WHERE channel_id=? AND user_id=? AND opened_at=?
         AND entry IS NOT NULL ORDER BY rowid`,
     ).all(row.channel_id, row.user_id, row.opened_at)
-      .filter(entry => !viewer || visibleTo(entry, viewer)).map((entry) => JSON.parse(entry.entry));
+      .filter(entry => !viewer || visibleTo(entry, viewer)).map((row) => ({
+      ...JSON.parse(row.entry), channel_id: row.message_channel_id,
+      ...(row.audience === "dm" ? { guild_id: "@me" } : {}),
+    }));
   }
 
   /** Recorded text with the channel each message was said in, for callers that check access per message. */
