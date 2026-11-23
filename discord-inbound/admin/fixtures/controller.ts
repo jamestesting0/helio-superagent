@@ -33,6 +33,7 @@ export async function fixture(dm = false) {
   let probes = 0;
   let unavailable: "policy" | "runtime" | "list" | "conversations" | undefined;
   let readDelay = 0;
+  let workspaceState = "stopped";
   const server: Server = createServer(socket => {
     let input = Buffer.alloc(0);
     socket.on("data", chunk => {
@@ -63,6 +64,10 @@ export async function fixture(dm = false) {
           }
           response = { records: visible, revision: policy.revision };
         }
+      }
+      if (request.kind === "workspace") {
+        response = request.action === "status" ? { state: workspaceState, revision: "a".repeat(64), detail: "" } :
+          request.action === "start" ? "start-pending" : "stop-pending";
       }
       if (request.kind === "configure") {
         configurationChanges += 1;
@@ -102,7 +107,7 @@ export async function fixture(dm = false) {
     if (method === "DELETE") deleted.push(path);
     if (path.endsWith("/callback")) callbacks.push(object(body));
     return undefined;
-  });
+  }, event => event.command === "start" ? "66666" : event.command === "stop" ? "66667" : undefined);
   let sequence = 10000;
   const event = (data: unknown, actor = "11111", type = 3) => ({
     id: String(sequence++), application_id: "88888",
@@ -143,6 +148,7 @@ export async function fixture(dm = false) {
     refuseMutation: (value: boolean) => { refusal = value; }, submissions: () => submissions,
     corruptMutationResponse: () => { malformed = true; },
     requests: () => requests,
+    setWorkspaceState: (state: string) => { workspaceState = state; },
     delayReads: (ms: number) => { readDelay = ms; },
     setUnavailable: (source: "policy" | "runtime" | "list" | "conversations" | undefined) => { unavailable = source; },
     revisePolicy: () => { policy = { ...policy, revision: "b".repeat(64) }; } };

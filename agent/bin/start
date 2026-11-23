@@ -33,6 +33,13 @@ if [ ! -s "$here/skills/karpathy-guidelines/SKILL.md" ]; then
   echo "missing $here/skills/karpathy-guidelines/SKILL.md; run: helio update" >&2
   exit 2
 fi
+mkdir -p "$DORI_STATE_DIR"
+# Only one pane may initialize or hold the lead in this installation.
+exec 9>"$DORI_STATE_DIR/lead.lock"
+if ! flock -n 9; then
+  echo "Helio is already running or starting in another pane." >&2
+  exit 2
+fi
 monitor_specs="$(python3 "$here/monitor-specs.py" "$here/docs/monitor-events.md")"
 cd "$HELIO_PROJECT"
 python3 "$here/knowledge-setup.py" >/dev/null
@@ -45,18 +52,17 @@ else
   session_args=(--session-id "$session_ref")
 fi
 
-mkdir -p "$DORI_STATE_DIR"
 recovery_status="$(bun "$here/../discord-inbound/recovery.ts" begin)"
 # Runtime records live under state/; installed files and config.json are written only by updates.
 python3 - "$here/deploy-state.json" "$DORI_STATE_DIR" "$HERDR_PANE_ID" <<'PY'
-import datetime, json, os, sys
+import datetime, json, os, sys, uuid
 from pathlib import Path
 deploy, state, pane = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 try:
     version = json.loads(deploy.read_text()).get("version") if deploy.is_file() else None
 except ValueError:
     version = None
-receipt = {"version": version, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+receipt = {"id": uuid.uuid4().hex, "version": version, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
 for name, text in (("lead-start.json", json.dumps(receipt) + "\n"), ("lead-pane", pane + "\n")):
     temporary = state / f".{name}.tmp"
     temporary.write_text(text)

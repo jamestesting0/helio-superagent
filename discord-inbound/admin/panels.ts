@@ -40,6 +40,7 @@ export interface Panel {
   github?: AdminRecord;
   selectedRevision?: string;
   form?: Proposal;
+  stopRevision?: string;
 }
 
 function proposal(value: unknown): Proposal {
@@ -76,6 +77,7 @@ function decode(value: unknown): Panel {
     ...(row.github === undefined ? {} : { github: record(row.github) }),
     ...(row.selectedRevision === undefined ? {} : { selectedRevision: text(row.selectedRevision, 100) }),
     ...(row.form === undefined ? {} : { form: proposal(row.form) }),
+    ...(row.stopRevision === undefined ? {} : { stopRevision: text(row.stopRevision, 64) }),
   };
 }
 

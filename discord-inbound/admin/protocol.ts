@@ -67,7 +67,13 @@ export interface RuntimeResult {
   };
 }
 
+export type WorkspaceRequest =
+  | { readonly action: "status" }
+  | { readonly action: "start"; readonly operation: string }
+  | { readonly action: "stop"; readonly operation: string; readonly expected: string };
+
 export type BrokerRequest =
+  | ({ readonly kind: "workspace"; readonly actor: string; readonly guild: string } & WorkspaceRequest)
   | { readonly kind: "policy" }
   | { readonly kind: "runtime"; readonly actor: string; readonly guild: string; readonly operation: string; readonly query: RuntimeQuery }
   | { readonly kind: "configure"; readonly actor: string; readonly operation: string; readonly expected: string;
@@ -217,6 +223,7 @@ export function query(value: unknown): RuntimeQuery {
 export function isAdminInteraction(value: unknown): boolean {
   if (!isObject(value) || !isObject(value.data)) return false;
   const data = value.data;
-  return SECTIONS.some(section => data.name === (section === "overview" ? "status" : section)) ||
+  return ((data.name === "start" || data.name === "stop") && (data.type === undefined || data.type === 1)) ||
+    SECTIONS.some(section => data.name === (section === "overview" ? "status" : section)) ||
     (typeof data.custom_id === "string" && data.custom_id.startsWith("ha1:"));
 }

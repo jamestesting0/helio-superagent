@@ -29,7 +29,7 @@ test.each(["dm", "guild"] as const)("a %s refusal preserves the other verified s
   const receipt = readCommandSync(join(home, "commands.json"));
   const healthy = denied === "dm" ? "guild" : "dm";
   expect(receipt?.[healthy].state).toBe("verified");
-  expect(receipt?.[healthy].changes?.unchanged).toBe(9);
+  expect(receipt?.[healthy].changes?.unchanged).toBe(commands.length);
   expect(receipt?.[denied].state).toBe("denied");
   expect(receipt?.[denied].retryAt).toBeUndefined();
   expect(writes).toBe(0);
@@ -53,7 +53,7 @@ test("an empty installation registers both catalogs without requiring preexistin
   await publisher.request(application);
   expect([...global.keys()].sort()).toEqual(commands.map(command => command.name).sort());
   expect([...guild.keys()].sort()).toEqual(commands.map(command => command.name).sort());
-  expect(readCommandSync(join(home, "commands.json"))?.guild.changes?.created).toBe(9);
+  expect(readCommandSync(join(home, "commands.json"))?.guild.changes?.created).toBe(commands.length);
 });
 
 test("overlapping lifecycle requests coalesce and complete without competing writes", async () => {
@@ -108,8 +108,9 @@ test("a partial lost response is recovered from Discord after restart without re
   }
   const interrupted = readCommandSync(join(home, "commands.json"));
   expect(interrupted?.dm.state).toBe("retrying");
-  expect(interrupted?.dm.changes?.created).toBe(2);
-  expect(stored.size).toBe(3);
+  const acknowledged = commands.findIndex(command => command.name === "lanes");
+  expect(interrupted?.dm.changes?.created).toBe(acknowledged);
+  expect(stored.size).toBe(acknowledged + 1);
   const retryAt = interrupted?.dm.retryAt;
   if (retryAt === undefined) throw new Error("Missing recovery deadline");
   const clock = spyOn(Date, "now").mockReturnValue(retryAt + 1);
@@ -117,7 +118,7 @@ test("a partial lost response is recovered from Discord after restart without re
     using restarted = new CommandPublisher({ rest: transport.rest, stateDirectory: home,
       guild: async () => "99999999999999999", onEvent: () => {} });
     await restarted.request(application);
-    expect(stored.size).toBe(9);
+    expect(stored.size).toBe(commands.length);
     expect(attempts.get("status")).toBe(1);
     expect(attempts.get("lanes")).toBe(1);
     expect(readCommandSync(join(home, "commands.json"))?.dm.state).toBe("verified");

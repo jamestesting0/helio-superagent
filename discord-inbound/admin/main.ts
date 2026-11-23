@@ -14,7 +14,9 @@ const state = process.env.HELIO_ADMIN_STATE_DIR ?? join(process.env.HOME ?? "", 
 using transport = new DiscordTransport(token);
 using metadata = new DiscordTransport(token, true);
 using panels = new Panels(join(state, "panels.sqlite"));
-const controller = new Controller(panels, transport.call);
+const lifecycleCommands = { guild: new Map<string, string>(), dm: new Map<string, string>() };
+const controller = new Controller(panels, transport.call,
+  event => lifecycleCommands[event.guild === undefined ? "dm" : "guild"].get(event.command));
 let listener: DiscordBotListener | undefined;
 let expiring = false;
 
@@ -25,6 +27,7 @@ function fatal(error: unknown): never {
 }
 
 using publisher = new CommandPublisher({ rest: metadata.rest, stateDirectory: state,
+  lifecycle: (scope, ids) => { lifecycleCommands[scope] = new Map(ids); },
   guild: async () => policy(await broker({ kind: "policy" }, 1000)).values.HELIO_ADMIN_GUILD,
   onEvent: async event => {
     switch (event.kind) {

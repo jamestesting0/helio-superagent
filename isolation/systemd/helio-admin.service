@@ -20,7 +20,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 ReadWritePaths=/var/lib/helio-admin-service /var/lib/helio-runtime-policy /var/lib/helio-agent/home /home/james/.config/helio /home/james/.dori/elobot /etc/helio-release-service
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# The desktop handoff uses a WSL VM socket. Shutdown verification reads nftables over netlink.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_VSOCK AF_NETLINK
 UMask=0077
 Restart=on-failure
 RestartSec=5

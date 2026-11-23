@@ -18,7 +18,7 @@ ADMIN_BUNDLE = (
     "helio_obligations.py", "helio_merge_train.py",
     "helio_admin_service.py", "helio_admin_controller.py", "helio_config.py",
     "helio_admin_journal.py", "helio_admin_process.py", "helio_admin_socket.py",
-    "helio_admin_recovery.py", "helio_admin_lifecycle.py", "helio_admin_install.py", "helio_root_bundle.py",
+    "helio_admin_recovery.py", "helio_workspace.py", "helio_admin_lifecycle.py", "helio_admin_install.py", "helio_root_bundle.py",
 )
 BUNDLE = ("helio-beta.py", "helio_beta_backup.py", "helio_beta_broker.py", "helio_beta_service.py",
           "helio_beta_vault.py", "helio_release_service.py", "helio_approval.py", "helio_discord_text.py", *ADMIN_BUNDLE)

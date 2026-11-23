@@ -11,8 +11,10 @@ export class RegistrationInterrupted extends Error {
   }
 }
 
+export type LifecycleCommands = ReadonlyMap<string, string>;
+
 export async function registerCommand(rest: DiscordTransport["rest"], application: Record<string, unknown>,
-  target: { readonly guild?: string; readonly signal?: AbortSignal } = {}): Promise<CommandChanges> {
+  target: { readonly guild?: string; readonly signal?: AbortSignal; readonly lifecycle?: (ids: LifecycleCommands) => void } = {}): Promise<CommandChanges> {
   const id = text(application.id, 30);
   const { guild, signal } = target;
   const path = guild === undefined ? `/applications/${id}/commands` as const : `/applications/${id}/guilds/${guild}/commands` as const;
@@ -30,6 +32,12 @@ export async function registerCommand(rest: DiscordTransport["rest"], applicatio
   let created = 0, updated = 0, removed = 0, unchanged = 0;
   try {
     const current = await read();
+    for (const command of desired.filter(command => command.name === "start" || command.name === "stop")) {
+      const existing = current.find(entry => entry.name === command.name && entry.type === 1);
+      if (existing && existing.description !== command.description) {
+        throw new AdminError("invalid", `Review the existing /${command.name} command before installing lifecycle controls.`);
+      }
+    }
     for (const command of desired) {
       const existing = current.find(entry => entry.name === command.name && entry.type === 1);
       if (existing && commandShape(existing) === commandShape(command)) { unchanged++; continue; }
@@ -42,8 +50,8 @@ export async function registerCommand(rest: DiscordTransport["rest"], applicatio
         created++;
       }
     }
+    const observed = created || updated ? await read() : current;
     if (created || updated) {
-      const observed = await read();
       if (!desired.every(command => observed.some(entry => entry.type === 1 &&
         entry.name === command.name && commandShape(entry) === commandShape(command)))) {
         throw new AdminError("unavailable", "Discord has not verified the complete desired command catalog");
@@ -54,6 +62,9 @@ export async function registerCommand(rest: DiscordTransport["rest"], applicatio
       await rest.delete(`${path}/${text(legacy.id, 30)}`, { signal });
       removed++;
     }
+    target.lifecycle?.(new Map(observed
+      .filter(row => (row.name === "start" || row.name === "stop") && row.type === 1)
+      .map(row => [text(row.name, 30), text(row.id, 30)])));
     return { created, updated, removed, unchanged };
   } catch (error) {
     if (!(error instanceof Error)) throw error;

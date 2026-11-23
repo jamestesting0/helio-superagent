@@ -224,6 +224,11 @@ export function render(panel: Panel, records: readonly AdminRecord[], policy: Ad
     components: [...controls, ...(buttons.length ? [row(...buttons)] : [])] };
 }
 
+export function stopConfirmation(panel: Panel): Message {
+  return { ...terminal("Stopping Helio closes the workspace and ends its lead, worker, and monitor processes. Confirm to continue."),
+    components: [row(button(panel, "workspace-stop", "Stop Helio", false, 4), button(panel, "close", "Cancel"))] };
+}
+
 export function terminal(description: string, panel?: Panel): Message {
   const fields = proposalFields(panel?.proposal).slice(0, 5);
   const budget = Math.min(1400, 5000 - fields.reduce((sum, field) => sum + field.name.length + field.value.length, 0));

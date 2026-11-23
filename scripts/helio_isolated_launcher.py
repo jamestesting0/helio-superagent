@@ -102,6 +102,14 @@ def child_tty():
     os.setsid()
     fcntl.ioctl(0,termios.TIOCSCTTY,0)
 
+workspace_module = runpy.run_path(str(Path(__file__).resolve().with_name("helio_workspace.py")))
+workspace = workspace_module["Workspace"](workspace_module["STATE"])
+desktop_ticket = sys.argv[2] if len(sys.argv) == 3 and sys.argv[1] == "--desktop-start" else ""
+if "--desktop-start" in sys.argv and not re.fullmatch(r"[0-9a-f]{32}", desktop_ticket):
+    raise SystemExit("Invalid desktop launch ticket")
+mode = ("start" if "--start" in sys.argv or desktop_ticket else "resume" if "--resume" in sys.argv
+        else "shell" if len(sys.argv) == 1 else "maintenance")
+admitted = False
 made=hooked=v6=False
 sandbox=network=None; master=slave=None
 old_term=signal.getsignal(signal.SIGTERM)
@@ -110,12 +118,14 @@ def interrupted(*_):raise KeyboardInterrupt
 signal.signal(signal.SIGTERM,interrupted)
 signal.signal(signal.SIGHUP,interrupted)
 try:
+    workspace.begin_launcher(mode, desktop_ticket)
+    admitted = True
     policy=refresh_owner_policy()
     for writable in ('.dori/elobot/state','.dori/elobot/backups'):
         directory=Path(HOME,writable)
         if not directory.is_dir():
             directory.mkdir(mode=0o700);os.chown(directory,account.pw_uid,account.pw_gid)
-    if '--start' in sys.argv[1:] or '--resume' in sys.argv[1:]:
+    if mode in ('start', 'resume') and not desktop_ticket:
         runpy.run_path(str(Path(__file__).resolve().parent/'helio_admin_lifecycle.py'))['report'](True)
     fw('iptables','-N',CHAIN);made=True
     fw('iptables','-A',CHAIN,'-m','addrtype','--dst-type','LOCAL','-j','REJECT')
@@ -145,7 +155,6 @@ try:
         elif '--check' in sys.argv[1:]:
             command=['/usr/bin/python3','/control/check.py']
         else:
-            mode='start' if '--start' in sys.argv[1:] else ('resume' if '--resume' in sys.argv[1:] else 'shell')
             command=['/usr/bin/python3','/home/james/helio-agent/scripts/helio_isolated_start.py',mode]
         cmd=['setpriv','--reuid',uid,'--regid',gid,'--clear-groups','--no-new-privs','bwrap',
              '--unshare-user','--unshare-pid','--unshare-ipc','--unshare-uts','--unshare-net','--unshare-cgroup-try','--die-with-parent','--info-fd',str(info_w),
@@ -214,3 +223,5 @@ finally:
     if hooked:fw('iptables','-D','OUTPUT','-m','owner','--uid-owner',uid,'-j',CHAIN,check=False)
     if made:
         fw('iptables','-F',CHAIN,check=False);fw('iptables','-X',CHAIN,check=False)
+    if admitted and mode != 'maintenance':
+        workspace.finish_launcher()

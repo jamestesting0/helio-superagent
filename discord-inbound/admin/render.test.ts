@@ -28,7 +28,7 @@ test.each([{ commands }, { commands: dmCommands([0, 1]) }])("the guild and DM ca
     return Object.entries(value).reduce((sum, [name, item]) =>
       sum + (["name", "description", "value"].includes(name) && typeof item === "string" ? item.length : inspect(item)), 0);
   };
-  expect(commands.map(command => command.name)).toEqual(["status", "conversations", "lanes", "blocks", "trusted", "channels", "timeouts", "settings", "audit"]);
+  expect(commands.map(command => command.name)).toEqual(["status", "start", "stop", "conversations", "lanes", "blocks", "trusted", "channels", "timeouts", "settings", "audit"]);
   for (const command of commands) expect(inspect(command)).toBeLessThanOrEqual(8000);
 });
 

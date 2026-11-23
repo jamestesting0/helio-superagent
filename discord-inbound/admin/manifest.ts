@@ -30,6 +30,8 @@ const catalog = [
     sub("status", "Helio overview and dependency status", [
       { type: 3, name: "dependency", description: "Inspect a dependency", choices: choices(["github"]) },
     ]),
+    sub("start", "Owner only: open the Helio workspace and start the lead"),
+    sub("stop", "Owner only: confirm closure of the Helio workspace"),
     group("conversations", "Inspect and manage retained conversations", [
       sub("list", "Browse conversation topics", [
         state(["active", "all", "waiting_on_helio", "waiting_on_requester", "on_hold", "resolved", "archived"]),

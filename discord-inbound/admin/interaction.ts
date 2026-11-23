@@ -1,5 +1,5 @@
 import { broker } from "./broker.ts";
-import { AdminError, object, policy, result, section, text, type AdminPolicy, type Fields, type RuntimeQuery, type RuntimeResult, type Section } from "./protocol.ts";
+import { AdminError, object, policy, result, section, text, type AdminPolicy, type Fields, type RuntimeQuery, type RuntimeResult, type Section, type WorkspaceRequest } from "./protocol.ts";
 import { clipText } from "./record-format.ts";
 
 export interface Interaction {
@@ -14,6 +14,7 @@ export interface Interaction {
   readonly custom?: string;
   readonly values: readonly string[];
   readonly command: string;
+  readonly commandId?: string;
   readonly section: Section;
   readonly options: Fields;
   readonly focused?: string;
@@ -34,8 +35,9 @@ export function interaction(input: unknown): Interaction {
     if (label !== undefined && label !== null) users[id] = text(label, 100);
   }
   const options: Record<string, string> = {};
-  const group = data.name === undefined || data.name === "status" ? "overview" : section(data.name);
-  let command = "status", focused: string | undefined;
+  const lifecycle = data.name === "start" || data.name === "stop" ? data.name : undefined;
+  const group = lifecycle || data.name === undefined || data.name === "status" ? "overview" : section(data.name);
+  let command: string = lifecycle ?? "status", focused: string | undefined;
   const visit = (entries: unknown): void => {
     if (entries === undefined) return;
     if (!Array.isArray(entries)) throw new AdminError("invalid", "Invalid command options");
@@ -72,7 +74,7 @@ export function interaction(input: unknown): Interaction {
     ...(row.message === undefined ? {} : { message: text(object(row.message).id, 30) }),
     ...(data.custom_id === undefined ? {} : { custom: text(data.custom_id, 100) }),
     values: Array.isArray(data.values) ? data.values.map(value => text(value, 120)) : [],
-    command, section: group, options, ...(focused === undefined ? {} : { focused }),
+    command, ...(typeof data.id === "string" ? { commandId: text(data.id, 30) } : {}), section: group, options, ...(focused === undefined ? {} : { focused }),
     ...(Object.keys(users).length ? { users } : {}),
   };
 }
@@ -88,6 +90,19 @@ export class Access {
       throw new AdminError("denied", ownerOnly ? "Only the owner can change this setting" : "You no longer have access to this panel");
     }
     return current;
+  }
+
+  async workspace(event: Interaction, request: WorkspaceRequest): Promise<unknown> {
+    const current = await this.authorize(event, request.action !== "status", 1700);
+    const guild = event.guild ?? text(current.values.HELIO_ADMIN_GUILD, 30);
+    try {
+      return await broker({ kind: "workspace", actor: event.actor, guild, ...request }, 16000);
+    } catch (error) {
+      if (error instanceof AdminError && error.code === "invalid") {
+        throw new AdminError("unavailable", "Workspace controls are unavailable. Check the installed administration versions.");
+      }
+      throw error;
+    }
   }
 
   async runtime(event: Interaction, query: RuntimeQuery, operation = event.id, timeout?: number): Promise<RuntimeResult> {

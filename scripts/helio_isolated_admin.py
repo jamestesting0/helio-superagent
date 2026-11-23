@@ -237,6 +237,18 @@ def deploy(restart_after: bool) -> int:
 
 
 def restart() -> int:
+    module = runpy.run_path(str(HERE / "helio_workspace.py"))
+    workspace = module["Workspace"](module["STATE"])
+    with workspace.admission():
+        if not running():
+            print('Helio is not running; use `helio start`.')
+            return 1
+        with workspace.database() as db:
+            workspace.begin_restart(db, module["observe"]())
+        return restart_lead()
+
+
+def restart_lead() -> int:
     if not running():
         print('Helio is not running; use `helio start`.')
         return 1

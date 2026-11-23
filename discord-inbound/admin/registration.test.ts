@@ -64,7 +64,7 @@ test("an unchanged catalog makes no command writes despite API defaults and gene
   };
   const result = await registerCommand(transport.rest, { id: "88888888888888888" }, { guild: "99999999999999999" });
   expect(writes).toBe(0);
-  expect(result).toEqual({ created: 0, updated: 0, removed: 0, unchanged: 9 });
+  expect(result).toEqual({ created: 0, updated: 0, removed: 0, unchanged: commands.length });
 });
 
 test("nested changes and removed optional settings patch only their owning command", async () => {
@@ -87,7 +87,7 @@ test("nested changes and removed optional settings patch only their owning comma
   expect(stale.nsfw).toBe(false);
   expect(stale.name_localizations).toBeNull();
   expect(stale.options).toEqual(commands.find(command => command.name === "status")?.options);
-  expect(result).toEqual({ created: 0, updated: 1, removed: 0, unchanged: 8 });
+  expect(result).toEqual({ created: 0, updated: 1, removed: 0, unchanged: commands.length - 1 });
 });
 
 test("an incomplete readback cannot report success or remove the retired prefix", async () => {

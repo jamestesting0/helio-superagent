@@ -221,3 +221,15 @@ class AdminServiceTests(unittest.TestCase):
                 self.assertEqual(self.service.perform(request)["notice"], "read")
         finally:
             os.umask(previous)
+
+    def test_nonowner_or_foreign_server_cannot_dispatch_lifecycle_changes(self):
+        policy = self.service.canonical_policy()["values"]
+        owner = policy["DORI_DISCORD_OWNER_ID"]
+        guild = policy["HELIO_ADMIN_GUILD"]
+        with patch.object(self.service.workspace, "action") as action:
+            for actor, source in (("11111", guild), (owner, "99999")):
+                for name in ("start", "stop"):
+                    request = {"kind": "workspace", "action": name, "actor": actor, "guild": source,
+                               "operation": "blocked", "expected": "a" * 64}
+                    self.assertEqual(self.service.respond(request)["code"], "denied")
+            action.assert_not_called()

@@ -1,7 +1,7 @@
 import { DiscordAPIError, HTTPError, RateLimitError } from "@discordjs/rest";
 import { join } from "node:path";
 import { AdminError, object, text } from "./protocol.ts";
-import { registerCommand, RegistrationInterrupted } from "./registration.ts";
+import { registerCommand, RegistrationInterrupted, type LifecycleCommands } from "./registration.ts";
 import { processStart, readCommandSync, saveCommandSync, type CommandSyncReceipt, type ScopeSync } from "./command-sync-state.ts";
 import type { DiscordTransport } from "./transport.ts";
 
@@ -13,6 +13,7 @@ type PublisherOptions = {
   readonly rest: DiscordTransport["rest"];
   readonly stateDirectory: string;
   readonly guild: () => Promise<string>;
+  readonly lifecycle?: (scope: "guild" | "dm", ids: LifecycleCommands) => void;
   readonly onEvent: (event: PublisherEvent) => Promise<void> | void;
 };
 
@@ -130,8 +131,11 @@ export class CommandPublisher {
         const guild = scope === "guild" ? await this.options.guild() : undefined;
         target = guild ?? "global";
         if (previous.target === target && (previous.retryAt ?? 0) > Date.now()) return previous;
+        const lifecycle = this.options.lifecycle;
+        lifecycle?.(scope, new Map());
         const changes = await registerCommand(this.options.rest, application,
-          { ...(guild === undefined ? {} : { guild }), signal });
+          { ...(guild === undefined ? {} : { guild }), signal,
+            ...(lifecycle ? { lifecycle: (ids: LifecycleCommands) => lifecycle(scope, ids) } : {}) });
         return { state: "verified", target, checkedAt: Date.now(), verifiedAt: Date.now(), changes };
       } catch (error) { return this.failure(error, target, previous); }
     };

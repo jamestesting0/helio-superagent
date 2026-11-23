@@ -1,5 +1,6 @@
 """Lead startup: both modes launch with the monitor specifications, and a damaged runbook stops it."""
 import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -71,6 +72,14 @@ class StartupTests(unittest.TestCase):
                     for line in subprocess.run([sys.executable, str(base / "monitor-specs.py"), str(base / "docs/monitor-events.md")],
                                                capture_output=True, text=True, check=True).stdout.splitlines():
                         self.assertIn(line, argv[-1])
+            state = base / "state"
+            previous_receipt = (state / "lead-start.json").read_bytes()
+            with (state / "lead.lock").open("a") as lead:
+                fcntl.flock(lead, fcntl.LOCK_EX)
+                second = subprocess.run(["bash", str(base / "start"), "start"], env=environment,
+                                        capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(second.returncode, 2)
+            self.assertEqual((state / "lead-start.json").read_bytes(), previous_receipt)
             runbook = base / "docs/monitor-events.md"
             runbook.write_text(runbook.read_text().replace('"command": "dori guard --loop 1"', '"command": "dori watch"'))
             result = subprocess.run(["bash", str(base / "start"), "start"], env=environment,

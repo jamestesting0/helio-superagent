@@ -3,16 +3,32 @@ import { CallError, type Call } from "./transport.ts";
 import { Editor } from "./editor.ts";
 import { Access, autocomplete, interaction, type Interaction } from "./interaction.ts";
 import { Panels, position, type Panel } from "./panels.ts";
-import { AdminError, isAdminInteraction, section, text, type AdminRecord } from "./protocol.ts";
-import { actions, terminal } from "./render.ts";
+import { AdminError, isAdminInteraction, object, section, text, type AdminRecord } from "./protocol.ts";
+import { actions, stopConfirmation, terminal } from "./render.ts";
 import { listFilters, loadPanel } from "./panel-read.ts";
 import { PanelOutput } from "./panel-output.ts";
 import { ActionForm } from "./forms.ts";
 
+const lifecycleReply: Readonly<Record<string, string>> = {
+  "start-pending": "Helio is starting. Use /status to check progress.",
+  "stop-pending": "Helio is stopping. Use /status to check progress.",
+  "busy-start": "Helio is starting. Wait for it to finish before issuing another command.",
+  "busy-stop": "Helio is stopping. Wait for it to finish before issuing another command.",
+  "busy": "Helio is handling another lifecycle command. Check /status.",
+  "already-running": "Helio is already running.",
+  "already-stopped": "Helio is already stopped.",
+  "running": "Helio is running.",
+  "stopped": "Helio stopped.",
+  "start-failed": "The launch ended before the lead was verified. Check /status.",
+  "desktop-unavailable": "The foreground desktop did not start Helio. Sign in on the host and check the Helio Foreground Start task.",
+  "changed": "The workspace changed. Run /stop again to review the current workspace.",
+};
+
 export class Controller {
   private readonly access = new Access();
   private readonly output: PanelOutput;
-  constructor(private readonly panels: Panels, private readonly call: Call) {
+  constructor(private readonly panels: Panels, private readonly call: Call,
+    private readonly lifecycleId: (event: Interaction) => string | undefined = () => undefined) {
     this.output = new PanelOutput(panels, this.access, call);
   }
 
@@ -60,12 +76,16 @@ export class Controller {
         revision: 0, section: event.section, positions: {}, screen: "list", contentPage: 0, snapshot: Date.now(),
       };
       panel.positions[panel.section] = { ids: [], page: 0, filters };
+      if (event.command === "start" || event.command === "stop") {
+        await this.workspaceCommand(event, panel);
+        return;
+      }
       const policy = await this.access.authorize(event);
       const saved = position(panel);
       const target = event.options.topic ?? event.options.lane ?? event.options.entry ??
         (event.command === "set" || event.command === "show" ? event.options.channel ?? event.options.setting ?? event.options.section : undefined);
       if (target) { saved.selected = target; panel.screen = "detail"; }
-      let records: readonly AdminRecord[] = await loadPanel(this.access, panel, event, true);
+      let records: readonly AdminRecord[] = event.options.dependency === "github" ? [] : await loadPanel(this.access, panel, event, true);
       if (!["list", "show", "status"].includes(event.command)) {
         const action = event.section === "timeouts" ? "timeout.set" : `${event.section}.${event.command}`;
         const selected = records.find(row => row.id === target);
@@ -85,6 +105,31 @@ export class Controller {
     } catch (error) { await this.output.failure(event, error, panel); }
   }
 
+  private async workspaceCommand(event: Interaction, panel: Panel): Promise<void> {
+    const path = `/webhooks/${event.application}/${event.token}/messages/@original` as const;
+    if (!event.commandId || this.lifecycleId(event) !== event.commandId) {
+      throw new AdminError("denied", "This lifecycle command has not been verified for this installation.");
+    }
+    if (event.command === "start") {
+      const outcome = text(await this.access.workspace(event, { action: "start", operation: event.id }), 40);
+      await this.call("PATCH", path, terminal(lifecycleReply[outcome] ?? "Workspace startup is unavailable. Check /status."));
+      return;
+    }
+    await this.access.authorize(event, true);
+    const status = object(await this.access.workspace(event, { action: "status" }));
+    if (status.state !== "running" && status.state !== "idle") {
+      const reply = status.state === "stopped" ? lifecycleReply["already-stopped"] :
+        status.state === "starting" ? lifecycleReply["busy-start"] : status.state === "stopping" ? lifecycleReply["busy-stop"] : undefined;
+      await this.call("PATCH", path, terminal(reply ?? "Workspace shutdown is unavailable. Check /status."));
+      return;
+    }
+    panel.stopRevision = text(status.revision, 64);
+    this.panels.save(panel);
+    const response = object(await this.call("PATCH", path, stopConfirmation(panel)));
+    panel.message = text(response.id, 30);
+    this.panels.save(panel, false);
+  }
+
   private binding(panel: Panel, event: Interaction): void {
     if (panel.actor !== event.actor || panel.guild !== event.guild || panel.channel !== event.channel ||
         panel.application !== event.application || panel.message !== event.message) {
@@ -102,6 +147,17 @@ export class Controller {
         this.panels.remove(panel.id);
         return;
       }
+      if (verb === "workspace-stop") {
+        if (panel.revision !== revision || !panel.stopRevision) {
+          throw new AdminError("changed", "This confirmation expired. Run /stop again.");
+        }
+        const outcome = text(await this.access.workspace(event, { action: "stop", operation: event.id, expected: panel.stopRevision }), 40);
+        await this.call("PATCH", `/webhooks/${event.application}/${event.token}/messages/@original`,
+          terminal(lifecycleReply[outcome] ?? "Workspace shutdown is unavailable. Check /status."));
+        this.panels.remove(panel.id);
+        return;
+      }
+      if (panel.stopRevision) throw new AdminError("invalid", "Unknown shutdown confirmation control");
       const policy = await this.access.authorize(event);
       const stale = panel.revision !== revision;
       const editor = new Editor(event, this.access, panel => this.panels.save(panel, false));

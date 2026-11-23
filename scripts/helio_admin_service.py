@@ -25,6 +25,7 @@ JOURNAL = runpy.run_path(str(HERE / "helio_admin_journal.py"))
 PROCESS = runpy.run_path(str(HERE / "helio_admin_process.py"))
 SOCKET = runpy.run_path(str(HERE / "helio_admin_socket.py"))
 RECOVERY = runpy.run_path(str(HERE / "helio_admin_recovery.py"))
+WORKSPACE = runpy.run_path(str(HERE / "helio_workspace.py"))
 Refused = JOURNAL["Refused"]
 OPERATION = re.compile(r"[A-Za-z0-9_-]{1,100}")
 MUTATIONS = frozenset(("conversations.hold", "conversations.resume", "conversations.close",
@@ -69,6 +70,7 @@ class AdminService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.operations = JOURNAL["Operations"](settings.state)
+        self.workspace = WORKSPACE["Workspace"](settings.state)
 
     def canonical_policy(self) -> PublicPolicy:
         config = runpy.run_path(str(HERE / "helio_config.py"))
@@ -266,6 +268,27 @@ class AdminService:
                 return self.configure(request, policy)
             case "runtime":
                 return self.runtime(request, policy)
+            case "workspace":
+                actor = string(request, "actor", 30)
+                action = string(request, "action", 10)
+                authorize(self.canonical_policy(), actor, action != "status")
+                authorize(policy, actor, action != "status")
+                if string(request, "guild", 30) != policy["values"]["HELIO_ADMIN_GUILD"]:
+                    raise Refused("denied", "This administration request belongs to a different server")
+                match action:
+                    case "status":
+                        return self.workspace.status(actor)
+                    case "start" | "stop":
+                        operation = string(request, "operation", 100)
+                        if not OPERATION.fullmatch(operation):
+                            raise Refused("invalid", "Invalid lifecycle operation ID")
+                        expected = string(request, "expected", 64) if action == "stop" else ""
+                        try:
+                            return self.workspace.action(action, actor, operation, expected)
+                        except WORKSPACE["WorkspaceError"] as error:
+                            raise Refused("changed", str(error)) from error
+                    case _:
+                        raise Refused("invalid", "Unknown workspace operation")
             case "operation":
                 actor = string(request, "actor", 30)
                 authorize(self.canonical_policy(), actor)

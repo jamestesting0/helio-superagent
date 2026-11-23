@@ -277,3 +277,58 @@ native-client behavior remains unverified.
 `helio-admin-acceptance.md` records the command and interaction matrix, completed
 offline checks, and observed external prerequisites. Its live rows remain pending
 until the actual Helio application supplies the required evidence.
+
+## Start and stop from Discord
+
+In the configured server or in a DM with the Helio bot, the owner can run
+`/start` and `/stop`. Start opens a visible Windows Terminal window on the
+signed-in desktop or starts the lead in an existing idle workspace. Stop asks
+for confirmation before closing the workspace, including its workers and
+monitors. The admin services continue handling commands. Use `/status` to
+observe startup, shutdown, the current lead, and the last lifecycle result.
+
+Both commands share one host operation. A new command received during a
+transition reports progress and ends. Run it again after the transition
+finishes. A Stop confirmation applies to the workspace and lead state observed
+when it was issued. If the state changed, open a new confirmation.
+
+### Install the desktop handoff
+
+Deploy the managed runtime files and controller using the normal owner
+installation. Install the updated protected administration bundle using
+`sudo python3 -I scripts/helio_root_bundle.py --administration-only --apply`.
+Finish the deployment so the owner policy is published and both the controller
+and isolated intake have the same command definitions.
+
+Run [install-helio-desktop-task.ps1](../isolation/install-helio-desktop-task.ps1)
+from PowerShell as the Windows desktop account that owns `Ubuntu-22.04`.
+Install Windows Terminal first. The task runs on demand in that account's
+interactive session. Keep Windows signed in and WSL available for Discord
+startup. Check the bot's guild and global catalogs for `/start` and `/stop`
+from another Helio feature before activating these commands.
+
+With the workspace stopped, enable the existing broker and controller units if
+needed, then restart both so they load the deployed versions and publish the
+new command catalog.
+
+```bash
+sudo systemctl enable helio-admin.service helio-admin-controller.service
+sudo systemctl restart helio-admin.service helio-admin-controller.service
+helio status
+```
+
+Verify command registration in the guild and bot DM, then use Discord
+`/status` to check that the workspace is closed before trying the first start.
+
+If Windows startup expires before the terminal claims it, sign in and verify
+the task is present, then run `/start` again. For a transition that needs host
+observation, close the affected interactive Helio workspace using its terminal
+if present. Check that the scope exited and the launcher completed its cleanup,
+then refresh `/status`. If cleanup failed, inspect the launcher and firewall
+before starting again.
+
+To roll back, close the workspace, remove the Windows task using the installation
+script with `-Remove`, restore the previous protected bundle and controller
+through their existing owner installation paths, and restart the two admin
+units. Remove the lifecycle slash commands from the bot's guild and global
+catalogs if rolling back to a controller that predates them.

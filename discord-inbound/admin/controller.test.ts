@@ -286,3 +286,30 @@ test.each(["policy", "runtime"] as const)("a %s outage leaves a usable Refresh c
   expect(JSON.stringify(f.last())).toContain("Topic 0");
   expect(f.mutations()).toBe(0);
 });
+
+test.each([false, true])("lifecycle commands work without the isolated runtime, DM=%s", async dm => {
+  const f = await fixture(dm);
+  f.setUnavailable("runtime");
+
+  await f.controller.handle(f.event({ name: "status" }, "11111", 2));
+  expect(JSON.stringify(f.last())).toContain("Workspace closed");
+  await f.controller.handle(f.event({ name: "start", id: "66666", type: 1 }, "11111", 2));
+  await f.controller.handle(f.event({ name: "start", id: "99998", type: 1 }, "22222", 2));
+  await f.controller.handle(f.event({ name: "start", id: "66666", type: 2 }, "22222", 2));
+  await f.controller.handle(f.event({ name: "start", id: "66666", type: 1 }, "22222", 2));
+  expect(f.requests().filter(request => request.kind === "workspace" && request.action === "start")
+    .map(request => [request.actor, request.guild])).toEqual([["22222", "99999"]]);
+  expect(JSON.stringify(f.last())).toContain("Helio is starting");
+
+  f.setWorkspaceState("running");
+  await f.controller.handle(f.event({ name: "stop", id: "66667", type: 1 }, "22222", 2));
+  expect(f.requests().filter(request => request.kind === "workspace" && request.action === "stop")).toHaveLength(0);
+  const confirm = f.custom("workspace-stop");
+  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "11111"));
+  expect(f.requests().filter(request => request.kind === "workspace" && request.action === "stop")).toHaveLength(0);
+  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "22222"));
+  await f.controller.handle(f.event({ custom_id: confirm, component_type: 2 }, "22222"));
+  expect(f.requests().filter(request => request.kind === "workspace" && request.action === "stop")
+    .map(request => request.expected)).toEqual(["a".repeat(64)]);
+  expect(f.requests().filter(request => request.kind === "runtime")).toHaveLength(0);
+});
