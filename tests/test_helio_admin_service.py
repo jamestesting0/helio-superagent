@@ -1,10 +1,12 @@
 """The owner-peer broker never turns a forged or revoked actor into authority."""
 import hermetic  # noqa: F401  # must precede anything that reads HOME or PATH
+from contextlib import closing
 from dataclasses import replace
 import json
 import os
 from pathlib import Path
 import runpy
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -55,6 +57,34 @@ class AdminServiceTests(unittest.TestCase):
             input=json.dumps(response), capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["timing"], self.service.canonical_policy()["timing"])
+
+    def test_sleep_reaction_requires_a_confirmed_stopped_or_idle_lead_and_current_policy(self):
+        revision = self.service.policy()["revision"]
+        request = {"kind": "sleep-reaction", "author": "11111", "revision": revision}
+        for state in ("stopped", "idle", "starting", "stopping", "running", "unavailable"):
+            with self.subTest(state=state), patch.object(self.service.workspace, "status", return_value={"state": state}):
+                self.assertEqual(self.service.perform(request), state in ("stopped", "idle"))
+        with patch.object(self.service.workspace, "status", side_effect=AssertionError("Stale policy was used")):
+            self.assertFalse(self.service.perform({**request, "revision": ""}))
+
+    def test_sleep_reaction_respects_blocks_without_the_isolated_workspace(self):
+        settings = self.service.settings
+        database = settings.isolated_home / ".dori/elobot/state/discord-delivery.sqlite"
+        database.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("CREATE TABLE blocked_users (user_id TEXT)")
+            db.execute("INSERT INTO blocked_users VALUES (?)", ("22222",))
+
+        run = subprocess.run
+        def same_user(*args, user, group, extra_groups, **kwargs):
+            self.assertEqual((user, group, extra_groups), (settings.agent_uid, settings.agent_gid, []))
+            return run(*args, **kwargs)
+
+        revision = self.service.policy()["revision"]
+        with patch.object(self.service.workspace, "status", return_value={"state": "stopped"}), \
+                patch.object(subprocess, "run", side_effect=same_user):
+            self.assertFalse(self.service.perform({"kind": "sleep-reaction", "author": "22222", "revision": revision}))
+            self.assertTrue(self.service.perform({"kind": "sleep-reaction", "author": "33333", "revision": revision}))
 
     def test_an_untrusted_actor_never_reaches_the_runtime_bridge(self):
         with patch.object(self.service, "run_runtime", side_effect=AssertionError("Untrusted runtime call")):

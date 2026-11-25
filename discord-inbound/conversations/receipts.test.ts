@@ -44,6 +44,18 @@ test("ack working claims once, shows a receipt and refuses finished claims", asy
   });
 });
 
+test("claiming a message that shows a sleeping receipt replaces it with eyes", async () => {
+  await withStores(async (_delivery, store) => {
+    const id = idAt(T0);
+    const { rest, calls } = wire();
+    await showWorking({ store, rest, now: T0, warn: () => {} }, { ...message(id), sleeping_reaction: true });
+    expect(calls.map(decodeURIComponent)).toEqual([
+      `PUT /channels/${normal}/messages/${id}/reactions/👀/@me`,
+      `DELETE /channels/${normal}/messages/${id}/reactions/😴/@me`,
+    ]);
+  });
+});
+
 test("pings admit only later messages by that person in that channel within thirty minutes", async () => {
   await withStores(async (_delivery, store) => {
     const anchor = idAt(T0);

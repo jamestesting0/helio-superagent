@@ -1,5 +1,6 @@
 import { omitLinks, prepareAttachments, type Attachment } from "./images.ts";
 import { linkedFiles } from "./linked-files.ts";
+import type { MessageReaction } from "../discord/rest.ts";
 import { componentText, embedImageUrls, embedText, mentionedUsers, type Component, type Embed, type MentionedUser } from "./message-text.ts";
 
 interface Snapshot {
@@ -19,6 +20,7 @@ export interface MessageBody {
   readonly embeds?: readonly Embed[];
   readonly components?: readonly Component[];
   readonly mentions?: readonly MentionedUser[];
+  readonly reactions?: readonly MessageReaction[];
   readonly message_reference?: {
     readonly type?: number;
     readonly message_id?: string;

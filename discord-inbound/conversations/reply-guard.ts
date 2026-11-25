@@ -1,8 +1,8 @@
 import type { Conversation, Conversations, ConversationEntry } from "./conversations.ts";
 import { audienceOf, conversationEntry } from "./conversation-context.ts";
 import type { Delivery } from "../delivery/delivery.ts";
-import { DiscordRestError, IgnoredChannelError, type Rest } from "../discord/rest.ts";
-import { finishWorking } from "./working.ts";
+import { DiscordRestError, IgnoredChannelError, hasSleepingReaction, type MessageReaction, type Rest } from "../discord/rest.ts";
+import { clearSleepingReaction, finishWorking } from "./working.ts";
 import { snowflakeTime } from "./working-store.ts";
 import { issueUrls, recordDiscussion } from "./issue-review.ts";
 import { RecoveryRequiredError } from "../delivery/recovery-store.ts";
@@ -21,7 +21,8 @@ export interface NewerMessage {
   readonly attachments: number;
 }
 
-type Payload = Partial<NewerMessage> & { channel_id?: string; reply_to?: string; attachments?: unknown[]; embed_text?: string; for_owner?: boolean };
+type Payload = Partial<NewerMessage> & { channel_id?: string; reply_to?: string; attachments?: unknown[]; embed_text?: string; for_owner?: boolean;
+  sleeping_reaction?: boolean };
 const clip = (text: string | undefined, max: number) => text && text.length > max ? `${text.slice(0, max)}…` : text;
 
 export function newerPending(delivery: Delivery, channel: string, target: string, known: ReadonlySet<string>): NewerMessage[] {
@@ -42,7 +43,7 @@ export function newerPending(delivery: Delivery, channel: string, target: string
 }
 
 export type ReplyCheck =
-  | { readonly action: "send"; readonly leftover: readonly string[]; readonly author_id?: string }
+  | { readonly action: "send"; readonly leftover: readonly string[]; readonly author_id?: string; readonly sleeping_reaction?: true }
   | { readonly action: "hold"; readonly newer: readonly NewerMessage[]; readonly edited?: string }
   | { readonly action: "withhold"; readonly reason: string }
   | { readonly action: "skip"; readonly reason: string; readonly gone?: true };
@@ -73,9 +74,11 @@ export async function checkBeforeReply(options: {
   }
   let edited: string | undefined;
   let author_id: string | undefined;
+  let sleeping = false;
   try {
-    const current = await rest<{ content: string; author?: { id: string } }>(`/channels/${channel}/messages/${target}`);
+    const current = await rest<{ content: string; author?: { id: string }; reactions?: readonly MessageReaction[] }>(`/channels/${channel}/messages/${target}`);
     author_id = current.author?.id;
+    sleeping = hasSleepingReaction(current.reactions);
     if (payload?.author_id && author_id && payload.author_id !== author_id) {
       return { action: "withhold", reason: "Original author does not match the saved source" };
     }
@@ -101,11 +104,12 @@ export async function checkBeforeReply(options: {
     }
   }
   const newer = newerPending(delivery, channel, target, known);
-  if (!newer.length && edited === undefined) return { action: "send", leftover: [], ...(author_id ? { author_id } : {}) };
+  const source = { ...(author_id ? { author_id } : {}), ...(sleeping ? { sleeping_reaction: true as const } : {}) };
+  if (!newer.length && edited === undefined) return { action: "send", leftover: [], ...source };
   if (store.holdReply(channel, payload?.author_id ?? "", target, now)) {
     return { action: "hold", newer, ...(edited !== undefined ? { edited } : {}) };
   }
-  return { action: "send", leftover: newer.map((message) => message.message_id), ...(author_id ? { author_id } : {}) };
+  return { action: "send", leftover: newer.map((message) => message.message_id), ...source };
 }
 
 const HELD_HINT = "REPLY_HELD_HINT Nothing was sent. Fold in the same person's additions, mention others only if directly related, " +
@@ -238,6 +242,10 @@ export async function guardedReply(o: {
     catch (error) { o.warn(`could not mark covered message_id=${id} handled: ${String(error)}`); }
   }
   await finishWorking({ store: o.store, rest: o.rest, now: o.now(), warn: o.warn }, [o.target, ...covered]);
+  if (check.sleeping_reaction) await clearSleepingReaction(o, o.channel, o.target);
+  for (const id of covered) {
+    if (pending.get(id)?.sleeping_reaction === true) await clearSleepingReaction(o, o.channel, id);
+  }
   if (covered.length) lines.push(`REPLY_COVERED ${covered.join(",")}`);
   if (notCovered.length) lines.push(`REPLY_NOTE not marked handled (not pending in this channel): ${notCovered.join(",")}`);
   if (check.leftover.length) lines.push(`REPLY_NOTE newer messages left as their own turns: ${check.leftover.join(",")}`);

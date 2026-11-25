@@ -184,6 +184,12 @@ application. Do not substitute Elo Beta command checks for this feature.
 results with observation times. Registration and runtime readiness are distinct;
 an unavailable runtime is not reported as ready merely because commands exist.
 
+While the admin controller is online and the lead is stopped, Helio adds 😴 to
+direct mentions in eligible channels and threads and to DMs from the owner or
+trusted users. Startup and shutdown transitions suppress the reaction. Normal
+intake can pick up these messages when the lead returns. A claim or reply clears
+Helio's sleeping reaction on that message.
+
 In DMs, channel options accept an ID with authorized server-channel autocomplete.
 Guild-only channel/member menus are replaced by exact slash-command guidance;
 the commands remain usable without a guild picker. Bot-DM availability also

@@ -16,6 +16,17 @@ export const CATEGORY = 4;
 export const MESSAGE_CHANNEL_TYPES = new Set([0, 5]);
 export const THREAD_PARENT_TYPES = new Set([0, 5, 15]);
 
+const SLEEPING_EMOJI = "😴";
+export type MessageReaction = { readonly me?: boolean; readonly emoji: { readonly id?: string | null; readonly name?: string | null } };
+
+export function hasSleepingReaction(reactions: readonly MessageReaction[] | undefined): boolean {
+  return reactions?.some(({ me, emoji }) => me === true && emoji.id == null && emoji.name === SLEEPING_EMOJI) ?? false;
+}
+
+export function sleepingReactionRoute(channel: string, message: string): `/channels/${string}/messages/${string}/reactions/${string}/@me` {
+  return `/channels/${channel}/messages/${message}/reactions/${encodeURIComponent(SLEEPING_EMOJI)}/@me`;
+}
+
 export interface RestInit {
   readonly method?: string;
   readonly body?: unknown;

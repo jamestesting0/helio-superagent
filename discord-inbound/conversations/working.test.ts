@@ -7,6 +7,7 @@ import { Conversations } from "./conversations.ts";
 import { Delivery } from "../delivery/delivery.ts";
 import { describeMessage } from "../messages/reply-context.ts";
 import { guardedReply } from "./reply-guard.ts";
+import type { Rest } from "../discord/rest.ts";
 import { normal, T0, MIN, idAt, eyesPath, withStores, stage, fakeRest, reply } from "../fixtures/working.ts";
 
 test("a deleted original with no follow-up table keeps the plain skip", async () => {
@@ -32,6 +33,24 @@ test("a clean reply is sent, closes the window and removes the 👀", async () =
     expect(calls).toContain(eyesPath(anchor));
     expect([store.working(anchor)?.reacted, store.working(anchor)?.closed_at]).toEqual([0, T0 + 10_000]);
     expect(store.workingAnchor(normal, "66", idAt(T0 + 20_000))).toBeUndefined();
+  });
+});
+
+test.each([true, false])("a direct reply clears only Helio's own 😴 reaction (owned: %s)", async me => {
+  await withStores(async (delivery, store) => {
+    const target = idAt(T0);
+    stage(delivery, target);
+    const deleted: string[] = [];
+    const rest: Rest = async (path, init) => {
+      if (init?.method === "DELETE") {
+        deleted.push(decodeURIComponent(path));
+        return JSON.parse("null");
+      }
+      return JSON.parse(JSON.stringify({ content: "help", reactions: [{ me, emoji: { id: null, name: "😴" } }] }));
+    };
+    const { result } = reply(delivery, store, rest, target, T0);
+    expect((await result).code).toBe(0);
+    expect(deleted).toEqual(me ? [`/channels/${normal}/messages/${target}/reactions/😴/@me`] : []);
   });
 });
 

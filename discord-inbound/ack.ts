@@ -236,6 +236,7 @@ try {
             const reaction = await showWorking({ store, rest, now: Date.now(), warn }, {
               message_id: message.message_id, channel_id: message.channel_id, author_id: message.author_id,
               role: message.role, scope: message.scope,
+              sleeping_reaction: message.sleeping_reaction === true,
             });
             console.log(`ACK_WORKING stream=inbound message_id=${message.message_id} reaction=${reaction}`);
           }

@@ -32,6 +32,24 @@ MUTATIONS = frozenset(("conversations.hold", "conversations.resume", "conversati
                       "conversations.reopen", "lanes.pause", "lanes.resume", "lanes.close",
                       "lanes.abandon", "blocks.add", "blocks.remove"))
 CONFIG_ACTIONS = frozenset(("trusted.add", "trusted.remove", "channels.set", "timeout.set"))
+CHECK_BLOCKED = """
+from contextlib import closing
+from pathlib import Path
+import sqlite3
+import sys
+
+path = Path(sys.argv[1])
+try:
+    path.stat()
+except FileNotFoundError:
+    print('clear')
+else:
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=0.25)) as db:
+        db.execute('PRAGMA trusted_schema=OFF')
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='blocked_users'").fetchone()
+        blocked = table and db.execute('SELECT 1 FROM blocked_users WHERE user_id=?', (sys.argv[2],)).fetchone()
+        print('blocked' if blocked else 'clear')
+"""
 
 
 class PublicPolicy(TypedDict):
@@ -99,6 +117,23 @@ class AdminService:
         owner = runpy.run_path(str(HERE / "helio_owner_policy.py"))
         owner["refresh"](str(self.settings.isolated_home), pwd.getpwuid(self.settings.agent_uid))
         return self.policy()
+
+    def sleeping(self, policy: PublicPolicy, request: Mapping[str, Json]) -> bool:
+        author = string(request, "author", 30)
+        if not re.fullmatch(r"[0-9]+", author):
+            raise Refused("invalid", "Invalid Discord author")
+        if string(request, "revision", 64) != policy["revision"]:
+            return False
+        values = policy["values"]
+        if author != values["DORI_DISCORD_OWNER_ID"] and author not in values["HELIO_TRUSTED_USERS"].split(","):
+            # The isolated account owns this database even when its workspace is stopped.
+            path = self.settings.isolated_home / ".dori/elobot/state/discord-delivery.sqlite"
+            result = subprocess.run(["/usr/bin/python3", "-I", "-c", CHECK_BLOCKED, str(path), author],
+                                    user=self.settings.agent_uid, group=self.settings.agent_gid, extra_groups=[],
+                                    cwd="/", stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1, check=True)
+            if result.stdout.strip() != "clear":
+                return False
+        return self.workspace.status()["state"] in ("stopped", "idle")
 
     def runtime(self, request: Mapping[str, Json], policy: PublicPolicy) -> Json:
         actor = string(request, "actor", 30)
@@ -262,6 +297,8 @@ class AdminService:
         match request.get("kind"):
             case "policy":
                 return dict(policy)
+            case "sleep-reaction":
+                return self.sleeping(policy, request)
             case "publish":
                 return dict(self.publish())
             case "configure":

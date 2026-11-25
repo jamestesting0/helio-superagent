@@ -30,7 +30,7 @@ import { checkImageSandbox } from "./messages/image-worker.ts";
 import { awaitsPreview, Previews, type PreviewEmbed } from "./messages/linked-files.ts";
 import { describeMessage, prepareReplyMessage, replyContext, type ReplyMessage } from "./messages/reply-context.ts";
 import { recordAnswer } from "./conversations/question-answer.ts";
-import { DiscordRestError, discordRest } from "./discord/rest.ts";
+import { DiscordRestError, discordRest, hasSleepingReaction } from "./discord/rest.ts";
 import { TurnAssembler, type TurnMessage } from "./intake/turns.ts";
 import { Preceding } from "./intake/preceding.ts";
 import { nearbyContext } from "./intake/nearby-context.ts";
@@ -350,6 +350,7 @@ async function deliver(msg: IncomingMessage, backlog: boolean): Promise<boolean>
       // A late answer to a question that closed silently resumes that topic (or at least names it).
       const resumed = inbound.reply_to ? conversations.resumeTimedOut(inbound.reply_to, Date.now()) : undefined;
       const staged = { ...inbound, backlog, ...(backlog ? { recovered: true } : {}), ...(resumed ? { resumes_topic: resumed } : {}),
+        ...(hasSleepingReaction(msg.reactions) ? { sleeping_reaction: true } : {}),
         discord_origin: authorizationMetadata(msg) };
       const sentAt = requestTimestamp(inbound.sent_at);
       if (sentAt === undefined) {

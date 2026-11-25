@@ -39,3 +39,18 @@ test("invalid credentials exit with the service's configuration-failure code", a
     expect(JSON.parse(report.slice("ADMIN_COMMAND_SYNC ".length)).dm.problem).toBe("credentials");
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test("the controller reacts to a trusted DM while the lead is stopped", async () => {
+  const home = mkdtempSync(join(tmpdir(), "helio-main-"));
+  try {
+    const child = Bun.spawn([process.execPath, "--preload", join(import.meta.dir, "fixtures/main-preload.ts"),
+      join(import.meta.dir, "main.ts"), "serve"], {
+      env: { ...process.env, HOME: home, DORI_DISCORD_TOKEN: "fixture", HELIO_ADMIN_STATE_DIR: home,
+        HELIO_ADMIN_SOCKET: join(home, "absent.sock"), HELIO_ADMIN_FIXTURE_MODE: "sleeping" },
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 15_000,
+    });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stderr).toBe(0);
+    expect(stdout).toContain("SLEEP_REACTION_SENT");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});

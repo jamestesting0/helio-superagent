@@ -75,6 +75,7 @@ export type WorkspaceRequest =
 export type BrokerRequest =
   | ({ readonly kind: "workspace"; readonly actor: string; readonly guild: string } & WorkspaceRequest)
   | { readonly kind: "policy" }
+  | { readonly kind: "sleep-reaction"; readonly author: string; readonly revision: string }
   | { readonly kind: "runtime"; readonly actor: string; readonly guild: string; readonly operation: string; readonly query: RuntimeQuery }
   | { readonly kind: "configure"; readonly actor: string; readonly operation: string; readonly expected: string;
       readonly action: string; readonly target: string; readonly value: string }

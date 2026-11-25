@@ -1,6 +1,7 @@
 import { DiscordBotClient, DiscordBotListener, DiscordIntent } from "agent-messenger/discordbot";
 import { join } from "node:path";
 import { broker } from "./broker.ts";
+import { reactWhileSleeping } from "./sleep-reaction.ts";
 import { CommandPublisher } from "./command-sync.ts";
 import { Controller } from "./controller.ts";
 import { Panels } from "./panels.ts";
@@ -38,7 +39,17 @@ using publisher = new CommandPublisher({ rest: metadata.rest, stateDirectory: st
         }
         if (listener) return;
         const client = await new DiscordBotClient().login({ token });
-        listener = new DiscordBotListener(client, { intents: DiscordIntent.Guilds });
+        listener = new DiscordBotListener(client, { intents: DiscordIntent.Guilds | DiscordIntent.GuildMessages |
+          DiscordIntent.DirectMessages | DiscordIntent.MessageContent });
+        let botId: string | undefined;
+        listener.on("connected", ({ user }) => { botId = user.id; });
+        listener.on("message_create", message => {
+          if (!botId) return;
+          void reactWhileSleeping(message, botId, transport.call, broker).catch(error => {
+            if (!(error instanceof Error)) throw error;
+            console.warn(`ADMIN_WARN sleep_reaction ${error.name}`);
+          });
+        });
         listener.on("interaction_create", raw => {
           void controller.handle(raw).catch(error => {
             if (!(error instanceof Error)) throw error;

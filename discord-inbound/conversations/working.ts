@@ -2,7 +2,7 @@ import { audienceOf } from "./conversation-context.ts";
 import type { Conversations, ConversationEntry } from "./conversations.ts";
 import { WORKING_WINDOW_MS } from "./conversations.ts";
 import type { Delivery } from "../delivery/delivery.ts";
-import { DiscordRestError, IgnoredChannelError, type Rest } from "../discord/rest.ts";
+import { DiscordRestError, IgnoredChannelError, sleepingReactionRoute, type Rest } from "../discord/rest.ts";
 
 export const WORKING_ABANDON_MS = 2 * 60 * 60 * 1000;
 export type WorkingReaction = "added" | "already" | "skipped" | "skipped-already-replied" | "forbidden" | "failed";
@@ -21,10 +21,11 @@ export interface ClaimMessage {
   readonly channel_policy?: string;
   readonly discord_origin?: unknown;
   readonly pinged?: boolean;
+  readonly sleeping_reaction?: boolean;
   readonly entry?: ConversationEntry;
 }
 
-/** The only reaction writer. Durable claims are the target; Discord calls never hold a database transaction. */
+/** Reconciles 👀 with durable claims. Discord calls never hold a database transaction. */
 export async function syncReceipts(o: ReceiptContext, force = true): Promise<ReadonlyMap<string, WorkingReaction>> {
   const results = new Map<string, WorkingReaction>();
   if (!o.rest) return results;
@@ -69,7 +70,19 @@ export async function showWorking(o: ReceiptContext, message: ClaimMessage): Pro
   }
   const row = o.store.claimWorking(message.channel_id, message.author_id, message.message_id, o.now);
   if (row.closed_at !== null) return "skipped-already-replied";
-  return (await syncReceipts(o, false)).get(message.message_id) ?? "skipped";
+  const receipts = await syncReceipts(o, false);
+  if (message.sleeping_reaction) await clearSleepingReaction(o, message.channel_id, message.message_id);
+  return receipts.get(message.message_id) ?? "skipped";
+}
+
+export async function clearSleepingReaction(o: Pick<ReceiptContext, "rest" | "warn">, channel: string, message: string): Promise<void> {
+  try {
+    await o.rest?.(sleepingReactionRoute(channel, message), { method: "DELETE", retryRateLimit: false });
+  } catch (error) {
+    if (error instanceof IgnoredChannelError || error instanceof DiscordRestError && (error.status === 403 || error.status === 404)) return;
+    if (!(error instanceof Error)) throw error;
+    o.warn(`sleeping reaction cleanup failed message_id=${message}: ${error.name}`);
+  }
 }
 
 /** Only explicit pings in DMs/trusted channels have already passed the decision to answer. */

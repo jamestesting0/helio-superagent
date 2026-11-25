@@ -74,6 +74,7 @@ INBOUND_FILES = (
     "admin/transport.ts", "admin/transport.test.ts", "admin/registration.ts", "admin/registration.test.ts", "admin/command-schema.ts",
     "admin/command-sync.ts", "admin/command-sync-state.ts", "admin/command-sync.test.ts",
     "admin/main.test.ts", "admin/fixtures/main-preload.ts",
+    "admin/sleep-reaction.ts", "admin/sleep-reaction.test.ts",
     "admin/autocomplete.test.ts", "admin/navigation.test.ts", "admin/fixtures/controller.ts",
     "admin/suggestions.test.ts", "admin/fixtures/runtime.ts", "admin/record-reads.ts",
     "admin/runtime-access.ts", "admin/runtime-mutations.ts", "admin/runtime-records.ts", "admin/runtime-state.ts", "admin/runtime-recovery.ts",
